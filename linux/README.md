@@ -1,0 +1,1 @@
+Configures Linux-only aliases and shortcuts for command line.
