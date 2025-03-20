@@ -1,8 +1,21 @@
+:: This file sets up custom commands for the Windows command line. I "grew up" on Linux, so I like to have some of the same commands available.
 @echo off
 
-:: Commands
-
+:: Linux-like commands
 DOSKEY ls=dir /B $*
-DOSKEY sublime=sublime_text $*  
-    ::sublime_text.exe is name of the executable. By adding a temporary entry to system path, we don't have to write the whole directory anymore.
-DOSKEY cmdrc=notepad %USERPROFILE%\GitHub\peter-ipython-terminal\cmdrc.bat
+DOSKEY clear=cls
+DOSKEY cp=copy $*
+DOSKEY mv=move $*
+DOSKEY rm=del $*
+DOSKEY grep=findstr $*
+DOSKEY cat=type $*
+DOSKEY touch=echo.>$*
+DOSKEY pwd=cd
+DOSKEY ll=dir /A $*
+DOSKEY ps=tasklist $*
+DOSKEY kill=taskkill /PID $*
+DOSKEY chmod=echo Windows does not support chmod, use icacls instead
+DOSKEY man=help $*
+
+:: Edit this file
+DOSKEY cmdrc=notepad %USERPROFILE%\GitHub\peter-terminal-utils\windows\cmdrc.bat
