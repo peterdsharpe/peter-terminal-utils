@@ -46,7 +46,7 @@ done
 
 # Use getopts to parse short options (including combined flags)
 set -- "${ARGS[@]}"
-while getopts "hmart" opt; do
+while getopts "hmar" opt; do
     case "$opt" in
         h)
             SHOW_HELP=true
@@ -59,10 +59,6 @@ while getopts "hmart" opt; do
             ;;
         r)
             RUNNING_ONLY=true
-            ;;
-        t)
-            echo "Error: -t flag should not be used directly" >&2
-            exit 1
             ;;
         \?)
             echo "Invalid option: -$OPTARG" >&2
