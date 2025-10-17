@@ -1,0 +1,437 @@
+#!/bin/bash
+
+set -euo pipefail
+
+### Configuration
+SLURM_GROUP="coreai_modulus_cae"
+CURRENT_USER="${USER}"
+
+### Setup scope variables
+SSHARE_ACCOUNT="-A ${SLURM_GROUP}"
+SSHARE_SCOPE="-a"
+SQUEUE_SCOPE="-A ${SLURM_GROUP}"
+SQUEUE_STATE=""
+
+### Parse command line arguments
+SHOW_HELP=false
+SCOPE_MODE="group"
+RUNNING_ONLY=false
+
+# Process long options first, convert to short options
+ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --help)
+            ARGS+=("-h")
+            ;;
+        --me)
+            ARGS+=("-m")
+            ;;
+        --all)
+            ARGS+=("-a")
+            ;;
+        --running)
+            ARGS+=("-r")
+            ;;
+        -*)
+            ARGS+=("$arg")
+            ;;
+        *)
+            echo "Unknown argument: $arg" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Use getopts to parse short options (including combined flags)
+set -- "${ARGS[@]}"
+while getopts "hmart" opt; do
+    case "$opt" in
+        h)
+            SHOW_HELP=true
+            ;;
+        m)
+            SCOPE_MODE="me"
+            ;;
+        a)
+            SCOPE_MODE="all"
+            ;;
+        r)
+            RUNNING_ONLY=true
+            ;;
+        t)
+            echo "Error: -t flag should not be used directly" >&2
+            exit 1
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [[ "$SHOW_HELP" == true ]]; then
+cat << EOF
+Usage: sq [OPTION]...
+
+Display Slurm queue and share information with colorized output.
+
+Scope options (mutually exclusive):
+  (none)         Show jobs and shares for your group (${SLURM_GROUP})
+  --me,   -m     Show only your jobs and share information
+  --all,  -a     Show all jobs and shares across the entire cluster
+
+Filter options (can be combined with scope options):
+  --running, -r  Show only running jobs (not pending)
+
+Other options:
+  --help, -h     Display this help message
+
+sshare output features:
+  - $(tput bold)Bold text$(tput sgr0) highlights your user (${CURRENT_USER}) and group (${SLURM_GROUP})
+  - Users and groups colored by RawUsage:
+    $(tput setaf 4)blue$(tput sgr0)<10k, $(tput setaf 6)cyan$(tput sgr0)=10k-50k, $(tput setaf 2)green$(tput sgr0)=50k-200k, $(tput setaf 3)yellow$(tput sgr0)=200k-1M, $(tput setaf 208)orange$(tput sgr0)=1M-5M, $(tput setaf 1)red$(tput sgr0)≥5M
+  - Users listed first (sorted by usage), then groups (sorted by usage)
+  - Zero-usage users and groups hidden
+
+squeue output features:
+  - $(tput dim)Pending jobs are dimmed$(tput sgr0)
+  - Running jobs colored by node count:
+    $(tput setaf 4)blue$(tput sgr0)=1, $(tput setaf 6)cyan$(tput sgr0)=2-3, $(tput setaf 2)green$(tput sgr0)=4-7, $(tput setaf 3)yellow$(tput sgr0)=8-15, $(tput setaf 208)orange$(tput sgr0)=16-31, $(tput setaf 1)red$(tput sgr0)=32+
+  - Jobs sorted by: state (pending first), user, node count, runtime
+
+Examples:
+  sq              Show group jobs (all states)
+  sq -m           Show only your jobs
+  sq -r           Show only running jobs in your group
+  sq -mr          Show only your running jobs (combined flags)
+  sq -a -r        Show all running jobs on the cluster
+EOF
+exit 0
+fi
+
+### Apply scope mode
+case "$SCOPE_MODE" in
+    me)
+        SSHARE_SCOPE=""
+        SQUEUE_SCOPE="--me"
+        ;;
+    all)
+        SSHARE_ACCOUNT=""
+        SSHARE_SCOPE="-a"
+        SQUEUE_SCOPE=""
+        ;;
+esac
+
+### Apply filter options
+if [[ "$RUNNING_ONLY" == true ]]; then
+    SQUEUE_STATE="-t R"
+fi
+
+sshare $SSHARE_ACCOUNT $SSHARE_SCOPE --format="Account%50,User%30,RawShares,NormShares,RawUsage,NormUsage,EffectvUsage,FairShare,LevelFS" | awk -v current_user="${CURRENT_USER}" -v slurm_group="${SLURM_GROUP}" '
+function get_usage_color(usage) {
+    if (usage < 10000) return "\033[34m"
+    if (usage < 50000) return "\033[36m"
+    if (usage < 200000) return "\033[32m"
+    if (usage < 1000000) return "\033[33m"
+    if (usage < 5000000) return "\033[38;5;208m"
+    return "\033[31m"
+}
+
+function extract_field(line, col) {
+    # Extract substring based on dash positions, then trim
+    val = substr(line, col_start[col], col_end[col] - col_start[col] + 1)
+    gsub(/^[ \t]+|[ \t]+$/, "", val)
+    return val
+}
+
+function update_max(col, val) {
+    len = length(val)
+    if (len > max_width[col]) {
+        max_width[col] = len
+    }
+}
+
+BEGIN {
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+    
+    for (c = 1; c <= 9; c++) {
+        max_width[c] = 0
+    }
+}
+
+NR == 1 {
+    header_line = $0
+    next
+}
+
+NR == 2 {
+    # Parse separator line to find column boundaries
+    num_cols = 0
+    in_dash = 0
+    
+    for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c == "-" && !in_dash) {
+            # Start of dash group
+            num_cols++
+            col_start[num_cols] = i
+            in_dash = 1
+        } else if (c != "-" && in_dash) {
+            # End of dash group
+            col_end[num_cols] = i - 1
+            in_dash = 0
+        }
+    }
+    # Handle last column if it ends with dashes
+    if (in_dash) {
+        col_end[num_cols] = length($0)
+    }
+    
+    # Extract and store header fields (only first 9)
+    for (f = 1; f <= 9 && f <= num_cols; f++) {
+        val = extract_field(header_line, f)
+        header[f] = val
+        update_max(f, val)
+    }
+    next
+}
+
+{
+    # Extract fields by character position
+    for (f = 1; f <= 9 && f <= num_cols; f++) {
+        fields[f] = extract_field($0, f)
+    }
+    
+    # Skip root and zero-usage entries
+    if (fields[1] == "root") next
+    
+    is_user = (fields[2] ~ /[a-zA-Z]/)
+    raw_usage = fields[5] + 0
+    if (raw_usage == 0) next
+    
+    # Store data and update max widths
+    if (is_user) {
+        user_count++
+        user_usage[user_count] = raw_usage
+        user_highlight[user_count] = ($0 ~ current_user)
+        for (f = 1; f <= 9; f++) {
+            user_data[user_count, f] = fields[f]
+            update_max(f, fields[f])
+        }
+    } else {
+        group_count++
+        group_usage[group_count] = raw_usage
+        group_highlight[group_count] = ($0 ~ slurm_group)
+        for (f = 1; f <= 9; f++) {
+            group_data[group_count, f] = fields[f]
+            update_max(f, fields[f])
+        }
+    }
+}
+
+END {
+    # Sort users by usage
+    for (i = 1; i <= user_count; i++) {
+        for (j = i + 1; j <= user_count; j++) {
+            if (user_usage[i] > user_usage[j]) {
+                temp = user_usage[i]; user_usage[i] = user_usage[j]; user_usage[j] = temp
+                temp = user_highlight[i]; user_highlight[i] = user_highlight[j]; user_highlight[j] = temp
+                for (f = 1; f <= 9; f++) {
+                    temp = user_data[i, f]; user_data[i, f] = user_data[j, f]; user_data[j, f] = temp
+                }
+            }
+        }
+    }
+    
+    # Sort groups by usage
+    for (i = 1; i <= group_count; i++) {
+        for (j = i + 1; j <= group_count; j++) {
+            if (group_usage[i] > group_usage[j]) {
+                temp = group_usage[i]; group_usage[i] = group_usage[j]; group_usage[j] = temp
+                temp = group_highlight[i]; group_highlight[i] = group_highlight[j]; group_highlight[j] = temp
+                for (f = 1; f <= 9; f++) {
+                    temp = group_data[i, f]; group_data[i, f] = group_data[j, f]; group_data[j, f] = temp
+                }
+            }
+        }
+    }
+    
+    # Print header
+    for (f = 1; f <= 9; f++) {
+        printf "%-*s", max_width[f], header[f]
+        if (f < 9) printf "  "
+    }
+    printf "\n"
+    
+    # Print users then groups
+    for (i = 1; i <= user_count; i++) {
+        line = ""
+        for (f = 1; f <= 9; f++) {
+            line = line sprintf("%-*s", max_width[f], user_data[i, f])
+            if (f < 9) line = line "  "
+        }
+        
+        output = get_usage_color(user_usage[i]) line RESET
+        if (user_highlight[i]) output = BOLD output
+        print output
+    }
+    
+    for (i = 1; i <= group_count; i++) {
+        line = ""
+        for (f = 1; f <= 9; f++) {
+            line = line sprintf("%-*s", max_width[f], group_data[i, f])
+            if (f < 9) line = line "  "
+        }
+        
+        output = get_usage_color(group_usage[i]) line RESET
+        if (group_highlight[i]) output = BOLD output
+        print output
+    }
+}
+'
+
+echo ""
+
+### Process squeue output
+squeue $SQUEUE_SCOPE $SQUEUE_STATE --format="%18i"$'\x1f'"%12P"$'\x1f'"%200j"$'\x1f'"%20u"$'\x1f'"%2t"$'\x1f'"%10M"$'\x1f'"%6D"$'\x1f'"%R" | awk -F'\x1f' -v current_user="${CURRENT_USER}" '
+function get_node_color(nodes) {
+    n = nodes + 0
+    if (n == 0) return "\033[34m"
+    log_n = 0
+    while (n > 1) {
+        n = int(n / 2)
+        log_n++
+    }
+    if (log_n == 0) return "\033[34m"
+    if (log_n == 1) return "\033[36m"
+    if (log_n == 2) return "\033[32m"
+    if (log_n == 3) return "\033[33m"
+    if (log_n == 4) return "\033[38;5;208m"
+    return "\033[31m"
+}
+
+function time_to_seconds(time) {
+    if (time ~ /-/) {
+        split(time, parts, "-")
+        split(parts[2], hms, ":")
+        return parts[1] * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3]
+    } else if (time ~ /:.*:/) {
+        split(time, hms, ":")
+        return hms[1] * 3600 + hms[2] * 60 + hms[3]
+    } else if (time ~ /:/) {
+        split(time, ms, ":")
+        return ms[1] * 60 + ms[2]
+    }
+    return 0
+}
+
+BEGIN {
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    
+    for (c = 1; c <= 8; c++) {
+        max_width[c] = 0
+    }
+}
+
+NR == 1 {
+    # Save headers and calculate widths
+    for (f = 1; f <= 8; f++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", $f)
+        header[f] = $f
+        if (length($f) > max_width[f]) {
+            max_width[f] = length($f)
+        }
+    }
+    next
+}
+
+{
+    # Trim whitespace from all fields and calculate widths
+    for (f = 1; f <= 8; f++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", $f)
+        fields[NR, f] = $f
+        
+        field_len = length($f)
+        # Limit last column to 20 chars for width calculation
+        if (f == 8 && field_len > 20) {
+            field_len = 20
+        }
+        if (field_len > max_width[f]) {
+            max_width[f] = field_len
+        }
+    }
+    
+    # Store for sorting
+    users[NR] = $4
+    states[NR] = $5
+    times[NR] = time_to_seconds($6)
+    node_counts[NR] = $7
+}
+
+END {
+    # Create and sort indices
+    for (i = 2; i <= NR; i++) {
+        indices[i] = i
+    }
+    
+    for (i = 2; i <= NR; i++) {
+        for (j = i + 1; j <= NR; j++) {
+            idx_i = indices[i]
+            idx_j = indices[j]
+            
+            if (states[idx_i] > states[idx_j] || 
+                (states[idx_i] == states[idx_j] && users[idx_i] > users[idx_j]) ||
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] + 0 > node_counts[idx_j] + 0) ||
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j])) {
+                temp = indices[i]
+                indices[i] = indices[j]
+                indices[j] = temp
+            }
+        }
+    }
+    
+    # Print header
+    for (f = 1; f <= 8; f++) {
+        printf "%-*s", max_width[f], header[f]
+        if (f < 8) printf "  "
+    }
+    printf "\n"
+    
+    # Print sorted jobs
+    for (i = 2; i <= NR; i++) {
+        idx = indices[i]
+        state = states[idx]
+        nodes = node_counts[idx]
+        
+        line = ""
+        for (f = 1; f <= 8; f++) {
+            val = fields[idx, f]
+            # Truncate last column to 20 chars
+            if (f == 8 && length(val) > 20) {
+                val = substr(val, 1, 20)
+            }
+            line = line sprintf("%-*s", max_width[f], val)
+            if (f < 8) line = line "  "
+        }
+        
+        # Apply color and style
+        if (state == "PD") {
+            output = DIM line RESET
+        } else {
+            output = get_node_color(nodes) line RESET
+        }
+        
+        if (line ~ current_user) {
+            output = BOLD output
+        }
+        
+        print output
+    }
+}
+'
