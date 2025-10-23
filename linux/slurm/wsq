@@ -1,0 +1,3 @@
+#!/bin/bash
+
+watch --color -n 60 sq -mt
