@@ -296,6 +296,181 @@ END {
 
 echo ""
 
+### Define common squeue processing awk script
+read -r -d '' SQUEUE_AWK_SCRIPT << 'AWK_EOF' || true
+function get_node_color(nodes) {
+    n = nodes + 0
+    if (n == 0) return "\033[34m"
+    log_n = 0
+    while (n > 1) {
+        n = int(n / 2)
+        log_n++
+    }
+    if (log_n == 0) return "\033[34m"
+    if (log_n == 1) return "\033[36m"
+    if (log_n == 2) return "\033[32m"
+    if (log_n == 3) return "\033[33m"
+    if (log_n == 4) return "\033[38;5;208m"
+    return "\033[31m"
+}
+
+function time_to_seconds(time) {
+    if (time ~ /-/) {
+        split(time, parts, "-")
+        split(parts[2], hms, ":")
+        return parts[1] * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3]
+    } else if (time ~ /:.*:/) {
+        split(time, hms, ":")
+        return hms[1] * 3600 + hms[2] * 60 + hms[3]
+    } else if (time ~ /:/) {
+        split(time, ms, ":")
+        return ms[1] * 60 + ms[2]
+    }
+    return 0
+}
+
+BEGIN {
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    
+    for (c = 1; c <= 8; c++) {
+        max_width[c] = 0
+    }
+}
+
+NR == 1 {
+    for (f = 1; f <= 8; f++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", $f)
+        header[f] = $f
+        if (length($f) > max_width[f]) {
+            max_width[f] = length($f)
+        }
+    }
+    next
+}
+
+{
+    for (f = 1; f <= 8; f++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", $f)
+        fields[NR, f] = $f
+        
+        field_len = length($f)
+        if (f == 8 && field_len > max_col8_width) {
+            field_len = max_col8_width
+        }
+        if (field_len > max_width[f]) {
+            max_width[f] = field_len
+        }
+    }
+    
+    users[NR] = $4
+    states[NR] = $5
+    times[NR] = time_to_seconds($6)
+    node_counts[NR] = $7
+}
+
+END {
+    for (i = 2; i <= NR; i++) {
+        indices[i] = i
+    }
+    
+    for (i = 2; i <= NR; i++) {
+        for (j = i + 1; j <= NR; j++) {
+            idx_i = indices[i]
+            idx_j = indices[j]
+            
+            if (states[idx_i] > states[idx_j] || 
+                (states[idx_i] == states[idx_j] && users[idx_i] > users[idx_j]) ||
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] + 0 > node_counts[idx_j] + 0) ||
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j])) {
+                temp = indices[i]
+                indices[i] = indices[j]
+                indices[j] = temp
+            }
+        }
+    }
+    
+    for (f = 1; f <= 8; f++) {
+        printf "%-*s", max_width[f], header[f]
+        if (f < 8) printf "  "
+    }
+    printf "\n"
+    
+    # Print with duplicate collapsing
+    i = 2
+    while (i <= NR) {
+        idx = indices[i]
+        state = states[idx]
+        nodes = node_counts[idx]
+        
+        line = ""
+        for (f = 1; f <= 8; f++) {
+            val = fields[idx, f]
+            if (f == 8 && length(val) > max_col8_width) {
+                val = substr(val, 1, max_col8_width)
+            }
+            line = line sprintf("%-*s", max_width[f], val)
+            if (f < 8) line = line "  "
+        }
+        
+        if (state == "PD") {
+            output = DIM line RESET
+        } else {
+            output = get_node_color(nodes) line RESET
+        }
+        
+        if (line ~ current_user) {
+            output = BOLD output
+        }
+        
+        print output
+        
+        # Check for duplicates
+        dup_count = 0
+        first_jobid = fields[idx, 1]
+        last_jobid = first_jobid
+        j = i + 1
+        
+        while (j <= NR) {
+            idx_j = indices[j]
+            is_dup = 1
+            
+            for (f = 2; f <= 8; f++) {
+                if (fields[idx, f] != fields[idx_j, f]) {
+                    is_dup = 0
+                    break
+                }
+            }
+            
+            if (is_dup) {
+                dup_count++
+                last_jobid = fields[idx_j, 1]
+                j++
+            } else {
+                break
+            }
+        }
+        
+        if (dup_count > 0) {
+            collapse_line = sprintf("  [x%d, %s-%s]", dup_count + 1, first_jobid, last_jobid)
+            if (state == "PD") {
+                collapse_output = DIM collapse_line RESET
+            } else {
+                collapse_output = get_node_color(nodes) collapse_line RESET
+            }
+            if (line ~ current_user) {
+                collapse_output = BOLD collapse_output
+            }
+            print collapse_output
+            i = j
+        } else {
+            i++
+        }
+    }
+}
+AWK_EOF
+
 ### Process squeue output
 if [[ "$SHOW_TIMING" == true ]]; then
     # When timing enabled, we need to identify Priority jobs first
@@ -349,135 +524,7 @@ if [[ "$SHOW_TIMING" == true ]]; then
     fi
     
     # Process the captured output with ETA replacement
-    cat "$TMPOUT" | awk -F'\x1f' -v current_user="${CURRENT_USER}" '
-    function get_node_color(nodes) {
-        n = nodes + 0
-        if (n == 0) return "\033[34m"
-        log_n = 0
-        while (n > 1) {
-            n = int(n / 2)
-            log_n++
-        }
-        if (log_n == 0) return "\033[34m"
-        if (log_n == 1) return "\033[36m"
-        if (log_n == 2) return "\033[32m"
-        if (log_n == 3) return "\033[33m"
-        if (log_n == 4) return "\033[38;5;208m"
-        return "\033[31m"
-    }
-    
-    function time_to_seconds(time) {
-        if (time ~ /-/) {
-            split(time, parts, "-")
-            split(parts[2], hms, ":")
-            return parts[1] * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3]
-        } else if (time ~ /:.*:/) {
-            split(time, hms, ":")
-            return hms[1] * 3600 + hms[2] * 60 + hms[3]
-        } else if (time ~ /:/) {
-            split(time, ms, ":")
-            return ms[1] * 60 + ms[2]
-        }
-        return 0
-    }
-    
-    BEGIN {
-        BOLD = "\033[1m"
-        DIM = "\033[2m"
-        RESET = "\033[0m"
-        
-        for (c = 1; c <= 8; c++) {
-            max_width[c] = 0
-        }
-    }
-    
-    NR == 1 {
-        for (f = 1; f <= 8; f++) {
-            gsub(/^[ \t]+|[ \t]+$/, "", $f)
-            header[f] = $f
-            if (length($f) > max_width[f]) {
-                max_width[f] = length($f)
-            }
-        }
-        next
-    }
-    
-    {
-        for (f = 1; f <= 8; f++) {
-            gsub(/^[ \t]+|[ \t]+$/, "", $f)
-            fields[NR, f] = $f
-            
-            field_len = length($f)
-            if (f == 8 && field_len > 35) {
-                field_len = 35
-            }
-            if (field_len > max_width[f]) {
-                max_width[f] = field_len
-            }
-        }
-        
-        users[NR] = $4
-        states[NR] = $5
-        times[NR] = time_to_seconds($6)
-        node_counts[NR] = $7
-    }
-    
-    END {
-        for (i = 2; i <= NR; i++) {
-            indices[i] = i
-        }
-        
-        for (i = 2; i <= NR; i++) {
-            for (j = i + 1; j <= NR; j++) {
-                idx_i = indices[i]
-                idx_j = indices[j]
-                
-                if (states[idx_i] > states[idx_j] || 
-                    (states[idx_i] == states[idx_j] && users[idx_i] > users[idx_j]) ||
-                    (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] + 0 > node_counts[idx_j] + 0) ||
-                    (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j])) {
-                    temp = indices[i]
-                    indices[i] = indices[j]
-                    indices[j] = temp
-                }
-            }
-        }
-        
-        for (f = 1; f <= 8; f++) {
-            printf "%-*s", max_width[f], header[f]
-            if (f < 8) printf "  "
-        }
-        printf "\n"
-        
-        for (i = 2; i <= NR; i++) {
-            idx = indices[i]
-            state = states[idx]
-            nodes = node_counts[idx]
-            
-            line = ""
-            for (f = 1; f <= 8; f++) {
-                val = fields[idx, f]
-                if (f == 8 && length(val) > 35) {
-                    val = substr(val, 1, 35)
-                }
-                line = line sprintf("%-*s", max_width[f], val)
-                if (f < 8) line = line "  "
-            }
-            
-            if (state == "PD") {
-                output = DIM line RESET
-            } else {
-                output = get_node_color(nodes) line RESET
-            }
-            
-            if (line ~ current_user) {
-                output = BOLD output
-            }
-            
-            print output
-        }
-    }
-    ' | while IFS= read -r line; do
+    cat "$TMPOUT" | awk -F'\x1f' -v current_user="${CURRENT_USER}" -v max_col8_width=35 "$SQUEUE_AWK_SCRIPT" | while IFS= read -r line; do
         # Replace (Priority) with ETA if we have it
         if [[ "$line" =~ \(Priority\) ]]; then
             jobid=$(echo "$line" | awk '{print $1}' | sed 's/\x1b\[[0-9;]*m//g')
@@ -491,133 +538,6 @@ if [[ "$SHOW_TIMING" == true ]]; then
     done
 else
     # No timing - just run normally
-    squeue $SQUEUE_SCOPE $SQUEUE_STATE --format="%18i"$'\x1f'"%12P"$'\x1f'"%200j"$'\x1f'"%20u"$'\x1f'"%2t"$'\x1f'"%10M"$'\x1f'"%6D"$'\x1f'"%R" | awk -F'\x1f' -v current_user="${CURRENT_USER}" '
-    function get_node_color(nodes) {
-        n = nodes + 0
-        if (n == 0) return "\033[34m"
-        log_n = 0
-        while (n > 1) {
-            n = int(n / 2)
-            log_n++
-        }
-        if (log_n == 0) return "\033[34m"
-        if (log_n == 1) return "\033[36m"
-        if (log_n == 2) return "\033[32m"
-        if (log_n == 3) return "\033[33m"
-        if (log_n == 4) return "\033[38;5;208m"
-        return "\033[31m"
-    }
-    
-    function time_to_seconds(time) {
-        if (time ~ /-/) {
-            split(time, parts, "-")
-            split(parts[2], hms, ":")
-            return parts[1] * 86400 + hms[1] * 3600 + hms[2] * 60 + hms[3]
-        } else if (time ~ /:.*:/) {
-            split(time, hms, ":")
-            return hms[1] * 3600 + hms[2] * 60 + hms[3]
-        } else if (time ~ /:/) {
-            split(time, ms, ":")
-            return ms[1] * 60 + ms[2]
-        }
-        return 0
-    }
-    
-    BEGIN {
-        BOLD = "\033[1m"
-        DIM = "\033[2m"
-        RESET = "\033[0m"
-        
-        for (c = 1; c <= 8; c++) {
-            max_width[c] = 0
-        }
-    }
-    
-    NR == 1 {
-        for (f = 1; f <= 8; f++) {
-            gsub(/^[ \t]+|[ \t]+$/, "", $f)
-            header[f] = $f
-            if (length($f) > max_width[f]) {
-                max_width[f] = length($f)
-            }
-        }
-        next
-    }
-    
-    {
-        for (f = 1; f <= 8; f++) {
-            gsub(/^[ \t]+|[ \t]+$/, "", $f)
-            fields[NR, f] = $f
-            
-            field_len = length($f)
-            if (f == 8 && field_len > 20) {
-                field_len = 20
-            }
-            if (field_len > max_width[f]) {
-                max_width[f] = field_len
-            }
-        }
-        
-        users[NR] = $4
-        states[NR] = $5
-        times[NR] = time_to_seconds($6)
-        node_counts[NR] = $7
-    }
-    
-    END {
-        for (i = 2; i <= NR; i++) {
-            indices[i] = i
-        }
-        
-        for (i = 2; i <= NR; i++) {
-            for (j = i + 1; j <= NR; j++) {
-                idx_i = indices[i]
-                idx_j = indices[j]
-                
-                if (states[idx_i] > states[idx_j] || 
-                    (states[idx_i] == states[idx_j] && users[idx_i] > users[idx_j]) ||
-                    (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] + 0 > node_counts[idx_j] + 0) ||
-                    (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j])) {
-                    temp = indices[i]
-                    indices[i] = indices[j]
-                    indices[j] = temp
-                }
-            }
-        }
-        
-        for (f = 1; f <= 8; f++) {
-            printf "%-*s", max_width[f], header[f]
-            if (f < 8) printf "  "
-        }
-        printf "\n"
-        
-        for (i = 2; i <= NR; i++) {
-            idx = indices[i]
-            state = states[idx]
-            nodes = node_counts[idx]
-            
-            line = ""
-            for (f = 1; f <= 8; f++) {
-                val = fields[idx, f]
-                if (f == 8 && length(val) > 20) {
-                    val = substr(val, 1, 20)
-                }
-                line = line sprintf("%-*s", max_width[f], val)
-                if (f < 8) line = line "  "
-            }
-            
-            if (state == "PD") {
-                output = DIM line RESET
-            } else {
-                output = get_node_color(nodes) line RESET
-            }
-            
-            if (line ~ current_user) {
-                output = BOLD output
-            }
-            
-            print output
-        }
-    }
-    '
+    squeue $SQUEUE_SCOPE $SQUEUE_STATE --format="%18i"$'\x1f'"%12P"$'\x1f'"%200j"$'\x1f'"%20u"$'\x1f'"%2t"$'\x1f'"%10M"$'\x1f'"%6D"$'\x1f'"%R" | awk -F'\x1f' -v current_user="${CURRENT_USER}" -v max_col8_width=20 "$SQUEUE_AWK_SCRIPT"
 fi
+
