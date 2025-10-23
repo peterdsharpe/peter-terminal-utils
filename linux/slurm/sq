@@ -380,10 +380,12 @@ END {
             idx_i = indices[i]
             idx_j = indices[j]
             
+            # Sort by: state, user, nodes, time, name (lowest priority)
             if (states[idx_i] > states[idx_j] || 
                 (states[idx_i] == states[idx_j] && users[idx_i] > users[idx_j]) ||
                 (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] + 0 > node_counts[idx_j] + 0) ||
-                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j])) {
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] > times[idx_j]) ||
+                (states[idx_i] == states[idx_j] && users[idx_i] == users[idx_j] && node_counts[idx_i] == node_counts[idx_j] && times[idx_i] == times[idx_j] && fields[idx_i, 3] > fields[idx_j, 3])) {
                 temp = indices[i]
                 indices[i] = indices[j]
                 indices[j] = temp
