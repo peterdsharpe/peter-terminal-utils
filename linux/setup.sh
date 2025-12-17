@@ -147,6 +147,19 @@ step_end() {
     fi
 }
 
+### Install a command if not already present
+ensure_command() {
+    local name="$1"
+    local cmd="$2"
+    local install_func="$3"
+    
+    if ! command -v "$cmd" &> /dev/null; then
+        step "Installing $name" "$install_func"
+    else
+        print_skip "$name already installed"
+    fi
+}
+
 ### Helper function for Y/N prompts
 prompt_yn() {
     local prompt="$1"
@@ -174,22 +187,8 @@ echo -e "${BOLD}${CYAN}║                         Linux Setup Script           
 echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-### Cache sudo credentials upfront (can't use step() here - sudo needs direct terminal access)
-echo -e "${CYAN}▶${NC} This script requires sudo privileges..."
-sudo -v
-echo -e "${GREEN}✓${NC} Sudo credentials temporarily cached."
-
-# Keep sudo credentials alive in background during script execution
-(while true; do sudo -v; sleep 60; done) &
-SUDO_KEEPALIVE_PID=$!
-trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
-
-echo ""
-
 if prompt_yn "Dry run (preview changes without making them)? [y/N]" "N"; then
     DRY_RUN=true
-    print_warning "DRY RUN MODE - no changes will be made"
-    echo ""
 else
     DRY_RUN=false
 fi
@@ -212,6 +211,15 @@ GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
 echo ""
 print_info "Configuration: HEADLESS=$HEADLESS, INSTALL_SNAPS=$INSTALL_SNAPS, DRY_RUN=$DRY_RUN"
 print_info "Git: $GIT_NAME <$GIT_EMAIL>"
+
+### Cache sudo credentials (skip in dry-run mode)
+if [[ "$DRY_RUN" == false ]]; then
+    step "Caching sudo credentials" sudo -v
+    # Keep sudo credentials alive in background during script execution
+    (while true; do sudo -v; sleep 60; done) &
+    SUDO_KEEPALIVE_PID=$!
+    trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
+fi
 
 ###############################################################################
 ### System Packages (apt-get)
@@ -409,14 +417,21 @@ generate_ssh_key() {
 }
 if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
     step "Generating SSH key pair" generate_ssh_key
-    echo ""
-    print_info "Your public key:"
-    echo ""
-    cat "$HOME/.ssh/id_ed25519.pub"
-    echo ""
-    print_info "Add this key to GitHub: https://github.com/settings/ssh/new"
 else
     print_skip "SSH key already exists"
+fi
+
+### Add SSH key to GitHub (requires gh auth)
+if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
+    if gh auth status &>/dev/null; then
+        if prompt_yn "Add SSH key to GitHub? [y/N]" "N"; then
+            step "Adding SSH key to GitHub" gh ssh-key add "$HOME/.ssh/id_ed25519.pub" --title "$(hostname)"
+        else
+            print_skip "SSH key not added to GitHub"
+        fi
+    else
+        print_info "Run 'gh auth login' then 'gh ssh-key add ~/.ssh/id_ed25519.pub' to add your key to GitHub"
+    fi
 fi
 
 ###############################################################################
@@ -630,6 +645,9 @@ if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
     echo "    https://github.com/settings/ssh/new"
     echo ""
 fi
+
+print_info "Set up VS Code / Cursor to use PeterProfile as the default profile"
+echo ""
 
 print_warning "Log out and back in to use zsh as your default shell"
 echo ""
