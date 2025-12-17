@@ -400,20 +400,18 @@ install_zsh_from_source() {
     rm -rf "zsh-${version}" zsh.tar.xz
 }
 
-if ! command -v zsh &>/dev/null; then
-    if [[ "$HAS_SUDO" == true ]]; then
-        # zsh should already be installed via apt in System Packages section
-        print_warning "zsh not found - should have been installed via apt"
-    else
-        # Build from source for sudo-less install
-        if command -v gcc &>/dev/null && command -v make &>/dev/null; then
-            step "Building zsh from source (no sudo)" install_zsh_from_source
-        else
-            print_skip "zsh (requires build tools: gcc, make)"
-        fi
-    fi
-else
+if command -v zsh &>/dev/null || [ -x "$HOME/local/bin/zsh" ]; then
     print_skip "zsh already installed"
+elif [[ "$HAS_SUDO" == true ]]; then
+    # zsh should already be installed via apt in System Packages section
+    print_warning "zsh not found - should have been installed via apt"
+else
+    # Build from source for sudo-less install
+    if command -v gcc &>/dev/null && command -v make &>/dev/null; then
+        step "Building zsh from source (no sudo)" install_zsh_from_source
+    else
+        print_skip "zsh (requires build tools: gcc, make)"
+    fi
 fi
 
 ### Add ~/local/bin to .bashrc PATH (for sudo-less installs to be discoverable)
