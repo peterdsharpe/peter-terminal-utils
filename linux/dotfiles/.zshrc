@@ -57,19 +57,60 @@ alias ....="cd ../../.."
 alias .....="cd ../../../.."
 
 ###############################################################################
+### Environment variables
+###############################################################################
+
+# Set editor (prefer nvim if available, fall back to vim)
+if command -v nvim &> /dev/null; then
+    export EDITOR="nvim"
+    export VISUAL="nvim"
+else
+    export EDITOR="vim"
+    export VISUAL="vim"
+fi
+
+# Add user-local binaries to PATH
+export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
+
+###############################################################################
+### History configuration
+###############################################################################
+
+HISTSIZE=50000
+SAVEHIST=50000
+setopt HIST_IGNORE_DUPS      # Don't record duplicate commands
+setopt HIST_IGNORE_SPACE     # Don't record commands starting with space
+setopt SHARE_HISTORY         # Share history between sessions
+setopt EXTENDED_HISTORY      # Record timestamp with history
+
+###############################################################################
 ### Tool initializations
 ###############################################################################
 
 # Initialize zoxide (smarter cd)
 eval "$(zoxide init zsh)"
 
+# Initialize fzf (fuzzy finder) - Ctrl+R for history, Ctrl+T for files
+if command -v fzf &> /dev/null; then
+    # Source fzf keybindings if available (Ubuntu/Debian location)
+    if [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]; then
+        source /usr/share/doc/fzf/examples/key-bindings.zsh
+    fi
+    if [ -f /usr/share/doc/fzf/examples/completion.zsh ]; then
+        source /usr/share/doc/fzf/examples/completion.zsh
+    fi
+    # Use fd for fzf if available (faster, respects .gitignore)
+    if command -v fdfind &> /dev/null; then
+        export FZF_DEFAULT_COMMAND='fdfind --type f --hidden --follow --exclude .git'
+        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+        export FZF_ALT_C_COMMAND='fdfind --type d --hidden --follow --exclude .git'
+    fi
+fi
+
 # Initialize fnm (Node.js version manager) if installed
 if command -v fnm &> /dev/null; then
     eval "$(fnm env --use-on-cd)"
 fi
-
-# Add uv tools to PATH
-export PATH="$HOME/.local/bin:$PATH"
 
 # Add Cargo (Rust) to PATH
 if [ -f "$HOME/.cargo/env" ]; then
