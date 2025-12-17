@@ -10,9 +10,43 @@ sudo apt-get install -y \
     unzip zip \
     net-tools openssh-server \
     nemo \
-    gnome-shell-extension-manager gnome-tweaks
+    gnome-shell-extension-manager gnome-tweaks \
+    vlc dconf-editor zoxide
+
+### Install GitHub CLI (gh)
+if ! command -v gh &> /dev/null; then
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    sudo apt-get update
+    sudo apt-get install -y gh
+else
+    echo "GitHub CLI already installed, skipping."
+fi
+
+### Install lazygit
+if ! command -v lazygit &> /dev/null; then
+    LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
+    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+    tar xf lazygit.tar.gz lazygit
+    sudo install lazygit /usr/local/bin
+    rm lazygit lazygit.tar.gz
+else
+    echo "lazygit already installed, skipping."
+fi
+
+### Install Docker
+if ! command -v docker &> /dev/null; then
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+    echo "Docker installed. Log out and back in to use docker without sudo."
+else
+    echo "Docker already installed, skipping."
+fi
 
 ### Configure Git
+git config --global user.name "Peter Sharpe"
+git config --global user.email "peterdsharpe@gmail.com"
 git config --global init.defaultBranch main
 git config --global pull.rebase true
 git config --global core.editor "nvim"
@@ -115,6 +149,9 @@ alias .....="cd ../../../.."
 # Python
 alias py="uv run python"
 alias ipy="uv run ipython"
+
+# Initialize zoxide (smarter cd)
+eval "$(zoxide init zsh)"
 EOF
 else
     echo "Aliases already in .zshrc, skipping."
@@ -122,6 +159,10 @@ fi
 
 ### Install uv (Python)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+### Install Python tools via uv
+~/.local/bin/uv tool install ruff
+~/.local/bin/uv tool install ty
 
 ### Install fnm (Node.js version manager)
 curl -fsSL https://fnm.vercel.app/install | bash
