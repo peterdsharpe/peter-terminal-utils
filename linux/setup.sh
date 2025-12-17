@@ -221,7 +221,7 @@ prompt_input() {
 ### Interactive configuration questions
 echo ""
 echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${CYAN}║                         Linux Setup Script                                    ║${NC}"
+echo -e "${BOLD}${CYAN}║                     Peter Sharpe's Linux Setup Script                         ║${NC}"
 echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -313,26 +313,50 @@ require_sudo "System packages" install_system_packages
 
 print_header "CLI Tools"
 
-### Install GitHub CLI (gh)
+### Install GitHub CLI (gh) - can install without sudo using prebuilt binary
 install_github_cli() {
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
-    sudo apt-get update -qq || return 1
-    sudo apt-get install -yq gh
+    if [[ "$HAS_SUDO" == true ]]; then
+        # Install via apt repository (preferred for system-wide install)
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
+        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
+        sudo apt-get update -qq || return 1
+        sudo apt-get install -yq gh
+    else
+        # Install prebuilt binary to ~/.local/bin
+        local version gh_arch
+        version=$(curl -s "https://api.github.com/repos/cli/cli/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+        case "$ARCH" in
+            x86_64) gh_arch="amd64" ;;
+            arm64) gh_arch="arm64" ;;
+        esac
+        curl -Lo gh.tar.gz "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || return 1
+        tar xf gh.tar.gz || return 1
+        install -m 755 "gh_${version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh" || return 1
+        rm -rf gh.tar.gz "gh_${version}_linux_${gh_arch}"
+    fi
 }
-ensure_command "GitHub CLI" gh install_github_cli sudo
+ensure_command "GitHub CLI" gh install_github_cli
 
-### Install lazygit
+### Install lazygit (can install without sudo to ~/.local/bin)
 install_lazygit() {
-    local version
+    local version lazygit_arch
     version=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
-    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${ARCH}.tar.gz" || return 1
+    # lazygit uses x86_64 for amd64, but arm64 for ARM (not aarch64)
+    case "$ARCH" in
+        x86_64) lazygit_arch="x86_64" ;;
+        arm64) lazygit_arch="arm64" ;;
+    esac
+    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || return 1
     tar xf lazygit.tar.gz lazygit || return 1
-    sudo install lazygit /usr/local/bin || return 1
+    if [[ "$HAS_SUDO" == true ]]; then
+        sudo install lazygit /usr/local/bin || return 1
+    else
+        install -m 755 lazygit "$HOME/.local/bin/lazygit" || return 1
+    fi
     rm lazygit lazygit.tar.gz
 }
-ensure_command "lazygit" lazygit install_lazygit sudo
+ensure_command "lazygit" lazygit install_lazygit
 
 ### Install Docker
 install_docker() {
@@ -343,6 +367,67 @@ ensure_command "Docker" docker install_docker sudo
 # Show warning if user not yet in docker group (requires logout/login to take effect)
 if [[ "$HAS_SUDO" == true ]] && ! groups | grep -q docker; then
     print_warning "Log out and back in to use docker without sudo"
+fi
+
+### Install zsh (build from source if no sudo)
+install_zsh_from_source() {
+    # Check for required build tools
+    if ! command -v gcc &>/dev/null || ! command -v make &>/dev/null; then
+        echo "Missing build tools (gcc, make) - cannot compile zsh from source" >&2
+        return 1
+    fi
+    
+    # Create install directory
+    mkdir -p "$HOME/local" || return 1
+    
+    # Fetch latest version from zsh.org
+    local version
+    version=$(curl -s https://www.zsh.org/pub/ | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -1) || return 1
+    [ -n "$version" ] || { echo "Could not determine latest zsh version" >&2; return 1; }
+    
+    # Download and extract
+    curl -Lo zsh.tar.xz "https://www.zsh.org/pub/zsh-${version}.tar.xz" || return 1
+    tar xf zsh.tar.xz || return 1
+    cd "zsh-${version}" || return 1
+    
+    # Configure, build, install to ~/local
+    ./configure --prefix="$HOME/local" --without-tcsetpgrp || return 1
+    make -j"$(nproc)" || return 1
+    make install || return 1
+    
+    # Cleanup
+    cd ..
+    rm -rf "zsh-${version}" zsh.tar.xz
+}
+
+if ! command -v zsh &>/dev/null; then
+    if [[ "$HAS_SUDO" == true ]]; then
+        # zsh should already be installed via apt in System Packages section
+        print_warning "zsh not found - should have been installed via apt"
+    else
+        # Build from source for sudo-less install
+        if command -v gcc &>/dev/null && command -v make &>/dev/null; then
+            step "Building zsh from source (no sudo)" install_zsh_from_source
+        else
+            print_skip "zsh (requires build tools: gcc, make)"
+        fi
+    fi
+else
+    print_skip "zsh already installed"
+fi
+
+### Add ~/local/bin to .bashrc PATH (for sudo-less installs to be discoverable)
+add_local_to_bashrc_path() {
+    local bashrc="$HOME/.bashrc"
+    local path_line='export PATH="$HOME/local/bin:$PATH"'
+    if [ -f "$bashrc" ] && ! grep -qF 'HOME/local/bin' "$bashrc"; then
+        echo "" >> "$bashrc"
+        echo "# Added by peter-terminal-utils setup - user-local binaries" >> "$bashrc"
+        echo "$path_line" >> "$bashrc"
+    fi
+}
+if [[ "$HAS_SUDO" == false ]] && [ -d "$HOME/local/bin" ]; then
+    step "Adding ~/local/bin to .bashrc PATH" add_local_to_bashrc_path
 fi
 
 ###############################################################################
@@ -486,6 +571,39 @@ if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
 fi
 
 ###############################################################################
+### Development Tools
+###############################################################################
+
+print_header "Development Tools"
+
+### Create ~/.local/bin early (needed for user-local tool installs)
+step "Creating ~/.local/bin directory" mkdir -p "$HOME/.local/bin"
+
+### Install uv (Python)
+install_uv() {
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+}
+ensure_command "uv" uv install_uv
+
+### Install Python tools via uv
+step_start "Installing Python tools (ruff, ty)"
+run ~/.local/bin/uv tool install ruff
+run ~/.local/bin/uv tool install ty
+step_end
+
+### Install Rust
+install_rust() {
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+}
+ensure_command "Rust" rustup install_rust
+
+### Install Cursor CLI
+install_cursor() {
+    curl -fsSL https://cursor.com/install | bash
+}
+ensure_command "Cursor CLI" cursor-agent install_cursor
+
+###############################################################################
 ### Shell Setup
 ###############################################################################
 
@@ -559,36 +677,6 @@ else
 fi
 
 ###############################################################################
-### Development Tools
-###############################################################################
-
-print_header "Development Tools"
-
-### Install uv (Python)
-install_uv() {
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-}
-ensure_command "uv" uv install_uv
-
-### Install Python tools via uv
-step_start "Installing Python tools (ruff, ty)"
-run ~/.local/bin/uv tool install ruff
-run ~/.local/bin/uv tool install ty
-step_end
-
-### Install Rust
-install_rust() {
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-}
-ensure_command "Rust" rustup install_rust
-
-### Install Cursor CLI
-install_cursor() {
-    curl -fsSL https://cursor.com/install | bash
-}
-ensure_command "Cursor CLI" cursor-agent install_cursor
-
-###############################################################################
 ### Snap Applications
 ###############################################################################
 
@@ -621,10 +709,15 @@ run git config --global user.email "$GIT_EMAIL"
 run git config --global init.defaultBranch main
 run git config --global pull.rebase false
 run git config --global core.editor "nvim"
+run git config --global push.autoSetupRemote true
+run git config --global fetch.prune true
+# Aliases
 run git config --global alias.st status
 run git config --global alias.co checkout
 run git config --global alias.br branch
 run git config --global alias.lg "log --oneline --graph --decorate"
+run git config --global alias.amend "commit --amend --no-edit"
+run git config --global alias.last "log -1 HEAD --stat"
 step_end
 
 ###############################################################################
