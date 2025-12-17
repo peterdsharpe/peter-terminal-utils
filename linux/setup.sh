@@ -539,7 +539,12 @@ setup_zshrc() {
 step "Symlinking .zshrc" setup_zshrc
 
 ### Set up global ipy Python environment
-step "Syncing ipy Python environment" uv sync --project "$SCRIPT_DIR/../ipy"
+print_step "Syncing ipy Python environment"
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "${BLUE}ℹ${NC} [DRY RUN] uv sync --project $SCRIPT_DIR/../ipy"
+else
+    uv sync --project "$SCRIPT_DIR/../ipy" && print_success "Synced ipy Python environment" || { print_error "Failed to sync ipy Python environment"; SCRIPT_FAILED=true; }
+fi
 step "Symlinking ipy command" ln -sf "$SCRIPT_DIR/../ipy/IPy.sh" "$HOME/.local/bin/ipy"
 
 ### Copy Powerlevel10k config if it doesn't exist (or prompt to overwrite)
