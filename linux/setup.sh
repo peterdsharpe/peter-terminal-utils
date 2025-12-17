@@ -497,7 +497,8 @@ setup_zshrc() {
 }
 step "Symlinking .zshrc" setup_zshrc
 
-### Symlink ipy command for global Python environment
+### Set up global ipy Python environment
+step "Syncing ipy Python environment" uv sync --project "$SCRIPT_DIR/../ipy"
 step "Symlinking ipy command" ln -sf "$SCRIPT_DIR/../ipy/IPy.sh" "$HOME/.local/bin/ipy"
 
 ### Copy Powerlevel10k config if it doesn't exist (or prompt to overwrite)
