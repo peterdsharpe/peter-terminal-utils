@@ -265,32 +265,49 @@ fi
 GIT_NAME=$(prompt_input "Git user name" "Peter Sharpe")
 GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
 
-### Detect sudo availability
-if sudo -n true 2>/dev/null; then
+### Detect and configure sudo access
+if [[ $EUID -eq 0 ]]; then
+    # Already running as root
     HAS_SUDO=true
+    print_info "Running as root"
+elif sudo -n true 2>/dev/null; then
+    # Passwordless sudo available (already authenticated or NOPASSWD configured)
+    HAS_SUDO=true
+    print_info "Sudo access available"
 else
+    # Not elevated - ask user what they want to do
     echo ""
-    print_warning "No passwordless sudo detected."
-    if prompt_yn "Continue with limited functionality (no apt/snap/chsh)? [Y/n]" "Y"; then
-        HAS_SUDO=false
+    print_warning "Not running with sudo privileges."
+    echo "    1) Authenticate with sudo (full installation)"
+    echo "    2) Proceed without sudo (limited functionality)"
+    echo ""
+    if prompt_yn "Authenticate with sudo? [Y/n]" "Y"; then
+        # Attempt sudo authentication
+        echo ""
+        if sudo -v; then
+            HAS_SUDO=true
+            print_success "Sudo authentication successful"
+            # Keep sudo credentials alive in background
+            (while true; do sudo -v; sleep 60; done) &
+            SUDO_KEEPALIVE_PID=$!
+            trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
+        else
+            print_error "Sudo authentication failed"
+            if prompt_yn "Continue without sudo (limited functionality)? [Y/n]" "Y"; then
+                HAS_SUDO=false
+            else
+                exit 1
+            fi
+        fi
     else
-        echo "Run with sudo access or configure passwordless sudo."
-        exit 0
+        HAS_SUDO=false
+        print_info "Proceeding without sudo"
     fi
 fi
 
 echo ""
 print_info "Configuration: HEADLESS=$HEADLESS, INSTALL_SNAPS=$INSTALL_SNAPS, DRY_RUN=$DRY_RUN, HAS_SUDO=$HAS_SUDO"
 print_info "Git: $GIT_NAME <$GIT_EMAIL>"
-
-### Cache sudo credentials (skip in dry-run or no-sudo mode)
-if [[ "$DRY_RUN" == false && "$HAS_SUDO" == true ]]; then
-    step "Caching sudo credentials" sudo -v
-    # Keep sudo credentials alive in background during script execution
-    (while true; do sudo -v; sleep 60; done) &
-    SUDO_KEEPALIVE_PID=$!
-    trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
-fi
 
 ###############################################################################
 ### System Packages (apt-get)
