@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "aerosandbox>=4.2.8",
+    "aerosandbox[full]>=4.2.8",
     "ipython>=9.0.2",
     "matplotlib>=3.10.1",
     "numpy>=2.2.4",
