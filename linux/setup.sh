@@ -60,12 +60,90 @@ print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
-### Command wrapper - respects dry-run mode, logs errors but continues
+###############################################################################
+### Step/Run System - unified command execution with status tracking
+###############################################################################
+
+# State for grouped commands
+STEP_FAILED=false
+STEP_MSG=""
+
+# Track if any step in the entire script failed
+SCRIPT_FAILED=false
+
+### Single command with message - prints ✓ or ✗ when done
+step() {
+    local msg="$1"; shift
+    
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${BLUE}ℹ${NC} [DRY RUN] $msg: $*"
+        return 0
+    fi
+    
+    printf "${CYAN}▶${NC} %s " "$msg"
+    if "$@" 2>/dev/null; then
+        printf "\r\033[K"
+        echo -e "${GREEN}✓${NC} $msg"
+    else
+        printf "\r\033[K"
+        echo -e "${RED}✗${NC} $msg"
+        echo -e "  ${RED}Failed:${NC} $*"
+        SCRIPT_FAILED=true
+    fi
+}
+
+### Begin a group of commands
+step_start() {
+    STEP_MSG="$1"
+    STEP_FAILED=false
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${BLUE}ℹ${NC} [DRY RUN] $STEP_MSG"
+    else
+        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
+    fi
+}
+
+### Run a command within a group (silent, tracks failure)
 run() {
     if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] $*"
-    elif ! "$@" 2>/dev/null; then
-        print_error "Command failed: $*"
+        echo -e "    ${BLUE}↳${NC} $*"
+        return 0
+    fi
+    if ! "$@" 2>/dev/null; then
+        # Clear line, print error, then reprint the step indicator
+        printf "\r\033[K"
+        echo -e "  ${RED}Failed:${NC} $*"
+        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
+        STEP_FAILED=true
+    fi
+}
+
+### Run a command with stdin from a file
+run_stdin() {
+    local input_file="$1"; shift
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "    ${BLUE}↳${NC} $* < $input_file"
+        return 0
+    fi
+    if ! "$@" < "$input_file" 2>/dev/null; then
+        printf "\r\033[K"
+        echo -e "  ${RED}Failed:${NC} $* < $input_file"
+        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
+        STEP_FAILED=true
+    fi
+}
+
+### End a group - prints ✓ or ✗ based on whether any command failed
+step_end() {
+    if [[ "$DRY_RUN" == true ]]; then
+        return 0
+    fi
+    printf "\r\033[K"
+    if [[ "$STEP_FAILED" == true ]]; then
+        echo -e "${RED}✗${NC} $STEP_MSG"
+        SCRIPT_FAILED=true
+    else
+        echo -e "${GREEN}✓${NC} $STEP_MSG"
     fi
 }
 
@@ -96,10 +174,10 @@ echo -e "${BOLD}${CYAN}║                         Linux Setup Script           
 echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-### Cache sudo credentials upfront
-print_step "This script requires sudo privileges..."
+### Cache sudo credentials upfront (can't use step() here - sudo needs direct terminal access)
+echo -e "${CYAN}▶${NC} This script requires sudo privileges..."
 sudo -v
-print_success "Sudo credentials temporarily cached."
+echo -e "${GREEN}✓${NC} Sudo credentials temporarily cached."
 
 # Keep sudo credentials alive in background during script execution
 (while true; do sudo -v; sleep 60; done) &
@@ -141,9 +219,6 @@ print_info "Git: $GIT_NAME <$GIT_EMAIL>"
 
 print_header "System Packages"
 
-print_step "Updating package lists..."
-run sudo apt-get update -qq
-
 # Core packages (always installed)
 PACKAGES=(
     zsh git vim neovim tmux htop curl wget
@@ -163,9 +238,10 @@ if [[ "$HEADLESS" == "N" ]]; then
     )
 fi
 
-print_step "Installing packages: ${PACKAGES[*]}"
+step_start "Installing system packages"
+run sudo apt-get update -qq
 run sudo apt-get install -yq "${PACKAGES[@]}"
-print_success "System packages installed"
+step_end
 
 ###############################################################################
 ### Manual CLI Tool Installs
@@ -174,49 +250,41 @@ print_success "System packages installed"
 print_header "CLI Tools"
 
 ### Install GitHub CLI (gh)
+install_github_cli() {
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null || return 1
+    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
+    sudo apt-get update -qq || return 1
+    sudo apt-get install -yq gh
+}
 if ! command -v gh &> /dev/null; then
-    print_step "Installing GitHub CLI..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install GitHub CLI via apt repository"
-    else
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        sudo apt-get update -qq
-        sudo apt-get install -yq gh
-    fi
-    print_success "GitHub CLI installed"
+    step "Installing GitHub CLI" install_github_cli
 else
     print_skip "GitHub CLI already installed"
 fi
 
 ### Install lazygit
+install_lazygit() {
+    local version
+    version=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${ARCH}.tar.gz" || return 1
+    tar xf lazygit.tar.gz lazygit || return 1
+    sudo install lazygit /usr/local/bin || return 1
+    rm lazygit lazygit.tar.gz
+}
 if ! command -v lazygit &> /dev/null; then
-    print_step "Installing lazygit..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install lazygit for ${ARCH}"
-    else
-        LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
-        curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_${ARCH}.tar.gz"
-        tar xf lazygit.tar.gz lazygit
-        sudo install lazygit /usr/local/bin
-        rm lazygit lazygit.tar.gz
-    fi
-    print_success "lazygit installed"
+    step "Installing lazygit" install_lazygit
 else
     print_skip "lazygit already installed"
 fi
 
 ### Install Docker
+install_docker() {
+    curl -fsSL https://get.docker.com | sh || return 1
+    sudo usermod -aG docker "$USER"
+}
 if ! command -v docker &> /dev/null; then
-    print_step "Installing Docker..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Docker via get.docker.com"
-    else
-        curl -fsSL https://get.docker.com | sh
-        sudo usermod -aG docker "$USER"
-    fi
-    print_success "Docker installed"
+    step "Installing Docker" install_docker
     print_warning "Log out and back in to use docker without sudo"
 else
     print_skip "Docker already installed"
@@ -228,49 +296,38 @@ fi
 
 print_header "Fonts"
 
-run mkdir -p ~/.local/share/fonts
+step "Creating fonts directory" mkdir -p ~/.local/share/fonts
 
 ### Install Fira Code Nerd Font (for terminal icons)
+install_firacode() {
+    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/FiraCode.zip || return 1
+    unzip -o FiraCode.zip -d ~/.local/share/fonts || return 1
+    rm FiraCode.zip
+}
 if ! fc-list | grep -i "FiraCode Nerd Font" > /dev/null; then
-    print_step "Installing Fira Code Nerd Font..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Fira Code Nerd Font"
-    else
-        curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/FiraCode.zip
-        unzip -o FiraCode.zip -d ~/.local/share/fonts
-        rm FiraCode.zip
-    fi
-    print_success "Fira Code Nerd Font installed"
+    step "Installing Fira Code Nerd Font" install_firacode
 else
     print_skip "Fira Code Nerd Font already installed"
 fi
 
 ### Install Symbols Nerd Font (fallback for missing glyphs)
+install_symbols_font() {
+    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz || return 1
+    tar -xf NerdFontsSymbolsOnly.tar.xz -C ~/.local/share/fonts || return 1
+    rm NerdFontsSymbolsOnly.tar.xz
+}
 if ! fc-list | grep -i "Symbols Nerd Font" > /dev/null; then
-    print_step "Installing Symbols Nerd Font..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Symbols Nerd Font"
-    else
-        curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz
-        tar -xf NerdFontsSymbolsOnly.tar.xz -C ~/.local/share/fonts
-        rm NerdFontsSymbolsOnly.tar.xz
-    fi
-    print_success "Symbols Nerd Font installed"
+    step "Installing Symbols Nerd Font" install_symbols_font
 else
     print_skip "Symbols Nerd Font already installed"
 fi
 
-print_step "Rebuilding font cache..."
-run fc-cache -fv > /dev/null 2>&1
-print_success "Font cache updated"
+step "Rebuilding font cache" fc-cache -f
 
 ### Configure fontconfig to use Symbols Nerd Font as fallback
-print_step "Configuring fontconfig fallback..."
-run mkdir -p ~/.config/fontconfig
-if [[ "$DRY_RUN" == true ]]; then
-    print_info "[DRY RUN] Would write ~/.config/fontconfig/fonts.conf"
-else
-cat > ~/.config/fontconfig/fonts.conf << 'EOF'
+configure_fontconfig() {
+    mkdir -p ~/.config/fontconfig || return 1
+    cat > ~/.config/fontconfig/fonts.conf << 'EOF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
@@ -288,96 +345,54 @@ cat > ~/.config/fontconfig/fonts.conf << 'EOF'
   </match>
 </fontconfig>
 EOF
-fi
-print_success "Fontconfig configured"
+}
+step "Configuring fontconfig fallback" configure_fontconfig
 
 ### GNOME settings (only if not headless)
 if [[ "$HEADLESS" == "N" ]]; then
     # Set GNOME Terminal font
-    print_step "Configuring GNOME Terminal font..."
-    GNOME_TERMINAL_PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default 2>/dev/null | tr -d "'" || true)
-    if [ -n "$GNOME_TERMINAL_PROFILE" ]; then
-        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${GNOME_TERMINAL_PROFILE}/" font 'FiraCode Nerd Font Mono 11'
-        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${GNOME_TERMINAL_PROFILE}/" use-system-font false
-        print_success "GNOME Terminal font configured"
-    else
-        print_warning "Could not detect GNOME Terminal profile - set font manually"
-    fi
+    configure_gnome_terminal() {
+        local profile
+        profile=$(gsettings get org.gnome.Terminal.ProfilesList default 2>/dev/null | tr -d "'") || return 1
+        [ -n "$profile" ] || return 1
+        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" font 'FiraCode Nerd Font Mono 11' || return 1
+        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" use-system-font false
+    }
+    step "Configuring GNOME Terminal font" configure_gnome_terminal
 
-    # Disable tap-and-drag (reduces touchpad latency)
-    print_step "Disabling touchpad tap-and-drag..."
-    run gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false
-    print_success "Touchpad tap-and-drag disabled"
+    # Individual settings - single commands
+    step "Disabling touchpad tap-and-drag" gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false
+    step "Disabling GNOME animations" gsettings set org.gnome.desktop.interface enable-animations false
 
-    # Disable animations (snappier feel)
-    print_step "Disabling GNOME animations..."
-    run gsettings set org.gnome.desktop.interface enable-animations false
-    print_success "GNOME animations disabled"
-
-    # Faster keyboard repeat (productivity boost for terminal/vim)
-    print_step "Configuring faster keyboard repeat..."
+    # Keyboard repeat (grouped - related settings)
+    step_start "Configuring faster keyboard repeat"
     run gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25
     run gsettings set org.gnome.desktop.peripherals.keyboard delay 200
-    print_success "Keyboard repeat: 200ms delay, 25ms interval"
+    step_end
 
-    # Disable hot corners (prevents accidental Activities trigger)
-    print_step "Disabling hot corners..."
-    run gsettings set org.gnome.desktop.interface enable-hot-corners false
-    print_success "Hot corners disabled"
+    step "Disabling hot corners" gsettings set org.gnome.desktop.interface enable-hot-corners false
+    step "Enabling locate pointer with Ctrl" gsettings set org.gnome.desktop.interface locate-pointer true
+    step "Enabling battery percentage display" gsettings set org.gnome.desktop.interface show-battery-percentage true
+    step "Enabling weekday in clock" gsettings set org.gnome.desktop.interface clock-show-weekday true
+    step "Enabling tap to click" gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true
+    step "Enabling two-finger right click" gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
+    step "Enabling center new windows" gsettings set org.gnome.mutter center-new-windows true
+    step "Setting dark theme" gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+    step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory
 
-    # Locate pointer with Ctrl (useful for multi-monitor)
-    print_step "Enabling locate pointer with Ctrl..."
-    run gsettings set org.gnome.desktop.interface locate-pointer true
-    print_success "Locate pointer enabled"
-
-    # Show battery percentage
-    print_step "Enabling battery percentage display..."
-    run gsettings set org.gnome.desktop.interface show-battery-percentage true
-    print_success "Battery percentage enabled"
-
-    # Show weekday in clock
-    print_step "Enabling weekday in clock..."
-    run gsettings set org.gnome.desktop.interface clock-show-weekday true
-    print_success "Weekday in clock enabled"
-
-    # Tap to click
-    print_step "Enabling tap to click..."
-    run gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true
-    print_success "Tap to click enabled"
-
-    # Two-finger right click
-    print_step "Enabling two-finger right click..."
-    run gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
-    print_success "Two-finger right click enabled"
-
-    # Center new windows
-    print_step "Enabling center new windows..."
-    run gsettings set org.gnome.mutter center-new-windows true
-    print_success "Center new windows enabled"
-
-    # Prefer dark theme
-    print_step "Setting dark theme..."
-    run gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
-    print_success "Dark theme set"
-
-    # Set Nemo as default file manager
-    print_step "Setting Nemo as default file manager..."
-    run xdg-mime default nemo.desktop inode/directory
-    print_success "Nemo set as default file manager"
-
-    # Nemo file manager settings
-    print_step "Configuring Nemo file manager..."
+    # Nemo file manager settings (grouped)
+    step_start "Configuring Nemo file manager"
     run gsettings set org.nemo.preferences show-hidden-files true
     run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
     run gsettings set org.nemo.preferences sort-directories-first true
-    print_success "Nemo configured (show hidden, list view, folders first)"
+    step_end
 
     # Nautilus file manager settings (only if installed)
     if command -v nautilus &> /dev/null; then
-        print_step "Configuring Nautilus file manager..."
+        step_start "Configuring Nautilus file manager"
         run gsettings set org.gnome.nautilus.preferences show-hidden-files true
         run gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view'
-        print_success "Nautilus configured"
+        step_end
     fi
 fi
 
@@ -387,12 +402,13 @@ fi
 
 print_header "SSH Setup"
 
+generate_ssh_key() {
+    mkdir -p "$HOME/.ssh" || return 1
+    chmod 700 "$HOME/.ssh" || return 1
+    ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$HOME/.ssh/id_ed25519" -N ""
+}
 if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
-    print_step "Generating SSH key pair..."
-    run mkdir -p "$HOME/.ssh"
-    run chmod 700 "$HOME/.ssh"
-    run ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$HOME/.ssh/id_ed25519" -N ""
-    print_success "SSH key pair generated"
+    step "Generating SSH key pair" generate_ssh_key
     echo ""
     print_info "Your public key:"
     echo ""
@@ -410,14 +426,11 @@ fi
 print_header "Shell Setup"
 
 ### Install Oh My Zsh (non-interactive, skip if already installed)
+install_ohmyzsh() {
+    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+}
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    print_step "Installing Oh My Zsh..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Oh My Zsh"
-    else
-        RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-    fi
-    print_success "Oh My Zsh installed"
+    step "Installing Oh My Zsh" install_ohmyzsh
 else
     print_skip "Oh My Zsh already installed"
 fi
@@ -426,57 +439,45 @@ fi
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 
 if [ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ]; then
-    print_step "Installing zsh-syntax-highlighting plugin..."
-    run git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
-    print_success "zsh-syntax-highlighting installed"
+    step "Installing zsh-syntax-highlighting plugin" git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
 else
     print_skip "zsh-syntax-highlighting already installed"
 fi
 
 if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]; then
-    print_step "Installing zsh-autosuggestions plugin..."
-    run git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
-    print_success "zsh-autosuggestions installed"
+    step "Installing zsh-autosuggestions plugin" git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 else
     print_skip "zsh-autosuggestions already installed"
 fi
 
 if [ ! -d "$ZSH_CUSTOM/plugins/zsh-history-substring-search" ]; then
-    print_step "Installing zsh-history-substring-search plugin..."
-    run git clone https://github.com/zsh-users/zsh-history-substring-search "$ZSH_CUSTOM/plugins/zsh-history-substring-search"
-    print_success "zsh-history-substring-search installed"
+    step "Installing zsh-history-substring-search plugin" git clone https://github.com/zsh-users/zsh-history-substring-search "$ZSH_CUSTOM/plugins/zsh-history-substring-search"
 else
     print_skip "zsh-history-substring-search already installed"
 fi
 
 ### Install Powerlevel10k theme
 if [ ! -d "$ZSH_CUSTOM/themes/powerlevel10k" ]; then
-    print_step "Installing Powerlevel10k theme..."
-    run git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"
-    print_success "Powerlevel10k installed"
+    step "Installing Powerlevel10k theme" git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"
 else
     print_skip "Powerlevel10k already installed"
 fi
 
 ### Symlink .zshrc from dotfiles
-print_step "Symlinking .zshrc..."
-if [ -f "$HOME/.zshrc" ] && [ ! -L "$HOME/.zshrc" ]; then
-    # Backup existing .zshrc if it's not already a symlink
-    run mv "$HOME/.zshrc" "$HOME/.zshrc.backup.$(date +%Y%m%d_%H%M%S)"
-    print_info "Existing .zshrc backed up"
-fi
-run ln -sf "$SCRIPT_DIR/dotfiles/.zshrc" "$HOME/.zshrc"
-print_success ".zshrc symlinked from dotfiles"
+setup_zshrc() {
+    if [ -f "$HOME/.zshrc" ] && [ ! -L "$HOME/.zshrc" ]; then
+        mv "$HOME/.zshrc" "$HOME/.zshrc.backup.$(date +%Y%m%d_%H%M%S)" || return 1
+    fi
+    ln -sf "$SCRIPT_DIR/dotfiles/.zshrc" "$HOME/.zshrc"
+}
+step "Symlinking .zshrc" setup_zshrc
 
 ### Copy Powerlevel10k config if it doesn't exist (or prompt to overwrite)
 if [ ! -f "$HOME/.p10k.zsh" ]; then
-    print_step "Copying Powerlevel10k config..."
-    run cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-    print_success "Powerlevel10k config installed"
+    step "Copying Powerlevel10k config" cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
 else
     if prompt_yn "Powerlevel10k config already exists. Overwrite with saved config? [y/N]" "N"; then
-        run cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-        print_success "Powerlevel10k config overwritten"
+        step "Overwriting Powerlevel10k config" cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
     else
         print_skip "Keeping existing Powerlevel10k config"
     fi
@@ -489,46 +490,37 @@ fi
 print_header "Development Tools"
 
 ### Install uv (Python)
+install_uv() {
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+}
 if ! command -v uv &> /dev/null; then
-    print_step "Installing uv (Python package manager)..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install uv via astral.sh"
-    else
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-    fi
-    print_success "uv installed"
+    step "Installing uv (Python package manager)" install_uv
 else
     print_skip "uv already installed"
 fi
 
 ### Install Python tools via uv
-print_step "Installing Python tools (ruff, ty)..."
+step_start "Installing Python tools (ruff, ty)"
 run ~/.local/bin/uv tool install ruff
 run ~/.local/bin/uv tool install ty
-print_success "Python tools installed"
+step_end
 
 ### Install Rust
+install_rust() {
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+}
 if ! command -v rustup &> /dev/null; then
-    print_step "Installing Rust..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Rust via rustup.rs"
-    else
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    fi
-    print_success "Rust installed"
+    step "Installing Rust" install_rust
 else
     print_skip "Rust already installed"
 fi
 
 ### Install Cursor CLI
+install_cursor() {
+    curl -fsSL https://cursor.com/install | bash
+}
 if ! command -v cursor-agent &> /dev/null; then
-    print_step "Installing Cursor CLI..."
-    if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY RUN] Would install Cursor CLI"
-    else
-        curl -fsSL https://cursor.com/install | bash
-    fi
-    print_success "Cursor CLI installed"
+    step "Installing Cursor CLI" install_cursor
 else
     print_skip "Cursor CLI already installed"
 fi
@@ -540,12 +532,12 @@ fi
 print_header "Snap Applications"
 
 if [[ "$INSTALL_SNAPS" == "Y" ]]; then
-    print_step "Installing snap applications..."
+    step_start "Installing snap applications"
     run sudo snap install obsidian --classic
     run sudo snap install signal-desktop
     run sudo snap install zotero-snap
     run sudo snap install code --classic
-    print_success "Snap applications installed"
+    step_end
 else
     print_skip "Snap installations disabled"
 fi
@@ -556,7 +548,7 @@ fi
 
 print_header "Git Configuration"
 
-print_step "Configuring git..."
+step_start "Configuring git"
 run git config --global user.name "$GIT_NAME"
 run git config --global user.email "$GIT_EMAIL"
 run git config --global init.defaultBranch main
@@ -566,7 +558,7 @@ run git config --global alias.st status
 run git config --global alias.co checkout
 run git config --global alias.br branch
 run git config --global alias.lg "log --oneline --graph --decorate"
-print_success "Git configured"
+step_end
 
 ###############################################################################
 ### Final Steps
@@ -578,38 +570,31 @@ print_header "Final Steps"
 if [[ "$HEADLESS" == "N" ]]; then
     if command -v gnome-extensions &> /dev/null; then
         EXTENSION_UUID="dash-to-panel@jderose9.github.com"
+        
+        install_dash_to_panel() {
+            local shell_version download_path
+            shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || return 1
+            download_path=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$EXTENSION_UUID&shell_version=$shell_version" | jq -r '.download_url // empty') || return 1
+            [ -n "$download_path" ] || return 1
+            curl -sL "https://extensions.gnome.org$download_path" -o /tmp/dash-to-panel.zip || return 1
+            gnome-extensions install --force /tmp/dash-to-panel.zip || return 1
+            rm /tmp/dash-to-panel.zip
+        }
+        
         if ! gnome-extensions list 2>/dev/null | grep -q "$EXTENSION_UUID"; then
-            print_step "Installing Dash to Panel extension..."
-            if [[ "$DRY_RUN" == true ]]; then
-                print_info "[DRY RUN] Would install Dash to Panel extension"
-            else
-                # Get GNOME Shell version (major only)
-                SHELL_VERSION=$(gnome-shell --version | grep -oP '\d+' | head -1)
-                # Get download URL from extensions.gnome.org API
-                DOWNLOAD_PATH=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$EXTENSION_UUID&shell_version=$SHELL_VERSION" | jq -r '.download_url // empty')
-                if [ -n "$DOWNLOAD_PATH" ]; then
-                    curl -sL "https://extensions.gnome.org$DOWNLOAD_PATH" -o /tmp/dash-to-panel.zip
-                    gnome-extensions install --force /tmp/dash-to-panel.zip
-                    rm /tmp/dash-to-panel.zip
-                    print_success "Dash to Panel installed"
-                else
-                    print_error "Could not find Dash to Panel for GNOME Shell $SHELL_VERSION"
-                fi
-            fi
+            step "Installing Dash to Panel extension" install_dash_to_panel
         else
             print_skip "Dash to Panel already installed"
         fi
 
         # Enable extension and load settings
         if gnome-extensions list 2>/dev/null | grep -q "$EXTENSION_UUID"; then
-            print_step "Enabling Dash to Panel..."
-            run gnome-extensions enable "$EXTENSION_UUID"
-            print_success "Dash to Panel enabled"
+            step "Enabling Dash to Panel" gnome-extensions enable "$EXTENSION_UUID"
 
             if [ -f "$SCRIPT_DIR/dash-to-panel-settings" ]; then
-                print_step "Loading Dash to Panel settings..."
-                run dconf load /org/gnome/shell/extensions/dash-to-panel/ < "$SCRIPT_DIR/dash-to-panel-settings"
-                print_success "Dash to Panel settings loaded"
+                step_start "Loading Dash to Panel settings"
+                run_stdin "$SCRIPT_DIR/dash-to-panel-settings" dconf load /org/gnome/shell/extensions/dash-to-panel/
+                step_end
             fi
         fi
     fi
@@ -617,9 +602,7 @@ fi
 
 ### Change default shell to zsh (skip if already zsh)
 if [ "$SHELL" != "$(which zsh)" ]; then
-    print_step "Changing default shell to zsh..."
-    run sudo chsh -s "$(which zsh)" "$USER"
-    print_success "Default shell changed to zsh"
+    step "Changing default shell to zsh" sudo chsh -s "$(which zsh)" "$USER"
 else
     print_skip "Shell is already zsh"
 fi
@@ -650,3 +633,9 @@ fi
 
 print_warning "Log out and back in to use zsh as your default shell"
 echo ""
+
+# Exit with failure if any step failed
+if [[ "$SCRIPT_FAILED" == true ]]; then
+    print_error "Some steps failed - review output above"
+    exit 1
+fi
