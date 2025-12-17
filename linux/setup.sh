@@ -169,15 +169,32 @@ step_end() {
 }
 
 ### Install a command if not already present
+### Optional 4th param "sudo" skips if HAS_SUDO=false
 ensure_command() {
     local name="$1"
     local cmd="$2"
     local install_func="$3"
+    local needs_sudo="${4:-}"
+    
+    if [[ "$needs_sudo" == "sudo" && "$HAS_SUDO" == false ]]; then
+        print_skip "$name (requires sudo)"
+        return
+    fi
     
     if ! command -v "$cmd" &> /dev/null; then
         step "Installing $name" "$install_func"
     else
         print_skip "$name already installed"
+    fi
+}
+
+### Run something only if sudo is available, otherwise skip with message
+require_sudo() {
+    local msg="$1"; shift
+    if [[ "$HAS_SUDO" == true ]]; then
+        "$@"
+    else
+        print_skip "$msg (requires sudo)"
     fi
 }
 
@@ -229,12 +246,26 @@ fi
 GIT_NAME=$(prompt_input "Git user name" "Peter Sharpe")
 GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
 
+### Detect sudo availability
+if sudo -n true 2>/dev/null; then
+    HAS_SUDO=true
+else
+    echo ""
+    print_warning "No passwordless sudo detected."
+    if prompt_yn "Continue with limited functionality (no apt/snap/chsh)? [Y/n]" "Y"; then
+        HAS_SUDO=false
+    else
+        echo "Run with sudo access or configure passwordless sudo."
+        exit 0
+    fi
+fi
+
 echo ""
-print_info "Configuration: HEADLESS=$HEADLESS, INSTALL_SNAPS=$INSTALL_SNAPS, DRY_RUN=$DRY_RUN"
+print_info "Configuration: HEADLESS=$HEADLESS, INSTALL_SNAPS=$INSTALL_SNAPS, DRY_RUN=$DRY_RUN, HAS_SUDO=$HAS_SUDO"
 print_info "Git: $GIT_NAME <$GIT_EMAIL>"
 
-### Cache sudo credentials (skip in dry-run mode)
-if [[ "$DRY_RUN" == false ]]; then
+### Cache sudo credentials (skip in dry-run or no-sudo mode)
+if [[ "$DRY_RUN" == false && "$HAS_SUDO" == true ]]; then
     step "Caching sudo credentials" sudo -v
     # Keep sudo credentials alive in background during script execution
     (while true; do sudo -v; sleep 60; done) &
@@ -248,30 +279,33 @@ fi
 
 print_header "System Packages"
 
-# Core packages (always installed)
-PACKAGES=(
-    zsh git vim neovim tmux htop curl wget
-    build-essential
-    ripgrep fd-find fzf bat eza tree ncdu jq
-    unzip zip
-    net-tools openssh-server
-    zoxide
-)
-
-# GUI packages (only if not headless)
-if [[ "$HEADLESS" == "N" ]]; then
-    PACKAGES+=(
-        nemo
-        gnome-shell-extension-manager gnome-tweaks
-        vlc dconf-editor
+install_system_packages() {
+    # Core packages (always installed)
+    local packages=(
+        zsh git vim neovim tmux htop curl wget
+        build-essential
+        ripgrep fd-find fzf bat eza tree ncdu jq
+        unzip zip
+        net-tools openssh-server
+        zoxide
     )
-fi
 
-step_start "Installing system packages"
-run sudo apt-get update -qq
-run sudo apt-get upgrade -yq
-run sudo apt-get install -yq "${PACKAGES[@]}"
-step_end
+    # GUI packages (only if not headless)
+    if [[ "$HEADLESS" == "N" ]]; then
+        packages+=(
+            nemo
+            gnome-shell-extension-manager gnome-tweaks
+            vlc dconf-editor
+        )
+    fi
+
+    step_start "Installing system packages"
+    run sudo apt-get update -qq
+    run sudo apt-get upgrade -yq
+    run sudo apt-get install -yq "${packages[@]}"
+    step_end
+}
+require_sudo "System packages" install_system_packages
 
 ###############################################################################
 ### Manual CLI Tool Installs
@@ -287,7 +321,7 @@ install_github_cli() {
     sudo apt-get update -qq || return 1
     sudo apt-get install -yq gh
 }
-ensure_command "GitHub CLI" gh install_github_cli
+ensure_command "GitHub CLI" gh install_github_cli sudo
 
 ### Install lazygit
 install_lazygit() {
@@ -298,16 +332,18 @@ install_lazygit() {
     sudo install lazygit /usr/local/bin || return 1
     rm lazygit lazygit.tar.gz
 }
-ensure_command "lazygit" lazygit install_lazygit
+ensure_command "lazygit" lazygit install_lazygit sudo
 
 ### Install Docker
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
     sudo usermod -aG docker "$USER"
 }
-ensure_command "Docker" docker install_docker
+ensure_command "Docker" docker install_docker sudo
 # Show warning if user not yet in docker group (requires logout/login to take effect)
-groups | grep -q docker || print_warning "Log out and back in to use docker without sudo"
+if [[ "$HAS_SUDO" == true ]] && ! groups | grep -q docker; then
+    print_warning "Log out and back in to use docker without sudo"
+fi
 
 ###############################################################################
 ### Fonts
@@ -549,15 +585,19 @@ ensure_command "Cursor CLI" cursor-agent install_cursor
 
 print_header "Snap Applications"
 
-if [[ "$INSTALL_SNAPS" == "Y" ]]; then
+install_snap_apps() {
     step_start "Installing snap applications"
     run sudo snap install obsidian --classic
     run sudo snap install signal-desktop
     run sudo snap install zotero-snap
     run sudo snap install code --classic
     step_end
-else
+}
+
+if [[ "$INSTALL_SNAPS" != "Y" ]]; then
     print_skip "Snap installations disabled"
+else
+    require_sudo "Snap applications" install_snap_apps
 fi
 
 ###############################################################################
@@ -619,8 +659,11 @@ if [[ "$HEADLESS" == "N" ]]; then
 fi
 
 ### Change default shell to zsh (skip if already zsh)
-if [ "$SHELL" != "$(which zsh)" ]; then
+change_default_shell() {
     step "Changing default shell to zsh" sudo chsh -s "$(which zsh)" "$USER"
+}
+if [ "$SHELL" != "$(which zsh)" ]; then
+    require_sudo "Default shell change" change_default_shell
 else
     print_skip "Shell is already zsh"
 fi
@@ -632,6 +675,10 @@ fi
 print_header "Setup Complete!"
 
 echo ""
+if [[ "$HAS_SUDO" == false ]]; then
+    print_warning "Ran in limited mode (no sudo) - skipped: apt packages, snap apps, shell change"
+    echo ""
+fi
 print_success "All done! Here's what to do next:"
 echo ""
 
@@ -652,8 +699,10 @@ fi
 print_info "Set up VS Code / Cursor to use PeterProfile as the default profile"
 echo ""
 
-print_warning "Log out and back in to use zsh as your default shell"
-echo ""
+if [[ "$HAS_SUDO" == true ]]; then
+    print_warning "Log out and back in to use zsh as your default shell"
+    echo ""
+fi
 
 # Exit with failure if any step failed
 if [[ "$SCRIPT_FAILED" == true ]]; then
