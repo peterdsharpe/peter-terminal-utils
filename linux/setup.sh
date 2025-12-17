@@ -80,16 +80,23 @@ step() {
         return 0
     fi
     
+    local tmp_err
+    tmp_err=$(mktemp)
     printf "${CYAN}▶${NC} %s " "$msg"
-    if "$@" 2>/dev/null; then
+    if "$@" 2>"$tmp_err"; then
         printf "\r\033[K"
         echo -e "${GREEN}✓${NC} $msg"
     else
         printf "\r\033[K"
         echo -e "${RED}✗${NC} $msg"
         echo -e "  ${RED}Failed:${NC} $*"
+        if [ -s "$tmp_err" ]; then
+            echo -e "  ${RED}Error:${NC}"
+            sed 's/^/    /' "$tmp_err"
+        fi
         SCRIPT_FAILED=true
     fi
+    rm -f "$tmp_err"
 }
 
 ### Begin a group of commands
@@ -109,13 +116,20 @@ run() {
         echo -e "    ${BLUE}↳${NC} $*"
         return 0
     fi
-    if ! "$@" 2>/dev/null; then
+    local tmp_err
+    tmp_err=$(mktemp)
+    if ! "$@" 2>"$tmp_err"; then
         # Clear line, print error, then reprint the step indicator
         printf "\r\033[K"
         echo -e "  ${RED}Failed:${NC} $*"
+        if [ -s "$tmp_err" ]; then
+            echo -e "  ${RED}Error:${NC}"
+            sed 's/^/    /' "$tmp_err"
+        fi
         printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
+    rm -f "$tmp_err"
 }
 
 ### Run a command with stdin from a file
@@ -125,12 +139,19 @@ run_stdin() {
         echo -e "    ${BLUE}↳${NC} $* < $input_file"
         return 0
     fi
-    if ! "$@" < "$input_file" 2>/dev/null; then
+    local tmp_err
+    tmp_err=$(mktemp)
+    if ! "$@" < "$input_file" 2>"$tmp_err"; then
         printf "\r\033[K"
         echo -e "  ${RED}Failed:${NC} $* < $input_file"
+        if [ -s "$tmp_err" ]; then
+            echo -e "  ${RED}Error:${NC}"
+            sed 's/^/    /' "$tmp_err"
+        fi
         printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
+    rm -f "$tmp_err"
 }
 
 ### End a group - prints ✓ or ✗ based on whether any command failed
@@ -259,7 +280,7 @@ print_header "CLI Tools"
 
 ### Install GitHub CLI (gh)
 install_github_cli() {
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null || return 1
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
     sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
     sudo apt-get update -qq || return 1
@@ -350,8 +371,8 @@ if [[ "$HEADLESS" == "N" ]]; then
     # Set GNOME Terminal font
     configure_gnome_terminal() {
         local profile
-        profile=$(gsettings get org.gnome.Terminal.ProfilesList default 2>/dev/null | tr -d "'") || return 1
-        [ -n "$profile" ] || return 1
+        profile=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'") || return 1
+        [ -n "$profile" ] || { echo "No GNOME Terminal profile found" >&2; return 1; }
         gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" font 'FiraCode Nerd Font Mono 11' || return 1
         gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" use-system-font false
     }
@@ -567,20 +588,20 @@ if [[ "$HEADLESS" == "N" ]]; then
             local shell_version download_path
             shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || return 1
             download_path=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$EXTENSION_UUID&shell_version=$shell_version" | jq -r '.download_url // empty') || return 1
-            [ -n "$download_path" ] || return 1
+            [ -n "$download_path" ] || { echo "No download URL found for Dash to Panel extension" >&2; return 1; }
             curl -sL "https://extensions.gnome.org$download_path" -o /tmp/dash-to-panel.zip || return 1
             gnome-extensions install --force /tmp/dash-to-panel.zip || return 1
             rm /tmp/dash-to-panel.zip
         }
         
-        if ! gnome-extensions list 2>/dev/null | grep -q "$EXTENSION_UUID"; then
+        if ! gnome-extensions list | grep -q "$EXTENSION_UUID" 2>&1; then
             step "Installing Dash to Panel extension" install_dash_to_panel
         else
             print_skip "Dash to Panel already installed"
         fi
 
         # Enable extension and load settings
-        if gnome-extensions list 2>/dev/null | grep -q "$EXTENSION_UUID"; then
+        if gnome-extensions list | grep -q "$EXTENSION_UUID" 2>&1; then
             step "Enabling Dash to Panel" gnome-extensions enable "$EXTENSION_UUID"
 
             if [ -f "$SCRIPT_DIR/dash-to-panel-settings" ]; then
