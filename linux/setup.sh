@@ -544,7 +544,7 @@ step_start "Configuring git"
 run git config --global user.name "$GIT_NAME"
 run git config --global user.email "$GIT_EMAIL"
 run git config --global init.defaultBranch main
-run git config --global pull.rebase true
+run git config --global pull.rebase false
 run git config --global core.editor "nvim"
 run git config --global alias.st status
 run git config --global alias.co checkout
