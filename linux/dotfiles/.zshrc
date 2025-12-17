@@ -31,10 +31,23 @@ source $ZSH/oh-my-zsh.sh
 ### Modern CLI aliases
 ###############################################################################
 
-alias ls="eza --icons"
-alias ll="eza -la --icons"
-alias cat="batcat"
-alias fd="fdfind"
+# eza (ls replacement)
+if command -v eza &> /dev/null; then
+    alias ls="eza --icons"
+    alias ll="eza -la --icons"
+fi
+
+# bat (cat replacement) - named 'batcat' on Debian/Ubuntu, 'bat' elsewhere
+if command -v batcat &> /dev/null; then
+    alias cat="batcat"
+elif command -v bat &> /dev/null; then
+    alias cat="bat"
+fi
+
+# fd (find replacement) - named 'fdfind' on Debian/Ubuntu, 'fd' elsewhere
+if command -v fdfind &> /dev/null; then
+    alias fd="fdfind"
+fi
 
 ###############################################################################
 ### Git aliases
@@ -88,22 +101,33 @@ setopt EXTENDED_HISTORY      # Record timestamp with history
 ###############################################################################
 
 # Initialize zoxide (smarter cd)
-eval "$(zoxide init zsh)"
+if command -v zoxide &> /dev/null; then
+    eval "$(zoxide init zsh)"
+fi
 
 # Initialize fzf (fuzzy finder) - Ctrl+R for history, Ctrl+T for files
 if command -v fzf &> /dev/null; then
-    # Source fzf keybindings if available (Ubuntu/Debian location)
+    # Source fzf keybindings - check multiple locations
     if [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]; then
         source /usr/share/doc/fzf/examples/key-bindings.zsh
+    elif [ -f ~/.fzf/shell/key-bindings.zsh ]; then
+        source ~/.fzf/shell/key-bindings.zsh
     fi
     if [ -f /usr/share/doc/fzf/examples/completion.zsh ]; then
         source /usr/share/doc/fzf/examples/completion.zsh
+    elif [ -f ~/.fzf/shell/completion.zsh ]; then
+        source ~/.fzf/shell/completion.zsh
     fi
     # Use fd for fzf if available (faster, respects .gitignore)
+    # Handle both 'fdfind' (Debian/Ubuntu) and 'fd' (direct install) names
     if command -v fdfind &> /dev/null; then
         export FZF_DEFAULT_COMMAND='fdfind --type f --hidden --follow --exclude .git'
         export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
         export FZF_ALT_C_COMMAND='fdfind --type d --hidden --follow --exclude .git'
+    elif command -v fd &> /dev/null; then
+        export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+        export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
     fi
 fi
 

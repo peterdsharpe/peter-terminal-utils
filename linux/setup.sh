@@ -358,6 +358,83 @@ install_lazygit() {
 }
 ensure_command "lazygit" lazygit install_lazygit
 
+### Install fzf (fuzzy finder) - can install without sudo via git
+install_fzf() {
+    git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf" || return 1
+    "$HOME/.fzf/install" --bin || return 1
+    install -m 755 "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
+}
+ensure_command "fzf" fzf install_fzf
+
+### Install fd (find alternative) - can install without sudo
+install_fd() {
+    local version fd_arch
+    version=$(curl -s "https://api.github.com/repos/sharkdp/fd/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    case "$ARCH" in
+        x86_64) fd_arch="x86_64-unknown-linux-musl" ;;
+        arm64) fd_arch="aarch64-unknown-linux-gnu" ;;
+    esac
+    curl -Lo fd.tar.gz "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || return 1
+    tar xf fd.tar.gz || return 1
+    install -m 755 "fd-v${version}-${fd_arch}/fd" "$HOME/.local/bin/fd" || return 1
+    rm -rf fd.tar.gz "fd-v${version}-${fd_arch}"
+}
+ensure_command "fd" fd install_fd
+
+### Install bat (cat alternative) - can install without sudo
+install_bat() {
+    local version bat_arch
+    version=$(curl -s "https://api.github.com/repos/sharkdp/bat/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    case "$ARCH" in
+        x86_64) bat_arch="x86_64-unknown-linux-musl" ;;
+        arm64) bat_arch="aarch64-unknown-linux-gnu" ;;
+    esac
+    curl -Lo bat.tar.gz "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || return 1
+    tar xf bat.tar.gz || return 1
+    install -m 755 "bat-v${version}-${bat_arch}/bat" "$HOME/.local/bin/bat" || return 1
+    rm -rf bat.tar.gz "bat-v${version}-${bat_arch}"
+}
+ensure_command "bat" bat install_bat
+
+### Install eza (ls alternative) - can install without sudo
+install_eza() {
+    local version eza_arch
+    version=$(curl -s "https://api.github.com/repos/eza-community/eza/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    case "$ARCH" in
+        x86_64) eza_arch="x86_64-unknown-linux-musl" ;;
+        arm64) eza_arch="aarch64-unknown-linux-gnu" ;;
+    esac
+    curl -Lo eza.tar.gz "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || return 1
+    tar xf eza.tar.gz || return 1
+    install -m 755 eza "$HOME/.local/bin/eza" || return 1
+    rm -f eza.tar.gz eza
+}
+ensure_command "eza" eza install_eza
+
+### Install neovim - can install without sudo
+install_neovim() {
+    local version nvim_arch nvim_dir
+    version=$(curl -s "https://api.github.com/repos/neovim/neovim/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    case "$ARCH" in
+        x86_64) nvim_arch="x86_64"; nvim_dir="nvim-linux-x86_64" ;;
+        arm64) nvim_arch="arm64"; nvim_dir="nvim-linux-arm64" ;;
+    esac
+    mkdir -p "$HOME/local" || return 1
+    curl -Lo nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || return 1
+    tar xf nvim.tar.gz || return 1
+    rm -rf "$HOME/local/nvim" || return 1
+    mv "$nvim_dir" "$HOME/local/nvim" || return 1
+    ln -sf "$HOME/local/nvim/bin/nvim" "$HOME/.local/bin/nvim" || return 1
+    rm -f nvim.tar.gz
+}
+ensure_command "neovim" nvim install_neovim
+
+### Install zoxide (smarter cd) - can install without sudo
+install_zoxide() {
+    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+}
+ensure_command "zoxide" zoxide install_zoxide
+
 ### Install Docker
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
