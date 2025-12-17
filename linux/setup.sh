@@ -269,6 +269,7 @@ fi
 
 step_start "Installing system packages"
 run sudo apt-get update -qq
+run sudo apt-get upgrade -yq
 run sudo apt-get install -yq "${PACKAGES[@]}"
 step_end
 
