@@ -59,6 +59,13 @@ prompt_yn() {
     [[ "$response" =~ ^[Yy] ]]
 }
 
+### Helper to run commands silently, but warn on failure
+try_run() {
+    if ! "$@" 2>/dev/null; then
+        print_warning "Command failed: $*"
+    fi
+}
+
 ### Interactive configuration questions
 echo ""
 echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
@@ -228,81 +235,81 @@ if [[ "$HEADLESS" == "N" ]]; then
 
     # Disable tap-and-drag (reduces touchpad latency)
     print_step "Disabling touchpad tap-and-drag..."
-    gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false
     print_success "Touchpad tap-and-drag disabled"
 
     # Disable animations (snappier feel)
     print_step "Disabling GNOME animations..."
-    gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface enable-animations false
     print_success "GNOME animations disabled"
 
     # Faster keyboard repeat (productivity boost for terminal/vim)
     print_step "Configuring faster keyboard repeat..."
-    gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25 2>/dev/null || true
-    gsettings set org.gnome.desktop.peripherals.keyboard delay 200 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25
+    try_run gsettings set org.gnome.desktop.peripherals.keyboard delay 200
     print_success "Keyboard repeat: 200ms delay, 25ms interval"
 
     # Flat mouse acceleration (consistent 1:1 movement)
     print_step "Setting flat mouse acceleration..."
-    gsettings set org.gnome.desktop.peripherals.mouse accel-profile 'flat' 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.peripherals.mouse accel-profile 'flat'
     print_success "Mouse acceleration set to flat"
 
     # Disable hot corners (prevents accidental Activities trigger)
     print_step "Disabling hot corners..."
-    gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface enable-hot-corners false
     print_success "Hot corners disabled"
 
     # Locate pointer with Ctrl (useful for multi-monitor)
     print_step "Enabling locate pointer with Ctrl..."
-    gsettings set org.gnome.desktop.interface locate-pointer true 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface locate-pointer true
     print_success "Locate pointer enabled"
 
     # Show battery percentage
     print_step "Enabling battery percentage display..."
-    gsettings set org.gnome.desktop.interface show-battery-percentage true 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface show-battery-percentage true
     print_success "Battery percentage enabled"
 
     # Show weekday in clock
     print_step "Enabling weekday in clock..."
-    gsettings set org.gnome.desktop.interface clock-show-weekday true 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface clock-show-weekday true
     print_success "Weekday in clock enabled"
 
     # Tap to click
     print_step "Enabling tap to click..."
-    gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true
     print_success "Tap to click enabled"
 
     # Two-finger right click
     print_step "Enabling two-finger right click..."
-    gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers' 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
     print_success "Two-finger right click enabled"
 
     # Center new windows
     print_step "Enabling center new windows..."
-    gsettings set org.gnome.mutter center-new-windows true 2>/dev/null || true
+    try_run gsettings set org.gnome.mutter center-new-windows true
     print_success "Center new windows enabled"
 
     # Prefer dark theme
     print_step "Setting dark theme..."
-    gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+    try_run gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
     print_success "Dark theme set"
 
     # Set Nemo as default file manager
     print_step "Setting Nemo as default file manager..."
-    xdg-mime default nemo.desktop inode/directory 2>/dev/null || true
+    try_run xdg-mime default nemo.desktop inode/directory
     print_success "Nemo set as default file manager"
 
     # Nemo file manager settings
     print_step "Configuring Nemo file manager..."
-    gsettings set org.nemo.preferences show-hidden-files true 2>/dev/null || true
-    gsettings set org.nemo.preferences default-folder-viewer 'list-view' 2>/dev/null || true
-    gsettings set org.nemo.preferences sort-directories-first true 2>/dev/null || true
+    try_run gsettings set org.nemo.preferences show-hidden-files true
+    try_run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
+    try_run gsettings set org.nemo.preferences sort-directories-first true
     print_success "Nemo configured (show hidden, list view, folders first)"
 
     # Nautilus file manager settings (fallback if installed)
-    gsettings set org.gnome.nautilus.preferences show-hidden-files true 2>/dev/null || true
-    gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view' 2>/dev/null || true
-    gsettings set org.gnome.nautilus.preferences sort-directories-first true 2>/dev/null || true
+    try_run gsettings set org.gnome.nautilus.preferences show-hidden-files true
+    try_run gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view'
+    try_run gsettings set org.gnome.nautilus.preferences sort-directories-first true
 fi
 
 ###############################################################################
@@ -419,8 +426,8 @@ fi
 
 ### Install Python tools via uv
 print_step "Installing Python tools (ruff, ty)..."
-~/.local/bin/uv tool install ruff 2>/dev/null || true
-~/.local/bin/uv tool install ty 2>/dev/null || true
+try_run ~/.local/bin/uv tool install ruff
+try_run ~/.local/bin/uv tool install ty
 print_success "Python tools installed"
 
 ### Install fnm (Node.js version manager)
