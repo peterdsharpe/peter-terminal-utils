@@ -89,3 +89,14 @@ fi
 
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
+###############################################################################
+### Cursor Bugfix
+###############################################################################
+
+# See https://github.com/cursor/cursor/issues/2904
+if [[ -n $CURSOR_TRACE_ID ]]; then
+  dump_zsh_state() { echo ""; }
+  precmd() { print -Pn "\e]133;D;%?\a" }
+  preexec() { print -Pn "\e]133;C;\a" }
+fi
