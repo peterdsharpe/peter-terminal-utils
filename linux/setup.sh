@@ -213,8 +213,9 @@ cat > ~/.config/fontconfig/fonts.conf << 'EOF'
 EOF
 print_success "Fontconfig configured"
 
-### Set GNOME Terminal font (only if not headless)
+### GNOME settings (only if not headless)
 if [[ "$HEADLESS" == "N" ]]; then
+    # Set GNOME Terminal font
     print_step "Configuring GNOME Terminal font..."
     GNOME_TERMINAL_PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default 2>/dev/null | tr -d "'" || true)
     if [ -n "$GNOME_TERMINAL_PROFILE" ]; then
@@ -224,6 +225,47 @@ if [[ "$HEADLESS" == "N" ]]; then
     else
         print_warning "Could not detect GNOME Terminal profile - set font manually"
     fi
+
+    # Disable tap-and-drag (reduces touchpad latency)
+    print_step "Disabling touchpad tap-and-drag..."
+    gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false 2>/dev/null || true
+    print_success "Touchpad tap-and-drag disabled"
+
+    # Disable animations (snappier feel)
+    print_step "Disabling GNOME animations..."
+    gsettings set org.gnome.desktop.interface enable-animations false 2>/dev/null || true
+    print_success "GNOME animations disabled"
+
+    # Faster keyboard repeat (productivity boost for terminal/vim)
+    print_step "Configuring faster keyboard repeat..."
+    gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25 2>/dev/null || true
+    gsettings set org.gnome.desktop.peripherals.keyboard delay 200 2>/dev/null || true
+    print_success "Keyboard repeat: 200ms delay, 25ms interval"
+
+    # Flat mouse acceleration (consistent 1:1 movement)
+    print_step "Setting flat mouse acceleration..."
+    gsettings set org.gnome.desktop.peripherals.mouse accel-profile 'flat' 2>/dev/null || true
+    print_success "Mouse acceleration set to flat"
+
+    # Disable hot corners (prevents accidental Activities trigger)
+    print_step "Disabling hot corners..."
+    gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
+    print_success "Hot corners disabled"
+
+    # Locate pointer with Ctrl (useful for multi-monitor)
+    print_step "Enabling locate pointer with Ctrl..."
+    gsettings set org.gnome.desktop.interface locate-pointer true 2>/dev/null || true
+    print_success "Locate pointer enabled"
+
+    # Show battery percentage
+    print_step "Enabling battery percentage display..."
+    gsettings set org.gnome.desktop.interface show-battery-percentage true 2>/dev/null || true
+    print_success "Battery percentage enabled"
+
+    # Show weekday in clock
+    print_step "Enabling weekday in clock..."
+    gsettings set org.gnome.desktop.interface clock-show-weekday true 2>/dev/null || true
+    print_success "Weekday in clock enabled"
 fi
 
 ###############################################################################
