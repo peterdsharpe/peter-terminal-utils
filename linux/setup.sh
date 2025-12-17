@@ -265,11 +265,7 @@ install_github_cli() {
     sudo apt-get update -qq || return 1
     sudo apt-get install -yq gh
 }
-if ! command -v gh &> /dev/null; then
-    step "Installing GitHub CLI" install_github_cli
-else
-    print_skip "GitHub CLI already installed"
-fi
+ensure_command "GitHub CLI" gh install_github_cli
 
 ### Install lazygit
 install_lazygit() {
@@ -280,23 +276,16 @@ install_lazygit() {
     sudo install lazygit /usr/local/bin || return 1
     rm lazygit lazygit.tar.gz
 }
-if ! command -v lazygit &> /dev/null; then
-    step "Installing lazygit" install_lazygit
-else
-    print_skip "lazygit already installed"
-fi
+ensure_command "lazygit" lazygit install_lazygit
 
 ### Install Docker
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
     sudo usermod -aG docker "$USER"
 }
-if ! command -v docker &> /dev/null; then
-    step "Installing Docker" install_docker
-    print_warning "Log out and back in to use docker without sudo"
-else
-    print_skip "Docker already installed"
-fi
+ensure_command "Docker" docker install_docker
+# Show warning if user not yet in docker group (requires logout/login to take effect)
+groups | grep -q docker || print_warning "Log out and back in to use docker without sudo"
 
 ###############################################################################
 ### Fonts
@@ -508,11 +497,7 @@ print_header "Development Tools"
 install_uv() {
     curl -LsSf https://astral.sh/uv/install.sh | sh
 }
-if ! command -v uv &> /dev/null; then
-    step "Installing uv (Python package manager)" install_uv
-else
-    print_skip "uv already installed"
-fi
+ensure_command "uv" uv install_uv
 
 ### Install Python tools via uv
 step_start "Installing Python tools (ruff, ty)"
@@ -524,21 +509,13 @@ step_end
 install_rust() {
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 }
-if ! command -v rustup &> /dev/null; then
-    step "Installing Rust" install_rust
-else
-    print_skip "Rust already installed"
-fi
+ensure_command "Rust" rustup install_rust
 
 ### Install Cursor CLI
 install_cursor() {
     curl -fsSL https://cursor.com/install | bash
 }
-if ! command -v cursor-agent &> /dev/null; then
-    step "Installing Cursor CLI" install_cursor
-else
-    print_skip "Cursor CLI already installed"
-fi
+ensure_command "Cursor CLI" cursor-agent install_cursor
 
 ###############################################################################
 ### Snap Applications
