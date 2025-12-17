@@ -170,6 +170,13 @@ curl -fsSL https://fnm.vercel.app/install | bash
 ### Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
+### Install Cursor CLI
+if ! command -v cursor-agent &> /dev/null; then
+    curl -fsSL https://cursor.com/install | bash
+else
+    echo "Cursor CLI already installed, skipping."
+fi
+
 ### Install snap applications
 sudo snap install obsidian --classic
 sudo snap install signal-desktop
