@@ -71,6 +71,46 @@ STEP_MSG=""
 # Track if any step in the entire script failed
 SCRIPT_FAILED=false
 
+# Captured output from last _exec call (used for error display)
+_EXEC_EXIT=0
+_EXEC_OUT=""
+_EXEC_ERR=""
+_EXEC_STDIN=""  # Optional: set before _exec to provide stdin from file
+
+### Core helper: run command, capture output, store in globals
+### Returns the command's exit code
+### Optional: set _EXEC_STDIN to a file path before calling to provide stdin
+_exec() {
+    local tmp_out tmp_err
+    tmp_out=$(mktemp)
+    tmp_err=$(mktemp)
+    if [ -n "${_EXEC_STDIN:-}" ]; then
+        "$@" <"$_EXEC_STDIN" >"$tmp_out" 2>"$tmp_err"
+    else
+        "$@" >"$tmp_out" 2>"$tmp_err"
+    fi
+    _EXEC_EXIT=$?
+    _EXEC_OUT=$(cat "$tmp_out")
+    _EXEC_ERR=$(cat "$tmp_err")
+    rm -f "$tmp_out" "$tmp_err"
+    _EXEC_STDIN=""  # Reset after use
+    return $_EXEC_EXIT
+}
+
+### Core helper: print error details from last _exec call
+_print_error() {
+    local cmd_desc="$1"
+    echo -e "  ${RED}Failed:${NC} $cmd_desc (exit code: $_EXEC_EXIT)"
+    if [ -n "$_EXEC_OUT" ]; then
+        echo -e "  ${RED}Stdout:${NC}"
+        echo "$_EXEC_OUT" | sed 's/^/    /'
+    fi
+    if [ -n "$_EXEC_ERR" ]; then
+        echo -e "  ${RED}Stderr:${NC}"
+        echo "$_EXEC_ERR" | sed 's/^/    /'
+    fi
+}
+
 ### Single command with message - prints ✓ or ✗ when done
 step() {
     local msg="$1"; shift
@@ -80,23 +120,16 @@ step() {
         return 0
     fi
     
-    local tmp_err
-    tmp_err=$(mktemp)
     printf "${CYAN}▶${NC} %s " "$msg"
-    if "$@" 2>"$tmp_err"; then
+    if _exec "$@"; then
         printf "\r\033[K"
         echo -e "${GREEN}✓${NC} $msg"
     else
         printf "\r\033[K"
         echo -e "${RED}✗${NC} $msg"
-        echo -e "  ${RED}Failed:${NC} $*"
-        if [ -s "$tmp_err" ]; then
-            echo -e "  ${RED}Error:${NC}"
-            sed 's/^/    /' "$tmp_err"
-        fi
+        _print_error "$*"
         SCRIPT_FAILED=true
     fi
-    rm -f "$tmp_err"
 }
 
 ### Begin a group of commands
@@ -110,26 +143,18 @@ step_start() {
     fi
 }
 
-### Run a command within a group (silent, tracks failure)
+### Run a command within a group (silent on success, shows error on failure)
 run() {
     if [[ "$DRY_RUN" == true ]]; then
         echo -e "    ${BLUE}↳${NC} $*"
         return 0
     fi
-    local tmp_err
-    tmp_err=$(mktemp)
-    if ! "$@" 2>"$tmp_err"; then
-        # Clear line, print error, then reprint the step indicator
+    if ! _exec "$@"; then
         printf "\r\033[K"
-        echo -e "  ${RED}Failed:${NC} $*"
-        if [ -s "$tmp_err" ]; then
-            echo -e "  ${RED}Error:${NC}"
-            sed 's/^/    /' "$tmp_err"
-        fi
+        _print_error "$*"
         printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
-    rm -f "$tmp_err"
 }
 
 ### Run a command with stdin from a file
@@ -139,19 +164,13 @@ run_stdin() {
         echo -e "    ${BLUE}↳${NC} $* < $input_file"
         return 0
     fi
-    local tmp_err
-    tmp_err=$(mktemp)
-    if ! "$@" < "$input_file" 2>"$tmp_err"; then
+    _EXEC_STDIN="$input_file"
+    if ! _exec "$@"; then
         printf "\r\033[K"
-        echo -e "  ${RED}Failed:${NC} $* < $input_file"
-        if [ -s "$tmp_err" ]; then
-            echo -e "  ${RED}Error:${NC}"
-            sed 's/^/    /' "$tmp_err"
-        fi
+        _print_error "$* < $input_file"
         printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
-    rm -f "$tmp_err"
 }
 
 ### End a group - prints ✓ or ✗ based on whether any command failed
@@ -311,6 +330,28 @@ require_sudo "System packages" install_system_packages
 ### Manual CLI Tool Installs
 ###############################################################################
 
+### Helper: Get latest version from GitHub releases (uses redirect, not API - avoids rate limits)
+### Usage: version=$(github_latest_version "owner/repo") || return 1
+github_latest_version() {
+    local repo="$1"
+    local redirect_url version
+    # Use HEAD request to get redirect URL - this doesn't hit API rate limits
+    redirect_url=$(curl -sI "https://github.com/${repo}/releases/latest" 2>&1 | grep -i '^location:' | tr -d '\r') || {
+        echo "Failed to fetch release redirect for $repo" >&2
+        return 1
+    }
+    if [ -z "$redirect_url" ]; then
+        echo "No redirect found for $repo releases" >&2
+        return 1
+    fi
+    # Extract version from URL like: .../releases/tag/v1.2.3 or .../releases/tag/1.2.3
+    version=$(echo "$redirect_url" | grep -oP '/tag/v?\K[^/\s]+$') || {
+        echo "Failed to parse version from redirect URL: $redirect_url" >&2
+        return 1
+    }
+    echo "$version"
+}
+
 print_header "CLI Tools"
 
 ### Install GitHub CLI (gh) - can install without sudo using prebuilt binary
@@ -325,12 +366,12 @@ install_github_cli() {
     else
         # Install prebuilt binary to ~/.local/bin
         local version gh_arch
-        version=$(curl -s "https://api.github.com/repos/cli/cli/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+        version=$(github_latest_version "cli/cli") || return 1
         case "$ARCH" in
             x86_64) gh_arch="amd64" ;;
             arm64) gh_arch="arm64" ;;
         esac
-        curl -Lo gh.tar.gz "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || return 1
+        curl -fSL -o gh.tar.gz "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || return 1
         tar xf gh.tar.gz || return 1
         install -m 755 "gh_${version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh" || return 1
         rm -rf gh.tar.gz "gh_${version}_linux_${gh_arch}"
@@ -341,13 +382,12 @@ ensure_command "GitHub CLI" gh install_github_cli
 ### Install lazygit (can install without sudo to ~/.local/bin)
 install_lazygit() {
     local version lazygit_arch
-    version=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
-    # lazygit uses x86_64 for amd64, but arm64 for ARM (not aarch64)
+    version=$(github_latest_version "jesseduffield/lazygit") || return 1
     case "$ARCH" in
         x86_64) lazygit_arch="x86_64" ;;
         arm64) lazygit_arch="arm64" ;;
     esac
-    curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || return 1
+    curl -fSL -o lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || return 1
     tar xf lazygit.tar.gz lazygit || return 1
     if [[ "$HAS_SUDO" == true ]]; then
         sudo install lazygit /usr/local/bin || return 1
@@ -369,12 +409,12 @@ ensure_command "fzf" fzf install_fzf
 ### Install fd (find alternative) - can install without sudo
 install_fd() {
     local version fd_arch
-    version=$(curl -s "https://api.github.com/repos/sharkdp/fd/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    version=$(github_latest_version "sharkdp/fd") || return 1
     case "$ARCH" in
         x86_64) fd_arch="x86_64-unknown-linux-musl" ;;
         arm64) fd_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -Lo fd.tar.gz "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || return 1
+    curl -fSL -o fd.tar.gz "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || return 1
     tar xf fd.tar.gz || return 1
     install -m 755 "fd-v${version}-${fd_arch}/fd" "$HOME/.local/bin/fd" || return 1
     rm -rf fd.tar.gz "fd-v${version}-${fd_arch}"
@@ -384,12 +424,12 @@ ensure_command "fd" fd install_fd
 ### Install bat (cat alternative) - can install without sudo
 install_bat() {
     local version bat_arch
-    version=$(curl -s "https://api.github.com/repos/sharkdp/bat/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    version=$(github_latest_version "sharkdp/bat") || return 1
     case "$ARCH" in
         x86_64) bat_arch="x86_64-unknown-linux-musl" ;;
         arm64) bat_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -Lo bat.tar.gz "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || return 1
+    curl -fSL -o bat.tar.gz "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || return 1
     tar xf bat.tar.gz || return 1
     install -m 755 "bat-v${version}-${bat_arch}/bat" "$HOME/.local/bin/bat" || return 1
     rm -rf bat.tar.gz "bat-v${version}-${bat_arch}"
@@ -399,12 +439,12 @@ ensure_command "bat" bat install_bat
 ### Install eza (ls alternative) - can install without sudo
 install_eza() {
     local version eza_arch
-    version=$(curl -s "https://api.github.com/repos/eza-community/eza/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    version=$(github_latest_version "eza-community/eza") || return 1
     case "$ARCH" in
         x86_64) eza_arch="x86_64-unknown-linux-musl" ;;
         arm64) eza_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -Lo eza.tar.gz "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || return 1
+    curl -fSL -o eza.tar.gz "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || return 1
     tar xf eza.tar.gz || return 1
     install -m 755 eza "$HOME/.local/bin/eza" || return 1
     rm -f eza.tar.gz eza
@@ -414,13 +454,13 @@ ensure_command "eza" eza install_eza
 ### Install neovim - can install without sudo
 install_neovim() {
     local version nvim_arch nvim_dir
-    version=$(curl -s "https://api.github.com/repos/neovim/neovim/releases/latest" | grep -Po '"tag_name": "v\K[^"]*') || return 1
+    version=$(github_latest_version "neovim/neovim") || return 1
     case "$ARCH" in
         x86_64) nvim_arch="x86_64"; nvim_dir="nvim-linux-x86_64" ;;
         arm64) nvim_arch="arm64"; nvim_dir="nvim-linux-arm64" ;;
     esac
     mkdir -p "$HOME/local" || return 1
-    curl -Lo nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || return 1
+    curl -fSL -o nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || return 1
     tar xf nvim.tar.gz || return 1
     rm -rf "$HOME/local/nvim" || return 1
     mv "$nvim_dir" "$HOME/local/nvim" || return 1
@@ -431,7 +471,16 @@ ensure_command "neovim" nvim install_neovim
 
 ### Install zoxide (smarter cd) - can install without sudo
 install_zoxide() {
-    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
+    local version zoxide_arch
+    version=$(github_latest_version "ajeetdsouza/zoxide") || return 1
+    case "$ARCH" in
+        x86_64) zoxide_arch="x86_64-unknown-linux-musl" ;;
+        arm64) zoxide_arch="aarch64-unknown-linux-musl" ;;
+    esac
+    curl -fSL -o zoxide.tar.gz "https://github.com/ajeetdsouza/zoxide/releases/download/v${version}/zoxide-${version}-${zoxide_arch}.tar.gz" || return 1
+    tar xf zoxide.tar.gz || return 1
+    install -m 755 zoxide "$HOME/.local/bin/zoxide" || return 1
+    rm -f zoxide.tar.gz zoxide
 }
 ensure_command "zoxide" zoxide install_zoxide
 
@@ -489,6 +538,11 @@ else
     else
         print_skip "zsh (requires build tools: gcc, make)"
     fi
+fi
+
+# Ensure ~/local/bin is in PATH for this script session (needed for oh-my-zsh to find zsh)
+if [ -d "$HOME/local/bin" ] && [[ ":$PATH:" != *":$HOME/local/bin:"* ]]; then
+    export PATH="$HOME/local/bin:$PATH"
 fi
 
 ### Add ~/local/bin to .bashrc PATH (for sudo-less installs to be discoverable)
@@ -686,9 +740,12 @@ print_header "Shell Setup"
 
 ### Install Oh My Zsh (non-interactive, skip if already installed)
 install_ohmyzsh() {
+    # Remove incomplete installation if present
+    rm -rf "$HOME/.oh-my-zsh"
     RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 }
-if [ ! -d "$HOME/.oh-my-zsh" ]; then
+# Check for actual oh-my-zsh.sh file, not just directory (catches incomplete installs)
+if [ ! -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then
     step "Installing Oh My Zsh" install_ohmyzsh
 else
     print_skip "Oh My Zsh already installed"
