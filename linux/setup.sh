@@ -266,6 +266,43 @@ if [[ "$HEADLESS" == "N" ]]; then
     print_step "Enabling weekday in clock..."
     gsettings set org.gnome.desktop.interface clock-show-weekday true 2>/dev/null || true
     print_success "Weekday in clock enabled"
+
+    # Tap to click
+    print_step "Enabling tap to click..."
+    gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true 2>/dev/null || true
+    print_success "Tap to click enabled"
+
+    # Two-finger right click
+    print_step "Enabling two-finger right click..."
+    gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers' 2>/dev/null || true
+    print_success "Two-finger right click enabled"
+
+    # Center new windows
+    print_step "Enabling center new windows..."
+    gsettings set org.gnome.mutter center-new-windows true 2>/dev/null || true
+    print_success "Center new windows enabled"
+
+    # Prefer dark theme
+    print_step "Setting dark theme..."
+    gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' 2>/dev/null || true
+    print_success "Dark theme set"
+
+    # Set Nemo as default file manager
+    print_step "Setting Nemo as default file manager..."
+    xdg-mime default nemo.desktop inode/directory 2>/dev/null || true
+    print_success "Nemo set as default file manager"
+
+    # Nemo file manager settings
+    print_step "Configuring Nemo file manager..."
+    gsettings set org.nemo.preferences show-hidden-files true 2>/dev/null || true
+    gsettings set org.nemo.preferences default-folder-viewer 'list-view' 2>/dev/null || true
+    gsettings set org.nemo.preferences sort-directories-first true 2>/dev/null || true
+    print_success "Nemo configured (show hidden, list view, folders first)"
+
+    # Nautilus file manager settings (fallback if installed)
+    gsettings set org.gnome.nautilus.preferences show-hidden-files true 2>/dev/null || true
+    gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view' 2>/dev/null || true
+    gsettings set org.gnome.nautilus.preferences sort-directories-first true 2>/dev/null || true
 fi
 
 ###############################################################################
