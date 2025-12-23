@@ -736,9 +736,10 @@ install_uv() {
 ensure_command "uv" uv install_uv
 
 ### Install Python tools via uv
-step_start "Installing Python tools (ruff, ty)"
+step_start "Installing Python tools (ruff, ty, turm)"
 run ~/.local/bin/uv tool install ruff
 run ~/.local/bin/uv tool install ty
+run ~/.local/bin/uv tool install turm  # TUI for Slurm job management
 step_end
 
 ### Install Rust
