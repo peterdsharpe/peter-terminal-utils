@@ -956,6 +956,7 @@ if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
 fi
 
 print_info "Set up VS Code / Cursor to use PeterProfile as the default profile"
+echo "    Find at https://gist.github.com/peterdsharpe"
 echo ""
 
 if [[ "$HAS_SUDO" == true ]]; then
