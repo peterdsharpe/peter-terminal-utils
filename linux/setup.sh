@@ -271,9 +271,13 @@ if [[ $EUID -eq 0 ]]; then
     HAS_SUDO=true
     print_info "Running as root"
 elif sudo -n true 2>/dev/null; then
-    # Passwordless sudo available (already authenticated or NOPASSWD configured)
+    # Sudo available (cached credentials or NOPASSWD configured)
     HAS_SUDO=true
     print_info "Sudo access available"
+    # Start keepalive to prevent credential timeout mid-script
+    (while true; do sudo -v; sleep 60; done) &
+    SUDO_KEEPALIVE_PID=$!
+    trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
 else
     # Not elevated - ask user what they want to do
     echo ""
@@ -837,6 +841,10 @@ install_snap_apps() {
     run sudo snap install signal-desktop
     run sudo snap install zotero-snap
     run sudo snap install code --classic
+    run sudo snap install firefox
+    run sudo snap install inkscape
+    run sudo snap install libreoffice
+    run sudo snap install steam
     step_end
 }
 
