@@ -672,6 +672,7 @@ if [[ "$HEADLESS" == "N" ]]; then
     step "Enabling two-finger right click" gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
     step "Enabling center new windows" gsettings set org.gnome.mutter center-new-windows true
     step "Setting dark theme" gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
+    step "Setting Firefox as default browser" xdg-settings set default-web-browser firefox_firefox.desktop
     step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory
 
     # Nemo file manager settings (grouped)
