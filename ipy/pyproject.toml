@@ -1,9 +1,23 @@
 [project]
 name = "ipy"
 version = "0.1.0"
-description = "Add your description here"
+description = "Personal IPython environment for scientific computing, quick calculations, and prototyping"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    { name = "Peter Sharpe", email = "peterdsharpe@gmail.com" },
+]
+keywords = ["ipython", "scientific-computing", "numpy", "scipy", "torch"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "aerosandbox[full]>=4.2.8",
     "ipython>=9.0.2",
@@ -16,4 +30,13 @@ dependencies = [
     "scipy>=1.15.2",
     "sympy>=1.13.3",
     "torch>=2.9.1",
+]
+
+[project.urls]
+Repository = "https://github.com/peterdsharpe/peter-terminal-utils"
+
+[tool.uv]
+environments = [
+    "platform_machine == 'x86_64'",
+    "platform_machine == 'aarch64'",
 ]
