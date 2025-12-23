@@ -324,7 +324,7 @@ install_system_packages() {
     local packages=(
         zsh git vim neovim tmux htop curl wget
         build-essential
-        ripgrep fd-find fzf bat eza tree ncdu jq
+        ripgrep fd-find fzf bat eza tree ncdu jq cloc
         unzip zip
         net-tools openssh-server
         zoxide
