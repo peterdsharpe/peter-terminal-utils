@@ -2,7 +2,7 @@ import time
 
 start = time.time()
 
-import contextlib
+import contextlib  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -14,18 +14,13 @@ def timing():
     print(f"{elapsed} sec")
 
 
-import numpy as np
-from rich import pretty
+from rich import pretty  # noqa: E402
 
 pretty.install()
 
-from rich.console import Console
-from rich.table import Table
-from rich import box
-from typing import List, Dict, Tuple, Callable, Union, Any
-import copy
-import os, sys
-from pathlib import Path
+from rich.console import Console  # noqa: E402
+from rich.table import Table  # noqa: E402
+from rich import box  # noqa: E402
 # import sympy as s
 
 console = Console()
@@ -50,27 +45,25 @@ def wa(debug=False) -> str:
     with open("credentials.json") as f:
         credentials = json.load(f)
 
-    client = wolframalpha.Client(
-        app_id=credentials["wolfram_appid"]
-    )
+    client = wolframalpha.Client(app_id=credentials["wolfram_appid"])
 
     if debug:
         details = {
-            'Result'                  : '69710 mi^2 (square miles)',
-            'Input interpretation'    : 'Missouri | total area',
-            'Comparisons as area'     : '≈ 0.51 × total area of Germany ( 357022 km^2 )',
-            'Corresponding quantities': 'Radius r of a circle from A = πr^2:\n'
-                                        ' | 149 miles\n'
-                                        ' | 240 km (kilometers)',
-            'Geographic properties'   : 'total area | 69710 mi^2\n'
-                                        'land area | 68740 mi^2\n'
-                                        'water area | 965.5 mi^2\n'
-                                        'farmland area | 29 million acres\n'
-                                        'mean elevation | 787.4 ft\n'
-                                        'highest point | Taum Sauk Mountain, 1772 ft\n'
-                                        'lowest point | Saint Francis River, 229.7 ft\n'
-                                        '(2002)',
-            'Unit conversions'        : '1.943×10^12 ft^2 (square feet)'
+            "Result": "69710 mi^2 (square miles)",
+            "Input interpretation": "Missouri | total area",
+            "Comparisons as area": "≈ 0.51 × total area of Germany ( 357022 km^2 )",
+            "Corresponding quantities": "Radius r of a circle from A = πr^2:\n"
+            " | 149 miles\n"
+            " | 240 km (kilometers)",
+            "Geographic properties": "total area | 69710 mi^2\n"
+            "land area | 68740 mi^2\n"
+            "water area | 965.5 mi^2\n"
+            "farmland area | 29 million acres\n"
+            "mean elevation | 787.4 ft\n"
+            "highest point | Taum Sauk Mountain, 1772 ft\n"
+            "lowest point | Saint Francis River, 229.7 ft\n"
+            "(2002)",
+            "Unit conversions": "1.943×10^12 ft^2 (square feet)",
         }
     else:
         output = client.query(input=query)
@@ -83,10 +76,7 @@ def wa(debug=False) -> str:
     result = None
 
     if "Result" in details.keys():  # If results are there, put them on top
-        details = {
-            "Result": details.pop("Result"),
-            **details
-        }
+        details = {"Result": details.pop("Result"), **details}
 
     for i, (k, v) in enumerate(details.items()):
         if k == "input interpretation":
@@ -101,11 +91,7 @@ def wa(debug=False) -> str:
             if i == 0:
                 style = "bold green"
 
-        table.add_row(
-            k,
-            v,
-            style=style
-        )
+        table.add_row(k, v, style=style)
         if i == 0:
             table.add_row()
 
@@ -114,8 +100,5 @@ def wa(debug=False) -> str:
     return result
 
 
-print(f"Peter's Python Terminal"
-      f" (started in {1000 * (time.time() - start):.0f} ms)"
-      )
+print(f"Peter's Python Terminal (started in {1000 * (time.time() - start):.0f} ms)")
 del start
-
