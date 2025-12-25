@@ -328,6 +328,10 @@ install_system_packages() {
         unzip zip
         net-tools openssh-server
         zoxide
+        git-lfs            # Large file storage for git
+        pandoc             # Universal document converter
+        nvtop              # GPU monitoring (for ML/CUDA work)
+        rclone             # Cloud storage sync
     )
 
     # GUI packages (only if not headless)
@@ -504,6 +508,36 @@ install_zoxide() {
     rm -f zoxide.tar.gz zoxide
 }
 ensure_command "zoxide" zoxide install_zoxide
+
+### Install delta (better git diffs) - can install without sudo
+install_delta() {
+    local version delta_arch
+    version=$(github_latest_version "dandavison/delta") || return 1
+    case "$ARCH" in
+        x86_64) delta_arch="x86_64-unknown-linux-musl" ;;
+        arm64) delta_arch="aarch64-unknown-linux-gnu" ;;
+    esac
+    curl -fSL -o delta.tar.gz "https://github.com/dandavison/delta/releases/download/${version}/delta-${version}-${delta_arch}.tar.gz" || return 1
+    tar xf delta.tar.gz || return 1
+    install -m 755 "delta-${version}-${delta_arch}/delta" "$HOME/.local/bin/delta" || return 1
+    rm -rf delta.tar.gz "delta-${version}-${delta_arch}"
+}
+ensure_command "delta" delta install_delta
+
+### Install bottom (btm) - modern system monitor with GPU support
+install_bottom() {
+    local version btm_arch
+    version=$(github_latest_version "ClementTsang/bottom") || return 1
+    case "$ARCH" in
+        x86_64) btm_arch="x86_64-unknown-linux-musl" ;;
+        arm64) btm_arch="aarch64-unknown-linux-gnu" ;;
+    esac
+    curl -fSL -o bottom.tar.gz "https://github.com/ClementTsang/bottom/releases/download/${version}/bottom_${btm_arch}.tar.gz" || return 1
+    tar xf bottom.tar.gz || return 1
+    install -m 755 btm "$HOME/.local/bin/btm" || return 1
+    rm -f bottom.tar.gz btm
+}
+ensure_command "bottom" btm install_bottom
 
 ### Install Docker
 install_docker() {
@@ -708,19 +742,6 @@ else
     print_skip "SSH key already exists"
 fi
 
-### Add SSH key to GitHub (requires gh auth)
-if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
-    if gh auth status &>/dev/null; then
-        if prompt_yn "Add SSH key to GitHub? [y/N]" "N"; then
-            step "Adding SSH key to GitHub" gh ssh-key add "$HOME/.ssh/id_ed25519.pub" --title "$(hostname)"
-        else
-            print_skip "SSH key not added to GitHub"
-        fi
-    else
-        print_info "Run 'gh auth login' then 'gh ssh-key add ~/.ssh/id_ed25519.pub' to add your key to GitHub"
-    fi
-fi
-
 ###############################################################################
 ### Development Tools
 ###############################################################################
@@ -745,6 +766,10 @@ run ~/.local/bin/uv tool install httpie      # Better HTTP client (http/https co
 run ~/.local/bin/uv tool install pre-commit  # Git hooks for code quality
 run ~/.local/bin/uv tool install yt-dlp      # Video downloader
 run ~/.local/bin/uv tool install rich-cli    # Pretty terminal output (rich command)
+run ~/.local/bin/uv tool install docling     # PDF to text/markdown for LLM input
+run ~/.local/bin/uv tool install jupyterlab  # Jupyter notebooks
+run ~/.local/bin/uv tool install pytest      # Testing framework
+run ~/.local/bin/uv tool upgrade --all       # Upgrade all tools to latest
 step_end
 
 ### Install Rust
@@ -758,6 +783,46 @@ install_cursor() {
     curl -fsSL https://cursor.com/install | bash
 }
 ensure_command "Cursor CLI" cursor-agent install_cursor
+
+### Install TeX Live (full distribution - warning: 7+GB, may take 30+ minutes)
+### See: https://www.tug.org/texlive/quickinstall.html
+install_texlive() {
+    local tmpdir year arch_dir texlive_bin
+    tmpdir=$(mktemp -d) || return 1
+    cd "$tmpdir" || return 1
+    
+    # Download installer
+    curl -L -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || { cd /; rm -rf "$tmpdir"; return 1; }
+    zcat < install-tl-unx.tar.gz | tar xf - || { cd /; rm -rf "$tmpdir"; return 1; }
+    cd install-tl-2* || { cd /; rm -rf "$tmpdir"; return 1; }
+    
+    # Install non-interactively (full scheme by default)
+    print_warning "TeX Live installation may take 30+ minutes..."
+    sudo perl ./install-tl --no-interaction || { cd /; rm -rf "$tmpdir"; return 1; }
+    
+    # Cleanup
+    cd /
+    rm -rf "$tmpdir"
+    
+    # Determine install path and add to shell profiles
+    year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
+    if [ -n "$year" ]; then
+        case "$ARCH" in
+            x86_64) arch_dir="x86_64-linux" ;;
+            arm64) arch_dir="aarch64-linux" ;;
+        esac
+        texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
+        if [ -d "$texlive_bin" ]; then
+            # Add to .profile for login shells (works for both bash and zsh)
+            if ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
+                echo "" >> "$HOME/.profile"
+                echo "# TeX Live" >> "$HOME/.profile"
+                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.profile"
+            fi
+        fi
+    fi
+}
+ensure_command "TeX Live" pdflatex install_texlive sudo
 
 ###############################################################################
 ### Shell Setup
@@ -881,6 +946,16 @@ run git config --global alias.br branch
 run git config --global alias.lg "log --oneline --graph --decorate"
 run git config --global alias.amend "commit --amend --no-edit"
 run git config --global alias.last "log -1 HEAD --stat"
+# Delta integration for better diffs
+run git config --global core.pager delta
+run git config --global interactive.diffFilter 'delta --color-only'
+run git config --global delta.navigate true
+run git config --global delta.side-by-side true
+# Better merge/rebase defaults
+run git config --global merge.conflictstyle diff3
+run git config --global rebase.autoStash true
+# Initialize git-lfs (only needed once per user)
+run git lfs install
 step_end
 
 ###############################################################################
@@ -951,13 +1026,6 @@ echo ""
 if command -v gh &> /dev/null; then
     print_info "Authenticate GitHub CLI:"
     echo "    gh auth login"
-    echo ""
-fi
-
-# SSH key reminder
-if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
-    print_info "Add your SSH key to GitHub:"
-    echo "    https://github.com/settings/ssh/new"
     echo ""
 fi
 
