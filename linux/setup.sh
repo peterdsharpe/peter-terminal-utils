@@ -845,6 +845,12 @@ install_texlive() {
         esac
         texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
         if [ -d "$texlive_bin" ]; then
+            # Add to .bashrc for bash non-login shells
+            if ! grep -q "texlive" "$HOME/.bashrc" 2>/dev/null; then
+                echo "" >> "$HOME/.bashrc"
+                echo "# TeX Live" >> "$HOME/.bashrc"
+                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.bashrc"
+            fi
             # Add to .profile for bash login shells
             if ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
                 echo "" >> "$HOME/.profile"
@@ -857,6 +863,7 @@ install_texlive() {
                 echo "# TeX Live" >> "$HOME/.zprofile"
                 echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.zprofile"
             fi
+            # Note: .zshrc is managed via dotfiles symlink and has auto-detection built-in
         fi
     fi
 }

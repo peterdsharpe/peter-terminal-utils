@@ -109,6 +109,20 @@ fi
 # Add user-local binaries to PATH
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
 
+# Add TeX Live to PATH if installed
+if [ -d /usr/local/texlive ]; then
+    # Find the latest year directory
+    TEXLIVE_YEAR=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
+    if [ -n "$TEXLIVE_YEAR" ]; then
+        # Auto-detect architecture
+        if [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux" ]; then
+            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux:$PATH"
+        elif [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux" ]; then
+            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux:$PATH"
+        fi
+    fi
+fi
+
 ###############################################################################
 ### History configuration
 ###############################################################################
