@@ -322,19 +322,26 @@ print_header "System Packages"
 install_system_packages() {
     # Core packages (always installed)
     local packages=(
-        zsh git vim neovim tmux htop curl wget
+        # Shell & editors
+        zsh vim neovim tmux
+        # Version control
+        git git-lfs
+        # Build tools
         build-essential
-        ripgrep fd-find fzf bat eza tree ncdu jq cloc
+        # CLI utilities
+        ripgrep fd-find fzf bat eza tree ncdu jq cloc zoxide pv
+        # Network
+        curl wget net-tools openssh-server mtr
+        # VPN & firewall
+        openvpn wireguard ufw
+        # File transfer & sync
+        rsync sshfs rclone
+        # Compression
         unzip zip p7zip-full zstd unrar
-        net-tools openssh-server openvpn wireguard ufw
-        rsync sshfs mtr
-        powertop lm-sensors
-        pv
-        zoxide
-        git-lfs
+        # System monitoring
+        htop nvtop powertop lm-sensors
+        # Document processing
         pandoc
-        nvtop
-        rclone
     )
 
     # GUI packages (only if not headless)
