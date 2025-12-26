@@ -331,10 +331,10 @@ install_system_packages() {
         powertop lm-sensors
         pv
         zoxide
-        git-lfs            # Large file storage for git
-        pandoc             # Universal document converter
-        nvtop              # GPU monitoring (for ML/CUDA work)
-        rclone             # Cloud storage sync
+        git-lfs
+        pandoc
+        nvtop
+        rclone
     )
 
     # GUI packages (only if not headless)
