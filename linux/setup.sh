@@ -881,6 +881,12 @@ else
     print_skip "zsh-history-substring-search already installed"
 fi
 
+if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autocomplete" ]; then
+    step "Installing zsh-autocomplete plugin" git clone --depth 1 https://github.com/marlonrichert/zsh-autocomplete.git "$ZSH_CUSTOM/plugins/zsh-autocomplete"
+else
+    print_skip "zsh-autocomplete already installed"
+fi
+
 ### Install Powerlevel10k theme
 if [ ! -d "$ZSH_CUSTOM/themes/powerlevel10k" ]; then
     step "Installing Powerlevel10k theme" git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"

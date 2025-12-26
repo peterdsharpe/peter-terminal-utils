@@ -24,6 +24,28 @@ ZSH_THEME="powerlevel10k/powerlevel10k"
 # Plugins
 plugins=(git zsh-syntax-highlighting zsh-autosuggestions zsh-history-substring-search)
 
+###############################################################################
+### zsh-autocomplete (must be sourced BEFORE oh-my-zsh)
+###############################################################################
+# Real-time type-ahead completion - shows completions as you type
+# https://github.com/marlonrichert/zsh-autocomplete
+if [[ -f "$ZSH/custom/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh" ]]; then
+    source "$ZSH/custom/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh"
+
+    # Customize behavior (see https://github.com/marlonrichert/zsh-autocomplete)
+    # Wait 0.1s after typing stops before showing completions (reduces CPU usage)
+    zstyle ':autocomplete:*' delay 0.1
+
+    # Limit completion menu to 8 lines (less intrusive)
+    zstyle ':autocomplete:*:*' list-lines 8
+
+    # Make Tab insert the common substring first, then cycle through completions
+    zstyle ':autocomplete:*complete*:*' insert-unambiguous yes
+
+    # Make Enter always submit the command line (even when menu is open)
+    bindkey -M menuselect '\r' .accept-line
+fi
+
 # Load oh-my-zsh
 source $ZSH/oh-my-zsh.sh
 
