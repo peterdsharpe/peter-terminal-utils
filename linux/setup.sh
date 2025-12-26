@@ -325,8 +325,11 @@ install_system_packages() {
         zsh git vim neovim tmux htop curl wget
         build-essential
         ripgrep fd-find fzf bat eza tree ncdu jq cloc
-        unzip zip
-        net-tools openssh-server
+        unzip zip p7zip-full zstd unrar
+        net-tools openssh-server openvpn wireguard ufw
+        rsync sshfs mtr
+        powertop lm-sensors
+        pv
         zoxide
         git-lfs            # Large file storage for git
         pandoc             # Universal document converter
@@ -728,7 +731,7 @@ if [[ "$HEADLESS" == "N" ]]; then
     # Keyboard repeat (grouped - related settings)
     step_start "Configuring faster keyboard repeat"
     run gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25
-    run gsettings set org.gnome.desktop.peripherals.keyboard delay 200
+    run gsettings set org.gnome.desktop.peripherals.keyboard delay 300
     step_end
 
     step "Disabling hot corners" gsettings set org.gnome.desktop.interface enable-hot-corners false
