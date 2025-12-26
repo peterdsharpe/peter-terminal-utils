@@ -30,20 +30,16 @@ plugins=(git zsh-syntax-highlighting zsh-autosuggestions zsh-history-substring-s
 # Real-time type-ahead completion - shows completions as you type
 # https://github.com/marlonrichert/zsh-autocomplete
 if [[ -f "$ZSH/custom/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh" ]]; then
+    # Configure behavior BEFORE sourcing (plugin reads these during init)
+    zstyle ':autocomplete:*' delay 0.1           # Wait 0.1s after typing (reduces CPU)
+    zstyle ':autocomplete:*:*' list-lines 8      # Limit menu to 8 lines
+    zstyle ':autocomplete:*complete*:*' insert-unambiguous yes  # Tab inserts common substring
+
+    # Now source the plugin
     source "$ZSH/custom/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh"
 
-    # Customize behavior (see https://github.com/marlonrichert/zsh-autocomplete)
-    # Wait 0.1s after typing stops before showing completions (reduces CPU usage)
-    zstyle ':autocomplete:*' delay 0.1
-
-    # Limit completion menu to 8 lines (less intrusive)
-    zstyle ':autocomplete:*:*' list-lines 8
-
-    # Make Tab insert the common substring first, then cycle through completions
-    zstyle ':autocomplete:*complete*:*' insert-unambiguous yes
-
-    # Make Enter always submit the command line (even when menu is open)
-    bindkey -M menuselect '\r' .accept-line
+    # Keybindings can be set after sourcing
+    bindkey -M menuselect '\r' .accept-line      # Enter always submits
 fi
 
 # Load oh-my-zsh
