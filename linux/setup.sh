@@ -401,41 +401,45 @@ install_github_cli() {
         sudo apt-get install -yq gh
     else
         # Install prebuilt binary to ~/.local/bin
-        local version gh_arch
+        local version gh_arch tmpdir
         version=$(github_latest_version "cli/cli") || return 1
         case "$ARCH" in
             x86_64) gh_arch="amd64" ;;
             arm64) gh_arch="arm64" ;;
         esac
-        curl -fSL -o gh.tar.gz "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || return 1
-        tar xf gh.tar.gz || return 1
-        install -m 755 "gh_${version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh" || return 1
-        rm -rf gh.tar.gz "gh_${version}_linux_${gh_arch}"
+        tmpdir=$(mktemp -d) || return 1
+        curl -fSL -o "$tmpdir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+        tar xf "$tmpdir/gh.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+        install -m 755 "$tmpdir/gh_${version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh" || { rm -rf "$tmpdir"; return 1; }
+        rm -rf "$tmpdir"
     fi
 }
 ensure_command "GitHub CLI" gh install_github_cli
 
 ### Install lazygit (can install without sudo to ~/.local/bin)
 install_lazygit() {
-    local version lazygit_arch
+    local version lazygit_arch tmpdir
     version=$(github_latest_version "jesseduffield/lazygit") || return 1
     case "$ARCH" in
         x86_64) lazygit_arch="x86_64" ;;
         arm64) lazygit_arch="arm64" ;;
     esac
-    curl -fSL -o lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || return 1
-    tar xf lazygit.tar.gz lazygit || return 1
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/lazygit.tar.gz" "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/lazygit.tar.gz" -C "$tmpdir" lazygit || { rm -rf "$tmpdir"; return 1; }
     if [[ "$HAS_SUDO" == true ]]; then
-        sudo install lazygit /usr/local/bin || return 1
+        sudo install "$tmpdir/lazygit" /usr/local/bin || { rm -rf "$tmpdir"; return 1; }
     else
-        install -m 755 lazygit "$HOME/.local/bin/lazygit" || return 1
+        install -m 755 "$tmpdir/lazygit" "$HOME/.local/bin/lazygit" || { rm -rf "$tmpdir"; return 1; }
     fi
-    rm lazygit lazygit.tar.gz
+    rm -rf "$tmpdir"
 }
 ensure_command "lazygit" lazygit install_lazygit
 
 ### Install fzf (fuzzy finder) - can install without sudo via git
 install_fzf() {
+    # Remove any existing/incomplete install for idempotency
+    rm -rf "$HOME/.fzf"
     git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf" || return 1
     "$HOME/.fzf/install" --bin || return 1
     install -m 755 "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
@@ -444,64 +448,68 @@ ensure_command "fzf" fzf install_fzf
 
 ### Install fd (find alternative) - can install without sudo
 install_fd() {
-    local version fd_arch
+    local version fd_arch tmpdir
     version=$(github_latest_version "sharkdp/fd") || return 1
     case "$ARCH" in
         x86_64) fd_arch="x86_64-unknown-linux-musl" ;;
         arm64) fd_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -fSL -o fd.tar.gz "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || return 1
-    tar xf fd.tar.gz || return 1
-    install -m 755 "fd-v${version}-${fd_arch}/fd" "$HOME/.local/bin/fd" || return 1
-    rm -rf fd.tar.gz "fd-v${version}-${fd_arch}"
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/fd.tar.gz" "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/fd.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    install -m 755 "$tmpdir/fd-v${version}-${fd_arch}/fd" "$HOME/.local/bin/fd" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 ensure_command "fd" fd install_fd
 
 ### Install bat (cat alternative) - can install without sudo
 install_bat() {
-    local version bat_arch
+    local version bat_arch tmpdir
     version=$(github_latest_version "sharkdp/bat") || return 1
     case "$ARCH" in
         x86_64) bat_arch="x86_64-unknown-linux-musl" ;;
         arm64) bat_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -fSL -o bat.tar.gz "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || return 1
-    tar xf bat.tar.gz || return 1
-    install -m 755 "bat-v${version}-${bat_arch}/bat" "$HOME/.local/bin/bat" || return 1
-    rm -rf bat.tar.gz "bat-v${version}-${bat_arch}"
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/bat.tar.gz" "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/bat.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    install -m 755 "$tmpdir/bat-v${version}-${bat_arch}/bat" "$HOME/.local/bin/bat" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 ensure_command "bat" bat install_bat
 
 ### Install eza (ls alternative) - can install without sudo
 install_eza() {
-    local version eza_arch
+    local version eza_arch tmpdir
     version=$(github_latest_version "eza-community/eza") || return 1
     case "$ARCH" in
         x86_64) eza_arch="x86_64-unknown-linux-musl" ;;
         arm64) eza_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -fSL -o eza.tar.gz "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || return 1
-    tar xf eza.tar.gz || return 1
-    install -m 755 eza "$HOME/.local/bin/eza" || return 1
-    rm -f eza.tar.gz eza
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/eza.tar.gz" "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/eza.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    install -m 755 "$tmpdir/eza" "$HOME/.local/bin/eza" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 ensure_command "eza" eza install_eza
 
 ### Install neovim - can install without sudo
 install_neovim() {
-    local version nvim_arch nvim_dir
+    local version nvim_arch nvim_dir tmpdir
     version=$(github_latest_version "neovim/neovim") || return 1
     case "$ARCH" in
         x86_64) nvim_arch="x86_64"; nvim_dir="nvim-linux-x86_64" ;;
         arm64) nvim_arch="arm64"; nvim_dir="nvim-linux-arm64" ;;
     esac
     mkdir -p "$HOME/local" || return 1
-    curl -fSL -o nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || return 1
-    tar xf nvim.tar.gz || return 1
-    rm -rf "$HOME/local/nvim" || return 1
-    mv "$nvim_dir" "$HOME/local/nvim" || return 1
-    ln -sf "$HOME/local/nvim/bin/nvim" "$HOME/.local/bin/nvim" || return 1
-    rm -f nvim.tar.gz
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/nvim.tar.gz" "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/nvim.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$HOME/local/nvim"
+    mv "$tmpdir/$nvim_dir" "$HOME/local/nvim" || { rm -rf "$tmpdir"; return 1; }
+    ln -sf "$HOME/local/nvim/bin/nvim" "$HOME/.local/bin/nvim" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 ensure_command "neovim" nvim install_neovim
 
@@ -513,16 +521,17 @@ ensure_command "zoxide" zoxide install_zoxide
 
 ### Install delta (better git diffs) - can install without sudo
 install_delta() {
-    local version delta_arch
+    local version delta_arch tmpdir
     version=$(github_latest_version "dandavison/delta") || return 1
     case "$ARCH" in
         x86_64) delta_arch="x86_64-unknown-linux-musl" ;;
         arm64) delta_arch="aarch64-unknown-linux-gnu" ;;
     esac
-    curl -fSL -o delta.tar.gz "https://github.com/dandavison/delta/releases/download/${version}/delta-${version}-${delta_arch}.tar.gz" || return 1
-    tar xf delta.tar.gz || return 1
-    install -m 755 "delta-${version}-${delta_arch}/delta" "$HOME/.local/bin/delta" || return 1
-    rm -rf delta.tar.gz "delta-${version}-${delta_arch}"
+    tmpdir=$(mktemp -d) || return 1
+    curl -fSL -o "$tmpdir/delta.tar.gz" "https://github.com/dandavison/delta/releases/download/${version}/delta-${version}-${delta_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/delta.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    install -m 755 "$tmpdir/delta-${version}-${delta_arch}/delta" "$HOME/.local/bin/delta" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 ensure_command "delta" delta install_delta
 
@@ -581,23 +590,24 @@ install_zsh_from_source() {
     mkdir -p "$HOME/local" || return 1
     
     # Fetch latest version from zsh.org
-    local version
+    local version tmpdir
     version=$(curl -s https://www.zsh.org/pub/ | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -1) || return 1
     [ -n "$version" ] || { echo "Could not determine latest zsh version" >&2; return 1; }
     
-    # Download and extract
-    curl -Lo zsh.tar.xz "https://www.zsh.org/pub/zsh-${version}.tar.xz" || return 1
-    tar xf zsh.tar.xz || return 1
-    cd "zsh-${version}" || return 1
+    # Download and extract to tmpdir
+    tmpdir=$(mktemp -d) || return 1
+    curl -Lo "$tmpdir/zsh.tar.xz" "https://www.zsh.org/pub/zsh-${version}.tar.xz" || { rm -rf "$tmpdir"; return 1; }
+    tar xf "$tmpdir/zsh.tar.xz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    cd "$tmpdir/zsh-${version}" || { rm -rf "$tmpdir"; return 1; }
     
     # Configure, build, install to ~/local
-    ./configure --prefix="$HOME/local" --without-tcsetpgrp || return 1
-    make -j"$(nproc)" || return 1
-    make install || return 1
+    ./configure --prefix="$HOME/local" --without-tcsetpgrp || { rm -rf "$tmpdir"; return 1; }
+    make -j"$(nproc)" || { rm -rf "$tmpdir"; return 1; }
+    make install || { rm -rf "$tmpdir"; return 1; }
     
     # Cleanup
-    cd ..
-    rm -rf "zsh-${version}" zsh.tar.xz
+    cd /
+    rm -rf "$tmpdir"
 }
 
 if command -v zsh &>/dev/null || [ -x "$HOME/local/bin/zsh" ]; then
@@ -643,9 +653,11 @@ step "Creating fonts directory" mkdir -p ~/.local/share/fonts
 
 ### Install Fira Code Nerd Font (for terminal icons)
 install_firacode() {
-    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip || return 1
-    unzip -o FiraCode.zip -d ~/.local/share/fonts || return 1
-    rm FiraCode.zip
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 1
+    curl -fL -o "$tmpdir/FiraCode.zip" https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip || { rm -rf "$tmpdir"; return 1; }
+    unzip -o "$tmpdir/FiraCode.zip" -d ~/.local/share/fonts || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 if ! fc-list | grep -i "FiraCode Nerd Font" > /dev/null; then
     step "Installing Fira Code Nerd Font" install_firacode
@@ -655,9 +667,11 @@ fi
 
 ### Install Symbols Nerd Font (fallback for missing glyphs)
 install_symbols_font() {
-    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz || return 1
-    tar -xf NerdFontsSymbolsOnly.tar.xz -C ~/.local/share/fonts || return 1
-    rm NerdFontsSymbolsOnly.tar.xz
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 1
+    curl -fL -o "$tmpdir/NerdFontsSymbolsOnly.tar.xz" https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz || { rm -rf "$tmpdir"; return 1; }
+    tar -xf "$tmpdir/NerdFontsSymbolsOnly.tar.xz" -C ~/.local/share/fonts || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
 }
 if ! fc-list | grep -i "Symbols Nerd Font" > /dev/null; then
     step "Installing Symbols Nerd Font" install_symbols_font
