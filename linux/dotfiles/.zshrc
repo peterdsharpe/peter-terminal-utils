@@ -49,6 +49,12 @@ if command -v fdfind &> /dev/null; then
     alias fd="fdfind"
 fi
 
+# nvim (vim replacement)
+if command -v nvim &> /dev/null; then
+    alias vim="nvim"
+    alias vi="nvim"
+fi
+
 ###############################################################################
 ### Git aliases
 ###############################################################################

@@ -897,6 +897,16 @@ setup_zshrc() {
 }
 step "Symlinking .zshrc" setup_zshrc
 
+### Symlink neovim config from dotfiles
+setup_nvim_config() {
+    mkdir -p "$HOME/.config/nvim" || return 1
+    if [ -f "$HOME/.config/nvim/init.vim" ] && [ ! -L "$HOME/.config/nvim/init.vim" ]; then
+        mv "$HOME/.config/nvim/init.vim" "$HOME/.config/nvim/init.vim.backup.$(date +%Y%m%d_%H%M%S)" || return 1
+    fi
+    ln -sf "$SCRIPT_DIR/dotfiles/init.vim" "$HOME/.config/nvim/init.vim"
+}
+step "Symlinking neovim config" setup_nvim_config
+
 ### Set up global ipy Python environment
 print_step "Syncing ipy Python environment"
 if [[ "$DRY_RUN" == true ]]; then
