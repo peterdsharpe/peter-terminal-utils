@@ -51,7 +51,7 @@ The `profile.ps1` provides:
 
 - **Modern CLI aliases**: `ls`/`ll` → eza, `cat` → bat
 - **Git aliases**: `gs`, `gd`, `ga`, `gc`, `gp`, `gl`, etc.
-- **Navigation**: `..`, `...`, `home`, `desktop`, `gh`
+- **Navigation**: `..`, `...`, `home`, `desktop`, `github`
 - **Tool initialization**: zoxide, fzf, fnm
 - **Utility functions**: `mkcd`, `touch`, `serve`, `myip`, `weather`
 - **WSL integration**: `wsl-home`, `wsl-here`
