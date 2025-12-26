@@ -800,7 +800,6 @@ run ~/.local/bin/uv tool install yt-dlp      # Video downloader
 run ~/.local/bin/uv tool install rich-cli    # Pretty terminal output (rich command)
 run ~/.local/bin/uv tool install docling     # PDF to text/markdown for LLM input
 run ~/.local/bin/uv tool install jupyterlab  # Jupyter notebooks
-run ~/.local/bin/uv tool install pytest      # Testing framework
 run ~/.local/bin/uv tool upgrade --all       # Upgrade all tools to latest
 step_end
 
