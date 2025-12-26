@@ -505,18 +505,9 @@ install_neovim() {
 }
 ensure_command "neovim" nvim install_neovim
 
-### Install zoxide (smarter cd) - can install without sudo
+### Install zoxide (smarter cd) - uses official install script
 install_zoxide() {
-    local version zoxide_arch
-    version=$(github_latest_version "ajeetdsouza/zoxide") || return 1
-    case "$ARCH" in
-        x86_64) zoxide_arch="x86_64-unknown-linux-musl" ;;
-        arm64) zoxide_arch="aarch64-unknown-linux-musl" ;;
-    esac
-    curl -fSL -o zoxide.tar.gz "https://github.com/ajeetdsouza/zoxide/releases/download/v${version}/zoxide-${version}-${zoxide_arch}.tar.gz" || return 1
-    tar xf zoxide.tar.gz || return 1
-    install -m 755 zoxide "$HOME/.local/bin/zoxide" || return 1
-    rm -f zoxide.tar.gz zoxide
+    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
 }
 ensure_command "zoxide" zoxide install_zoxide
 
@@ -652,7 +643,7 @@ step "Creating fonts directory" mkdir -p ~/.local/share/fonts
 
 ### Install Fira Code Nerd Font (for terminal icons)
 install_firacode() {
-    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/FiraCode.zip || return 1
+    curl -fLO https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip || return 1
     unzip -o FiraCode.zip -d ~/.local/share/fonts || return 1
     rm FiraCode.zip
 }
@@ -841,11 +832,17 @@ install_texlive() {
         esac
         texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
         if [ -d "$texlive_bin" ]; then
-            # Add to .profile for login shells (works for both bash and zsh)
+            # Add to .profile for bash login shells
             if ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
                 echo "" >> "$HOME/.profile"
                 echo "# TeX Live" >> "$HOME/.profile"
                 echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.profile"
+            fi
+            # Add to .zprofile for zsh login shells (zsh doesn't source .profile)
+            if ! grep -q "texlive" "$HOME/.zprofile" 2>/dev/null; then
+                echo "" >> "$HOME/.zprofile"
+                echo "# TeX Live" >> "$HOME/.zprofile"
+                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.zprofile"
             fi
         fi
     fi
@@ -953,7 +950,6 @@ print_header "Snap Applications"
 install_snap_apps() {
     step_start "Installing snap applications"
     run sudo snap install obsidian --classic
-    run sudo snap install signal-desktop
     run sudo snap install zotero-snap
     run sudo snap install code --classic
     run sudo snap install firefox
@@ -962,6 +958,16 @@ install_snap_apps() {
     run sudo snap install steam
     step_end
 }
+
+### Install Signal Desktop via official apt repository (preferred over Snap)
+install_signal() {
+    # Official Signal apt repository - https://signal.org/download/linux/
+    curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor | sudo tee /usr/share/keyrings/signal-desktop-keyring.gpg > /dev/null || return 1
+    echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/signal-desktop-keyring.gpg] https://updates.signal.org/desktop/apt xenial main' | sudo tee /etc/apt/sources.list.d/signal-xenial.list > /dev/null || return 1
+    sudo apt-get update -qq || return 1
+    sudo apt-get install -yq signal-desktop
+}
+ensure_command "Signal Desktop" signal-desktop install_signal sudo
 
 if [[ "$INSTALL_SNAPS" != "Y" ]]; then
     print_skip "Snap installations disabled"
