@@ -35,5 +35,6 @@ fi
 if gnome-extensions list | grep -q "$JUST_PERFECTION_UUID" 2>&1; then
     step "Enabling Just Perfection" gnome-extensions enable "$JUST_PERFECTION_UUID"
     step "Disabling Alt+Tab popup delay" dconf write /org/gnome/shell/extensions/just-perfection/switcher-popup-delay false
+    step "Disabling animations" dconf write /org/gnome/shell/extensions/just-perfection/animation 0
 fi
 
