@@ -1,0 +1,17 @@
+#!/bin/bash
+[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+# Install Oh My Zsh (non-interactive)
+
+install_ohmyzsh() {
+    # Remove incomplete installation if present
+    rm -rf "$HOME/.oh-my-zsh"
+    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+}
+
+# Check for actual oh-my-zsh.sh file, not just directory (catches incomplete installs)
+if [ ! -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then
+    step "Installing Oh My Zsh" install_ohmyzsh
+else
+    print_skip "Oh My Zsh already installed"
+fi
+

@@ -2,242 +2,93 @@
 set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 
 ###############################################################################
-### Script Setup
+### Peter Sharpe's Linux Setup Script - Orchestrator
+###############################################################################
+#
+# This script orchestrates the installation of all components by:
+# 1. Gathering configuration from the user
+# 2. Parsing the install_scripts/order.txt manifest
+# 3. Running each install script with framed output display
+# 4. Showing a summary of results
+#
+# Individual scripts can also be run standalone for targeted installation.
+#
 ###############################################################################
 
-# Get script directory (where dotfiles are stored)
+# Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Architecture detection for binary downloads
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64) ARCH="x86_64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        exit 1
-        ;;
-esac
-
-### Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
-
-### Logging helpers
-print_header() {
-    echo ""
-    echo -e "${BOLD}${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${BLUE}  $1${NC}"
-    echo -e "${BOLD}${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-}
-
-print_step() {
-    echo -e "${CYAN}▶${NC} $1"
-}
-
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-print_skip() {
-    echo -e "${YELLOW}○${NC} $1 (skipped)"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
+# Source shared utilities
+source "$SCRIPT_DIR/_common.sh"
 
 ###############################################################################
-### Step/Run System - unified command execution with status tracking
+### Framed Execution System
 ###############################################################################
 
-# State for grouped commands
-STEP_FAILED=false
-STEP_MSG=""
+# Track results for summary
+declare -a COMPLETED_SCRIPTS=()
+declare -a FAILED_SCRIPTS=()
+declare -a SKIPPED_SCRIPTS=()
 
-# Track if any step in the entire script failed
-SCRIPT_FAILED=false
-
-# Captured output from last _exec call (used for error display)
-_EXEC_EXIT=0
-_EXEC_OUT=""
-_EXEC_ERR=""
-_EXEC_STDIN=""  # Optional: set before _exec to provide stdin from file
-
-### Core helper: run command, capture output, store in globals
-### Returns the command's exit code
-### Optional: set _EXEC_STDIN to a file path before calling to provide stdin
-_exec() {
-    local tmp_out tmp_err
-    tmp_out=$(mktemp)
-    tmp_err=$(mktemp)
-    if [ -n "${_EXEC_STDIN:-}" ]; then
-        "$@" <"$_EXEC_STDIN" >"$tmp_out" 2>"$tmp_err"
-    else
-        "$@" >"$tmp_out" 2>"$tmp_err"
-    fi
-    _EXEC_EXIT=$?
-    _EXEC_OUT=$(cat "$tmp_out")
-    _EXEC_ERR=$(cat "$tmp_err")
-    rm -f "$tmp_out" "$tmp_err"
-    _EXEC_STDIN=""  # Reset after use
-    return $_EXEC_EXIT
-}
-
-### Core helper: print error details from last _exec call
-_print_error() {
-    local cmd_desc="$1"
-    echo -e "  ${RED}Failed:${NC} $cmd_desc (exit code: $_EXEC_EXIT)"
-    if [ -n "$_EXEC_OUT" ]; then
-        echo -e "  ${RED}Stdout:${NC}"
-        echo "$_EXEC_OUT" | sed 's/^/    /'
-    fi
-    if [ -n "$_EXEC_ERR" ]; then
-        echo -e "  ${RED}Stderr:${NC}"
-        echo "$_EXEC_ERR" | sed 's/^/    /'
-    fi
-}
-
-### Single command with message - prints ✓ or ✗ when done
-step() {
-    local msg="$1"; shift
+# Run a script with framed output that clears on success
+run_framed() {
+    local display_name="$1"
+    local script_path="$2"
+    local tmp_count
+    tmp_count=$(mktemp)
+    local line_count=0
     
-    if [[ "$DRY_RUN" == true ]]; then
-        echo -e "${BLUE}ℹ${NC} [DRY RUN] $msg: $*"
-        return 0
-    fi
+    # Top border with name
+    echo -e "${CYAN}╔══ ${BOLD}${display_name}${NC}${CYAN} ══════════════════════════════════════════════════════════════╗${NC}"
     
-    printf "${CYAN}▶${NC} %s " "$msg"
-    if _exec "$@"; then
-        printf "\r\033[K"
-        echo -e "${GREEN}✓${NC} $msg"
+    # Run script in subshell by sourcing (utilities already in scope)
+    # _SOURCED=1 tells the script to skip its trampoline
+    # Use set +e to prevent script from exiting on failure
+    set +e
+    {
+        ( export _SOURCED=1; source "$script_path" ) 2>&1
+    } | {
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            echo -e "${CYAN}║${NC} $line"
+            ((line_count++))
+        done
+        echo "$line_count" > "$tmp_count"
+    }
+    local exit_code=${PIPESTATUS[0]}
+    set -e
+    
+    # Read line count from temp file (subshell variable doesn't propagate)
+    line_count=$(cat "$tmp_count")
+    rm -f "$tmp_count"
+    
+    if [[ $exit_code -eq 0 ]]; then
+        # Success - clear the framed output
+        local total=$((line_count + 1))  # +1 for header
+        
+        # Move cursor up and clear each line
+        printf '\033[%dA' "$total"
+        for ((i = 0; i < total; i++)); do
+            printf '\033[2K'  # Clear line
+            printf '\n'
+        done
+        printf '\033[%dA' "$total"  # Move back up
+        
+        # Print success message
+        echo -e "${GREEN}✓${NC} ${display_name}"
+        COMPLETED_SCRIPTS+=("$display_name")
     else
-        printf "\r\033[K"
-        echo -e "${RED}✗${NC} $msg"
-        _print_error "$*"
+        # Failure - print footer and leave output visible
+        echo -e "${CYAN}╚══${RED} ✗ Failed (exit code: $exit_code) ${CYAN}═══════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        FAILED_SCRIPTS+=("$display_name")
         SCRIPT_FAILED=true
     fi
 }
 
-### Begin a group of commands
-step_start() {
-    STEP_MSG="$1"
-    STEP_FAILED=false
-    if [[ "$DRY_RUN" == true ]]; then
-        echo -e "${BLUE}ℹ${NC} [DRY RUN] $STEP_MSG"
-    else
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
-    fi
-}
+###############################################################################
+### Interactive Configuration
+###############################################################################
 
-### Run a command within a group (silent on success, shows error on failure)
-run() {
-    if [[ "$DRY_RUN" == true ]]; then
-        echo -e "    ${BLUE}↳${NC} $*"
-        return 0
-    fi
-    if ! _exec "$@"; then
-        printf "\r\033[K"
-        _print_error "$*"
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
-        STEP_FAILED=true
-    fi
-}
-
-### Run a command with stdin from a file
-run_stdin() {
-    local input_file="$1"; shift
-    if [[ "$DRY_RUN" == true ]]; then
-        echo -e "    ${BLUE}↳${NC} $* < $input_file"
-        return 0
-    fi
-    _EXEC_STDIN="$input_file"
-    if ! _exec "$@"; then
-        printf "\r\033[K"
-        _print_error "$* < $input_file"
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
-        STEP_FAILED=true
-    fi
-}
-
-### End a group - prints ✓ or ✗ based on whether any command failed
-step_end() {
-    if [[ "$DRY_RUN" == true ]]; then
-        return 0
-    fi
-    printf "\r\033[K"
-    if [[ "$STEP_FAILED" == true ]]; then
-        echo -e "${RED}✗${NC} $STEP_MSG"
-        SCRIPT_FAILED=true
-    else
-        echo -e "${GREEN}✓${NC} $STEP_MSG"
-    fi
-}
-
-### Install a command if not already present
-### Optional 4th param "sudo" skips if HAS_SUDO=false
-ensure_command() {
-    local name="$1"
-    local cmd="$2"
-    local install_func="$3"
-    local needs_sudo="${4:-}"
-    
-    if [[ "$needs_sudo" == "sudo" && "$HAS_SUDO" == false ]]; then
-        print_skip "$name (requires sudo)"
-        return
-    fi
-    
-    if ! command -v "$cmd" &> /dev/null; then
-        step "Installing $name" "$install_func"
-    else
-        print_skip "$name already installed"
-    fi
-}
-
-### Run something only if sudo is available, otherwise skip with message
-require_sudo() {
-    local msg="$1"; shift
-    if [[ "$HAS_SUDO" == true ]]; then
-        "$@"
-    else
-        print_skip "$msg (requires sudo)"
-    fi
-}
-
-### Helper function for Y/N prompts
-prompt_yn() {
-    local prompt="$1"
-    local default="$2"
-    local response
-    read -r -p "$prompt " response
-    response="${response:-$default}"
-    [[ "$response" =~ ^[Yy] ]]
-}
-
-### Helper function for text input prompts
-prompt_input() {
-    local prompt="$1"
-    local default="$2"
-    local response
-    read -r -p "$prompt [$default]: " response
-    echo "${response:-$default}"
-}
-
-
-### Interactive configuration questions
 echo ""
 echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${CYAN}║                     Peter Sharpe's Linux Setup Script                         ║${NC}"
@@ -309,816 +160,151 @@ else
     fi
 fi
 
+# Export configuration for child scripts
+export DRY_RUN HEADLESS INSTALL_SNAPS GIT_NAME GIT_EMAIL HAS_SUDO
+export ORCHESTRATED=true
+
 echo ""
 print_info "Configuration: HEADLESS=$HEADLESS, INSTALL_SNAPS=$INSTALL_SNAPS, DRY_RUN=$DRY_RUN, HAS_SUDO=$HAS_SUDO"
 print_info "Git: $GIT_NAME <$GIT_EMAIL>"
 
 ###############################################################################
-### System Packages (apt-get)
+### Parse Manifest and Execute Scripts
 ###############################################################################
 
-print_header "System Packages"
+ORDER_FILE="$SCRIPT_DIR/install_scripts/order.txt"
+INSTALL_SCRIPTS_DIR="$SCRIPT_DIR/install_scripts"
 
-install_system_packages() {
-    # Core packages (always installed)
-    local packages=(
-        # Shell & editors
-        zsh vim neovim tmux
-        # Version control
-        git git-lfs
-        # Build tools
-        build-essential
-        # CLI utilities
-        ripgrep fd-find fzf bat eza tree ncdu jq cloc zoxide pv
-        # Network
-        curl wget net-tools openssh-server mtr
-        # VPN & firewall
-        openvpn wireguard ufw
-        # File transfer & sync
-        rsync sshfs rclone
-        # Compression
-        unzip zip p7zip-full zstd unrar
-        # System monitoring
-        htop nvtop powertop lm-sensors
-        # Document processing
-        pandoc
-    )
-
-    # GUI packages (only if not headless)
-    if [[ "$HEADLESS" == "N" ]]; then
-        packages+=(
-            nemo
-            gnome-shell-extension-manager gnome-tweaks
-            vlc dconf-editor
-        )
-    fi
-
-    step_start "Installing system packages"
-    run sudo apt-get update -qq
-    run sudo apt-get upgrade -yq
-    run sudo apt-get install -yq "${packages[@]}"
-    step_end
-}
-require_sudo "System packages" install_system_packages
-
-### Ensure SSH service is enabled and starts at boot
-configure_ssh_service() {
-    step "Enabling SSH service (starts at boot)" sudo systemctl enable --now ssh
-    
-    # If ufw firewall is active, allow SSH connections
-    if sudo ufw status 2>/dev/null | grep -q "active"; then
-        step "Allowing SSH through firewall" sudo ufw allow ssh
-    fi
-}
-require_sudo "SSH service" configure_ssh_service
-
-###############################################################################
-### Manual CLI Tool Installs
-###############################################################################
-
-### Helper: Get latest version from GitHub releases (uses redirect, not API - avoids rate limits)
-### Usage: version=$(github_latest_version "owner/repo") || return 1
-github_latest_version() {
-    local repo="$1"
-    local redirect_url version
-    # Use HEAD request to get redirect URL - this doesn't hit API rate limits
-    redirect_url=$(curl -sI "https://github.com/${repo}/releases/latest" 2>&1 | grep -i '^location:' | tr -d '\r') || {
-        echo "Failed to fetch release redirect for $repo" >&2
-        return 1
-    }
-    if [ -z "$redirect_url" ]; then
-        echo "No redirect found for $repo releases" >&2
-        return 1
-    fi
-    # Extract version from URL like: .../releases/tag/v1.2.3 or .../releases/tag/1.2.3
-    version=$(echo "$redirect_url" | grep -oP '/tag/v?\K[^/\s]+$') || {
-        echo "Failed to parse version from redirect URL: $redirect_url" >&2
-        return 1
-    }
-    echo "$version"
-}
-
-print_header "CLI Tools"
-
-### Install GitHub CLI (gh) - can install without sudo using prebuilt binary
-install_github_cli() {
-    if [[ "$HAS_SUDO" == true ]]; then
-        # Install via apt repository (preferred for system-wide install)
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-        sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
-        sudo apt-get update -qq || return 1
-        sudo apt-get install -yq gh
-    else
-        # Install prebuilt binary to ~/.local/bin
-        local version gh_arch tmpdir
-        version=$(github_latest_version "cli/cli") || return 1
-        case "$ARCH" in
-            x86_64) gh_arch="amd64" ;;
-            arm64) gh_arch="arm64" ;;
-        esac
-        tmpdir=$(mktemp -d) || return 1
-        curl -fSL -o "$tmpdir/gh.tar.gz" "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${gh_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-        tar xf "$tmpdir/gh.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-        install -m 755 "$tmpdir/gh_${version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh" || { rm -rf "$tmpdir"; return 1; }
-        rm -rf "$tmpdir"
-    fi
-}
-ensure_command "GitHub CLI" gh install_github_cli
-
-### Install lazygit (can install without sudo to ~/.local/bin)
-install_lazygit() {
-    local version lazygit_arch tmpdir
-    version=$(github_latest_version "jesseduffield/lazygit") || return 1
-    case "$ARCH" in
-        x86_64) lazygit_arch="x86_64" ;;
-        arm64) lazygit_arch="arm64" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/lazygit.tar.gz" "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${version}_Linux_${lazygit_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/lazygit.tar.gz" -C "$tmpdir" lazygit || { rm -rf "$tmpdir"; return 1; }
-    if [[ "$HAS_SUDO" == true ]]; then
-        sudo install "$tmpdir/lazygit" /usr/local/bin || { rm -rf "$tmpdir"; return 1; }
-    else
-        install -m 755 "$tmpdir/lazygit" "$HOME/.local/bin/lazygit" || { rm -rf "$tmpdir"; return 1; }
-    fi
-    rm -rf "$tmpdir"
-}
-ensure_command "lazygit" lazygit install_lazygit
-
-### Install fzf (fuzzy finder) - can install without sudo via git
-install_fzf() {
-    # Remove any existing/incomplete install for idempotency
-    rm -rf "$HOME/.fzf"
-    git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf" || return 1
-    "$HOME/.fzf/install" --bin || return 1
-    install -m 755 "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
-}
-ensure_command "fzf" fzf install_fzf
-
-### Install fd (find alternative) - can install without sudo
-install_fd() {
-    local version fd_arch tmpdir
-    version=$(github_latest_version "sharkdp/fd") || return 1
-    case "$ARCH" in
-        x86_64) fd_arch="x86_64-unknown-linux-musl" ;;
-        arm64) fd_arch="aarch64-unknown-linux-gnu" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/fd.tar.gz" "https://github.com/sharkdp/fd/releases/download/v${version}/fd-v${version}-${fd_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/fd.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/fd-v${version}-${fd_arch}/fd" "$HOME/.local/bin/fd" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "fd" fd install_fd
-
-### Install bat (cat alternative) - can install without sudo
-install_bat() {
-    local version bat_arch tmpdir
-    version=$(github_latest_version "sharkdp/bat") || return 1
-    case "$ARCH" in
-        x86_64) bat_arch="x86_64-unknown-linux-musl" ;;
-        arm64) bat_arch="aarch64-unknown-linux-gnu" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/bat.tar.gz" "https://github.com/sharkdp/bat/releases/download/v${version}/bat-v${version}-${bat_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/bat.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/bat-v${version}-${bat_arch}/bat" "$HOME/.local/bin/bat" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "bat" bat install_bat
-
-### Install eza (ls alternative) - can install without sudo
-install_eza() {
-    local version eza_arch tmpdir
-    version=$(github_latest_version "eza-community/eza") || return 1
-    case "$ARCH" in
-        x86_64) eza_arch="x86_64-unknown-linux-musl" ;;
-        arm64) eza_arch="aarch64-unknown-linux-gnu" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/eza.tar.gz" "https://github.com/eza-community/eza/releases/download/v${version}/eza_${eza_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/eza.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/eza" "$HOME/.local/bin/eza" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "eza" eza install_eza
-
-### Install neovim - can install without sudo
-install_neovim() {
-    local version nvim_arch nvim_dir tmpdir
-    version=$(github_latest_version "neovim/neovim") || return 1
-    case "$ARCH" in
-        x86_64) nvim_arch="x86_64"; nvim_dir="nvim-linux-x86_64" ;;
-        arm64) nvim_arch="arm64"; nvim_dir="nvim-linux-arm64" ;;
-    esac
-    mkdir -p "$HOME/local" || return 1
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/nvim.tar.gz" "https://github.com/neovim/neovim/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/nvim.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$HOME/local/nvim"
-    mv "$tmpdir/$nvim_dir" "$HOME/local/nvim" || { rm -rf "$tmpdir"; return 1; }
-    ln -sf "$HOME/local/nvim/bin/nvim" "$HOME/.local/bin/nvim" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "neovim" nvim install_neovim
-
-### Install zoxide (smarter cd) - uses official install script
-install_zoxide() {
-    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
-}
-ensure_command "zoxide" zoxide install_zoxide
-
-### Install delta (better git diffs) - can install without sudo
-install_delta() {
-    local version delta_arch tmpdir
-    version=$(github_latest_version "dandavison/delta") || return 1
-    case "$ARCH" in
-        x86_64) delta_arch="x86_64-unknown-linux-musl" ;;
-        arm64) delta_arch="aarch64-unknown-linux-gnu" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/delta.tar.gz" "https://github.com/dandavison/delta/releases/download/${version}/delta-${version}-${delta_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/delta.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/delta-${version}-${delta_arch}/delta" "$HOME/.local/bin/delta" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "delta" delta install_delta
-
-### Install bottom (btm) - modern system monitor with GPU support
-install_bottom() {
-    local version btm_arch tmpdir
-    version=$(github_latest_version "ClementTsang/bottom") || return 1
-    case "$ARCH" in
-        x86_64) btm_arch="x86_64-unknown-linux-musl" ;;
-        arm64) btm_arch="aarch64-unknown-linux-gnu" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/bottom.tar.gz" "https://github.com/ClementTsang/bottom/releases/download/${version}/bottom_${btm_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/bottom.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/btm" "$HOME/.local/bin/btm" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "bottom" btm install_bottom
-
-### Install btop - visually polished system monitor with mouse support
-install_btop() {
-    local version btop_arch tmpdir
-    version=$(github_latest_version "aristocratos/btop") || return 1
-    case "$ARCH" in
-        x86_64) btop_arch="x86_64-linux-musl" ;;
-        arm64) btop_arch="aarch64-linux-musl" ;;
-    esac
-    tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/btop.tbz" "https://github.com/aristocratos/btop/releases/download/v${version}/btop-${btop_arch}.tbz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/btop.tbz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    install -m 755 "$tmpdir/btop/bin/btop" "$HOME/.local/bin/btop" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-ensure_command "btop" btop install_btop
-
-### Install Docker
-install_docker() {
-    curl -fsSL https://get.docker.com | sh || return 1
-    sudo usermod -aG docker "$USER"
-}
-ensure_command "Docker" docker install_docker sudo
-# Show warning if user not yet in docker group (requires logout/login to take effect)
-if [[ "$HAS_SUDO" == true ]] && ! groups | grep -q docker; then
-    print_warning "Log out and back in to use docker without sudo"
-fi
-
-### Install zsh (build from source if no sudo)
-install_zsh_from_source() {
-    # Check for required build tools
-    if ! command -v gcc &>/dev/null || ! command -v make &>/dev/null; then
-        echo "Missing build tools (gcc, make) - cannot compile zsh from source" >&2
-        return 1
-    fi
-    
-    # Create install directory
-    mkdir -p "$HOME/local" || return 1
-    
-    # Fetch latest version from zsh.org
-    local version tmpdir
-    version=$(curl -s https://www.zsh.org/pub/ | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -1) || return 1
-    [ -n "$version" ] || { echo "Could not determine latest zsh version" >&2; return 1; }
-    
-    # Download and extract to tmpdir
-    tmpdir=$(mktemp -d) || return 1
-    curl -Lo "$tmpdir/zsh.tar.xz" "https://www.zsh.org/pub/zsh-${version}.tar.xz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/zsh.tar.xz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    cd "$tmpdir/zsh-${version}" || { rm -rf "$tmpdir"; return 1; }
-    
-    # Configure, build, install to ~/local
-    ./configure --prefix="$HOME/local" --without-tcsetpgrp || { rm -rf "$tmpdir"; return 1; }
-    make -j"$(nproc)" || { rm -rf "$tmpdir"; return 1; }
-    make install || { rm -rf "$tmpdir"; return 1; }
-    
-    # Cleanup
-    cd /
-    rm -rf "$tmpdir"
-}
-
-if command -v zsh &>/dev/null || [ -x "$HOME/local/bin/zsh" ]; then
-    print_skip "zsh already installed"
-elif [[ "$HAS_SUDO" == true ]]; then
-    # zsh should already be installed via apt in System Packages section
-    print_warning "zsh not found - should have been installed via apt"
-else
-    # Build from source for sudo-less install
-    if command -v gcc &>/dev/null && command -v make &>/dev/null; then
-        step "Building zsh from source (no sudo)" install_zsh_from_source
-    else
-        print_skip "zsh (requires build tools: gcc, make)"
-    fi
-fi
-
-# Ensure ~/local/bin is in PATH for this script session (needed for oh-my-zsh to find zsh)
-if [ -d "$HOME/local/bin" ] && [[ ":$PATH:" != *":$HOME/local/bin:"* ]]; then
-    export PATH="$HOME/local/bin:$PATH"
-fi
-
-### Add ~/local/bin to .bashrc PATH (for sudo-less installs to be discoverable)
-add_local_to_bashrc_path() {
-    local bashrc="$HOME/.bashrc"
-    local path_line='export PATH="$HOME/local/bin:$PATH"'
-    if [ -f "$bashrc" ] && ! grep -qF 'HOME/local/bin' "$bashrc"; then
-        echo "" >> "$bashrc"
-        echo "# Added by peter-terminal-utils setup - user-local binaries" >> "$bashrc"
-        echo "$path_line" >> "$bashrc"
-    fi
-}
-if [[ "$HAS_SUDO" == false ]] && [ -d "$HOME/local/bin" ]; then
-    step "Adding ~/local/bin to .bashrc PATH" add_local_to_bashrc_path
+if [[ ! -f "$ORDER_FILE" ]]; then
+    print_error "Manifest file not found: $ORDER_FILE"
+    exit 1
 fi
 
 ###############################################################################
-### Fonts
+### Manifest Validation
 ###############################################################################
 
-print_header "Fonts"
+# Collect scripts referenced in order.txt
+declare -a MANIFEST_SCRIPTS=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \#* ]] && continue
+    MANIFEST_SCRIPTS+=("$line")
+done < "$ORDER_FILE"
 
-step "Creating fonts directory" mkdir -p ~/.local/share/fonts
+# Find all .sh files in install_scripts/
+declare -a DISK_SCRIPTS=()
+while IFS= read -r -d '' file; do
+    # Get path relative to install_scripts/
+    rel_path="${file#$INSTALL_SCRIPTS_DIR/}"
+    DISK_SCRIPTS+=("$rel_path")
+done < <(find "$INSTALL_SCRIPTS_DIR" -name "*.sh" -type f -print0 | sort -z)
 
-### Install Fira Code Nerd Font (for terminal icons)
-install_firacode() {
-    local tmpdir
-    tmpdir=$(mktemp -d) || return 1
-    curl -fL -o "$tmpdir/FiraCode.zip" https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip || { rm -rf "$tmpdir"; return 1; }
-    unzip -o "$tmpdir/FiraCode.zip" -d ~/.local/share/fonts || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-if ! fc-list | grep -i "FiraCode Nerd Font" > /dev/null; then
-    step "Installing Fira Code Nerd Font" install_firacode
-else
-    print_skip "Fira Code Nerd Font already installed"
-fi
-
-### Install Symbols Nerd Font (fallback for missing glyphs)
-install_symbols_font() {
-    local tmpdir
-    tmpdir=$(mktemp -d) || return 1
-    curl -fL -o "$tmpdir/NerdFontsSymbolsOnly.tar.xz" https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz || { rm -rf "$tmpdir"; return 1; }
-    tar -xf "$tmpdir/NerdFontsSymbolsOnly.tar.xz" -C ~/.local/share/fonts || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-if ! fc-list | grep -i "Symbols Nerd Font" > /dev/null; then
-    step "Installing Symbols Nerd Font" install_symbols_font
-else
-    print_skip "Symbols Nerd Font already installed"
-fi
-
-step "Rebuilding font cache" fc-cache -f
-
-### Configure fontconfig to use Symbols Nerd Font as fallback
-configure_fontconfig() {
-    mkdir -p ~/.config/fontconfig || return 1
-    cat > ~/.config/fontconfig/fonts.conf << 'EOF'
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <match target="pattern">
-    <test name="family" qual="any"><string>FiraCode Nerd Font</string></test>
-    <edit name="family" mode="append" binding="weak">
-      <string>Symbols Nerd Font</string>
-    </edit>
-  </match>
-  <match target="pattern">
-    <test name="family" qual="any"><string>FiraCode Nerd Font Mono</string></test>
-    <edit name="family" mode="append" binding="weak">
-      <string>Symbols Nerd Font Mono</string>
-    </edit>
-  </match>
-</fontconfig>
-EOF
-}
-step "Configuring fontconfig fallback" configure_fontconfig
-
-### GNOME settings (only if not headless)
-if [[ "$HEADLESS" == "N" ]]; then
-    # Set GNOME Terminal font (only if GNOME Terminal is installed)
-    if gsettings list-schemas | grep -q "org.gnome.Terminal" 2>/dev/null; then
-        configure_gnome_terminal() {
-            local profile
-            profile=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'") || return 1
-            [ -n "$profile" ] || { echo "No GNOME Terminal profile found" >&2; return 1; }
-            gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" font 'FiraCode Nerd Font Mono 11' || return 1
-            gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" use-system-font false
-        }
-        step "Configuring GNOME Terminal font" configure_gnome_terminal
-    else
-        print_skip "Skipped configuring GNOME Terminal font (GNOME Terminal not installed)"
+# Check for scripts in manifest that don't exist on disk
+declare -a MISSING_ON_DISK=()
+for script in "${MANIFEST_SCRIPTS[@]}"; do
+    if [[ ! -f "$INSTALL_SCRIPTS_DIR/$script" ]]; then
+        MISSING_ON_DISK+=("$script")
     fi
+done
 
-    # Individual settings - single commands
-    step "Disabling touchpad tap-and-drag" gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false
-    step "Disabling GNOME animations" gsettings set org.gnome.desktop.interface enable-animations false
-
-    # Keyboard repeat (grouped - related settings)
-    step_start "Configuring faster keyboard repeat"
-    run gsettings set org.gnome.desktop.peripherals.keyboard repeat-interval 25
-    run gsettings set org.gnome.desktop.peripherals.keyboard delay 300
-    step_end
-
-    step "Disabling hot corners" gsettings set org.gnome.desktop.interface enable-hot-corners false
-    step "Enabling locate pointer with Ctrl" gsettings set org.gnome.desktop.interface locate-pointer true
-    step "Enabling battery percentage display" gsettings set org.gnome.desktop.interface show-battery-percentage true
-    step "Enabling weekday in clock" gsettings set org.gnome.desktop.interface clock-show-weekday true
-    step "Enabling tap to click" gsettings set org.gnome.desktop.peripherals.touchpad tap-to-click true
-    step "Enabling two-finger right click" gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
-    step "Enabling center new windows" gsettings set org.gnome.mutter center-new-windows true
-    step "Setting dark theme" gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
-    step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory
-
-    # Nemo file manager settings (grouped)
-    step_start "Configuring Nemo file manager"
-    run gsettings set org.nemo.preferences show-hidden-files true
-    run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
-    run gsettings set org.nemo.preferences sort-directories-first true
-    step_end
-
-    # Nautilus file manager settings (only if installed)
-    if command -v nautilus &> /dev/null; then
-        step_start "Configuring Nautilus file manager"
-        run gsettings set org.gnome.nautilus.preferences show-hidden-files true
-        run gsettings set org.gnome.nautilus.preferences default-folder-viewer 'list-view'
-        step_end
-    fi
-fi
-
-###############################################################################
-### SSH Setup
-###############################################################################
-
-print_header "SSH Setup"
-
-generate_ssh_key() {
-    mkdir -p "$HOME/.ssh" || return 1
-    chmod 700 "$HOME/.ssh" || return 1
-    ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$HOME/.ssh/id_ed25519" -N ""
-}
-if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
-    step "Generating SSH key pair" generate_ssh_key
-else
-    print_skip "SSH key already exists"
-fi
-
-###############################################################################
-### Development Tools
-###############################################################################
-
-print_header "Development Tools"
-
-### Create ~/.local/bin early (needed for user-local tool installs)
-step "Creating ~/.local/bin directory" mkdir -p "$HOME/.local/bin"
-
-### Install uv (Python)
-install_uv() {
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-}
-ensure_command "uv" uv install_uv
-
-### Install Python tools via uv
-step_start "Installing Python tools"
-run ~/.local/bin/uv tool install ruff        # Fast linter/formatter
-run ~/.local/bin/uv tool install ty          # Type checker
-run ~/.local/bin/uv tool install turm        # TUI for Slurm job management
-run ~/.local/bin/uv tool install httpie      # Better HTTP client (http/https commands)
-run ~/.local/bin/uv tool install pre-commit  # Git hooks for code quality
-run ~/.local/bin/uv tool install yt-dlp      # Video downloader
-run ~/.local/bin/uv tool install rich-cli    # Pretty terminal output (rich command)
-run ~/.local/bin/uv tool install docling     # PDF to text/markdown for LLM input
-run ~/.local/bin/uv tool install jupyterlab  # Jupyter notebooks
-run ~/.local/bin/uv tool upgrade --all       # Upgrade all tools to latest
-step_end
-
-### Install Rust
-install_rust() {
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-}
-ensure_command "Rust" rustup install_rust
-
-### Install Cursor CLI
-install_cursor() {
-    curl -fsSL https://cursor.com/install | bash
-}
-ensure_command "Cursor CLI" cursor-agent install_cursor
-
-### Install TeX Live (full distribution - warning: 7+GB, may take 30+ minutes)
-### See: https://www.tug.org/texlive/quickinstall.html
-install_texlive() {
-    local tmpdir year arch_dir texlive_bin
-    tmpdir=$(mktemp -d) || return 1
-    cd "$tmpdir" || return 1
-    
-    # Download installer
-    curl -L -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || { cd /; rm -rf "$tmpdir"; return 1; }
-    zcat < install-tl-unx.tar.gz | tar xf - || { cd /; rm -rf "$tmpdir"; return 1; }
-    cd install-tl-2* || { cd /; rm -rf "$tmpdir"; return 1; }
-    
-    # Install non-interactively (full scheme by default)
-    print_warning "TeX Live installation may take 30+ minutes..."
-    sudo perl ./install-tl --no-interaction || { cd /; rm -rf "$tmpdir"; return 1; }
-    
-    # Cleanup
-    cd /
-    rm -rf "$tmpdir"
-    
-    # Determine install path and add to shell profiles
-    year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
-    if [ -n "$year" ]; then
-        case "$ARCH" in
-            x86_64) arch_dir="x86_64-linux" ;;
-            arm64) arch_dir="aarch64-linux" ;;
-        esac
-        texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
-        if [ -d "$texlive_bin" ]; then
-            # Add to .bashrc for bash non-login shells
-            if ! grep -q "texlive" "$HOME/.bashrc" 2>/dev/null; then
-                echo "" >> "$HOME/.bashrc"
-                echo "# TeX Live" >> "$HOME/.bashrc"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.bashrc"
-            fi
-            # Add to .profile for bash login shells
-            if ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
-                echo "" >> "$HOME/.profile"
-                echo "# TeX Live" >> "$HOME/.profile"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.profile"
-            fi
-            # Add to .zprofile for zsh login shells (zsh doesn't source .profile)
-            if ! grep -q "texlive" "$HOME/.zprofile" 2>/dev/null; then
-                echo "" >> "$HOME/.zprofile"
-                echo "# TeX Live" >> "$HOME/.zprofile"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.zprofile"
-            fi
-            # Note: .zshrc is managed via dotfiles symlink and has auto-detection built-in
+# Check for scripts on disk that aren't in manifest
+declare -a NOT_IN_MANIFEST=()
+for script in "${DISK_SCRIPTS[@]}"; do
+    found=false
+    for manifest_script in "${MANIFEST_SCRIPTS[@]}"; do
+        if [[ "$script" == "$manifest_script" ]]; then
+            found=true
+            break
         fi
+    done
+    if [[ "$found" == false ]]; then
+        NOT_IN_MANIFEST+=("$script")
     fi
-}
-ensure_command "TeX Live" pdflatex install_texlive sudo
+done
 
-###############################################################################
-### Shell Setup
-###############################################################################
+# Display validation warnings
+validation_failed=false
 
-print_header "Shell Setup"
-
-### Install Oh My Zsh (non-interactive, skip if already installed)
-install_ohmyzsh() {
-    # Remove incomplete installation if present
-    rm -rf "$HOME/.oh-my-zsh"
-    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-}
-# Check for actual oh-my-zsh.sh file, not just directory (catches incomplete installs)
-if [ ! -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then
-    step "Installing Oh My Zsh" install_ohmyzsh
-else
-    print_skip "Oh My Zsh already installed"
+if [[ ${#MISSING_ON_DISK[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${RED}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  WARNING: Scripts in order.txt that don't exist on disk                      ║${NC}"
+    echo -e "${RED}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+    for script in "${MISSING_ON_DISK[@]}"; do
+        echo -e "${RED}║${NC}   $script"
+    done
+    echo -e "${RED}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+    validation_failed=true
 fi
 
-### Install Oh My Zsh plugins (skip if already cloned)
-ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
-
-if [ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ]; then
-    step "Installing zsh-syntax-highlighting plugin" git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
-else
-    print_skip "zsh-syntax-highlighting already installed"
+if [[ ${#NOT_IN_MANIFEST[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  WARNING: Scripts on disk not referenced in order.txt                        ║${NC}"
+    echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+    for script in "${NOT_IN_MANIFEST[@]}"; do
+        echo -e "${YELLOW}║${NC}   $script"
+    done
+    echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+    validation_failed=true
 fi
 
-if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]; then
-    step "Installing zsh-autosuggestions plugin" git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
-else
-    print_skip "zsh-autosuggestions already installed"
-fi
-
-if [ ! -d "$ZSH_CUSTOM/plugins/zsh-history-substring-search" ]; then
-    step "Installing zsh-history-substring-search plugin" git clone https://github.com/zsh-users/zsh-history-substring-search "$ZSH_CUSTOM/plugins/zsh-history-substring-search"
-else
-    print_skip "zsh-history-substring-search already installed"
-fi
-
-if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autocomplete" ]; then
-    step "Installing zsh-autocomplete plugin" git clone --depth 1 https://github.com/marlonrichert/zsh-autocomplete.git "$ZSH_CUSTOM/plugins/zsh-autocomplete"
-else
-    print_skip "zsh-autocomplete already installed"
-fi
-
-### Install Powerlevel10k theme
-if [ ! -d "$ZSH_CUSTOM/themes/powerlevel10k" ]; then
-    step "Installing Powerlevel10k theme" git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"
-else
-    print_skip "Powerlevel10k already installed"
-fi
-
-### Symlink .zshrc from dotfiles
-setup_zshrc() {
-    if [ -f "$HOME/.zshrc" ] && [ ! -L "$HOME/.zshrc" ]; then
-        mv "$HOME/.zshrc" "$HOME/.zshrc.backup.$(date +%Y%m%d_%H%M%S)" || return 1
+if [[ "$validation_failed" == true ]]; then
+    echo ""
+    if ! prompt_yn "Continue anyway? [y/N]" "N"; then
+        print_error "Aborting due to manifest validation errors"
+        exit 1
     fi
-    ln -sf "$SCRIPT_DIR/dotfiles/.zshrc" "$HOME/.zshrc"
-}
-step "Symlinking .zshrc" setup_zshrc
-
-### Symlink neovim config from dotfiles
-setup_nvim_config() {
-    mkdir -p "$HOME/.config/nvim" || return 1
-    if [ -f "$HOME/.config/nvim/init.vim" ] && [ ! -L "$HOME/.config/nvim/init.vim" ]; then
-        mv "$HOME/.config/nvim/init.vim" "$HOME/.config/nvim/init.vim.backup.$(date +%Y%m%d_%H%M%S)" || return 1
-    fi
-    ln -sf "$SCRIPT_DIR/dotfiles/init.vim" "$HOME/.config/nvim/init.vim"
-}
-step "Symlinking neovim config" setup_nvim_config
-
-### Set up global ipy Python environment
-print_step "Syncing ipy Python environment"
-if [[ "$DRY_RUN" == true ]]; then
-    echo -e "${BLUE}ℹ${NC} [DRY RUN] uv sync --project $SCRIPT_DIR/../ipy"
-else
-    uv sync --project "$SCRIPT_DIR/../ipy" && print_success "Synced ipy Python environment" || { print_error "Failed to sync ipy Python environment"; SCRIPT_FAILED=true; }
-fi
-step "Symlinking ipy command" ln -sf "$SCRIPT_DIR/../ipy/IPy.sh" "$HOME/.local/bin/ipy"
-
-### Copy Powerlevel10k config if it doesn't exist (or prompt to overwrite)
-if [ ! -f "$HOME/.p10k.zsh" ]; then
-    step "Copying Powerlevel10k config" cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-else
-    if prompt_yn "Powerlevel10k config already exists. Overwrite with saved config? [y/N]" "N"; then
-        step "Overwriting Powerlevel10k config" cp "$SCRIPT_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-    else
-        print_skip "Keeping existing Powerlevel10k config"
-    fi
+    echo ""
 fi
 
 ###############################################################################
-### Snap Applications
+### Execute Scripts
 ###############################################################################
 
-print_header "Snap Applications"
+current_section=""
 
-install_snap_apps() {
-    step_start "Installing snap applications"
-    run sudo snap install obsidian --classic
-    run sudo snap install zotero-snap
-    run sudo snap install code --classic
-    run sudo snap install firefox
-    run sudo snap install inkscape
-    run sudo snap install libreoffice
-    run sudo snap install steam
-    step_end
+while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip empty lines
+    [[ -z "$line" ]] && continue
     
-    # Set Firefox as default browser (must be done after Firefox is installed)
-    if [[ "$HEADLESS" == "N" ]] && command -v xdg-settings &> /dev/null; then
-        step "Setting Firefox as default browser" xdg-settings set default-web-browser firefox_firefox.desktop
-    fi
-}
-
-### Install Signal Desktop via official apt repository (preferred over Snap)
-install_signal() {
-    # Official Signal apt repository - https://signal.org/download/linux/
-    curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor | sudo tee /usr/share/keyrings/signal-desktop-keyring.gpg > /dev/null || return 1
-    echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/signal-desktop-keyring.gpg] https://updates.signal.org/desktop/apt xenial main' | sudo tee /etc/apt/sources.list.d/signal-xenial.list > /dev/null || return 1
-    sudo apt-get update -qq || return 1
-    sudo apt-get install -yq signal-desktop
-}
-ensure_command "Signal Desktop" signal-desktop install_signal sudo
-
-if [[ "$INSTALL_SNAPS" != "Y" ]]; then
-    print_skip "Snap installations disabled"
-else
-    require_sudo "Snap applications" install_snap_apps
-fi
-
-###############################################################################
-### Git Configuration
-###############################################################################
-
-print_header "Git Configuration"
-
-step_start "Configuring git"
-run git config --global user.name "$GIT_NAME"
-run git config --global user.email "$GIT_EMAIL"
-run git config --global init.defaultBranch main
-run git config --global pull.rebase false
-run git config --global core.editor "nvim"
-run git config --global push.autoSetupRemote true
-run git config --global fetch.prune true
-# Aliases
-run git config --global alias.st status
-run git config --global alias.co checkout
-run git config --global alias.br branch
-run git config --global alias.lg "log --oneline --graph --decorate"
-run git config --global alias.amend "commit --amend --no-edit"
-run git config --global alias.last "log -1 HEAD --stat"
-# Delta integration for better diffs
-run git config --global core.pager delta
-run git config --global interactive.diffFilter 'delta --color-only'
-run git config --global delta.navigate true
-run git config --global delta.side-by-side true
-# Better merge/rebase defaults
-run git config --global merge.conflictstyle diff3
-run git config --global rebase.autoStash true
-# Initialize git-lfs (only needed once per user)
-run git lfs install
-step_end
-
-###############################################################################
-### Final Steps
-###############################################################################
-
-print_header "Final Steps"
-
-### Install Dash to Panel extension (only if not headless)
-if [[ "$HEADLESS" == "N" ]]; then
-    if command -v gnome-extensions &> /dev/null; then
-        EXTENSION_UUID="dash-to-panel@jderose9.github.com"
+    # Handle section headers (lines starting with #)
+    if [[ "$line" == \#* ]]; then
+        # Extract section name (remove # and leading/trailing whitespace)
+        current_section="${line#\#}"
+        current_section="${current_section#"${current_section%%[![:space:]]*}"}"
+        current_section="${current_section%"${current_section##*[![:space:]]}"}"
         
-        install_dash_to_panel() {
-            local shell_version download_path
-            shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || return 1
-            download_path=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$EXTENSION_UUID&shell_version=$shell_version" | jq -r '.download_url // empty') || return 1
-            [ -n "$download_path" ] || { echo "No download URL found for Dash to Panel extension" >&2; return 1; }
-            curl -sL "https://extensions.gnome.org$download_path" -o /tmp/dash-to-panel.zip || return 1
-            gnome-extensions install --force /tmp/dash-to-panel.zip || return 1
-            rm /tmp/dash-to-panel.zip
-        }
-        
-        if ! gnome-extensions list | grep -q "$EXTENSION_UUID" 2>&1; then
-            step "Installing Dash to Panel extension" install_dash_to_panel
-        else
-            print_skip "Dash to Panel already installed"
-        fi
-
-        # Enable extension and load settings
-        if gnome-extensions list | grep -q "$EXTENSION_UUID" 2>&1; then
-            step "Enabling Dash to Panel" gnome-extensions enable "$EXTENSION_UUID"
-
-            if [ -f "$SCRIPT_DIR/dash-to-panel-settings" ]; then
-                step_start "Loading Dash to Panel settings"
-                run_stdin "$SCRIPT_DIR/dash-to-panel-settings" dconf load /org/gnome/shell/extensions/dash-to-panel/
-                step_end
-            fi
-        fi
+        print_header "$current_section"
+        continue
     fi
-fi
-
-### Install Just Perfection extension (only if not headless)
-if [[ "$HEADLESS" == "N" ]]; then
-    if command -v gnome-extensions &> /dev/null; then
-        JUST_PERFECTION_UUID="just-perfection-desktop@just-perfection"
-        
-        install_just_perfection() {
-            local shell_version download_path
-            shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || return 1
-            download_path=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$JUST_PERFECTION_UUID&shell_version=$shell_version" | jq -r '.download_url // empty') || return 1
-            [ -n "$download_path" ] || { echo "No download URL found for Just Perfection extension" >&2; return 1; }
-            curl -sL "https://extensions.gnome.org$download_path" -o /tmp/just-perfection.zip || return 1
-            gnome-extensions install --force /tmp/just-perfection.zip || return 1
-            rm /tmp/just-perfection.zip
-        }
-        
-        if ! gnome-extensions list | grep -q "$JUST_PERFECTION_UUID" 2>&1; then
-            step "Installing Just Perfection extension" install_just_perfection
-        else
-            print_skip "Just Perfection already installed"
-        fi
-
-        if gnome-extensions list | grep -q "$JUST_PERFECTION_UUID" 2>&1; then
-            step "Enabling Just Perfection" gnome-extensions enable "$JUST_PERFECTION_UUID"
-            step "Disabling Alt+Tab popup delay" dconf write /org/gnome/shell/extensions/just-perfection/switcher-popup-delay false
-        fi
+    
+    # Process script path
+    script_rel_path="$line"
+    script_full_path="$SCRIPT_DIR/install_scripts/$script_rel_path"
+    
+    if [[ ! -f "$script_full_path" ]]; then
+        print_warning "Script not found: $script_rel_path"
+        SKIPPED_SCRIPTS+=("$script_rel_path (not found)")
+        continue
     fi
-fi
-
-### Change default shell to zsh (skip if already zsh)
-change_default_shell() {
-    step "Changing default shell to zsh" sudo chsh -s "$(which zsh)" "$USER"
-}
-if [ "$SHELL" != "$(which zsh)" ]; then
-    require_sudo "Default shell change" change_default_shell
-else
-    print_skip "Shell is already zsh"
-fi
+    
+    if [[ ! -x "$script_full_path" ]]; then
+        print_warning "Script not executable: $script_rel_path"
+        SKIPPED_SCRIPTS+=("$script_rel_path (not executable)")
+        continue
+    fi
+    
+    # Extract display name from script filename (remove .sh and path)
+    display_name=$(basename "$script_rel_path" .sh)
+    # Convert underscores to spaces and capitalize
+    display_name=$(echo "$display_name" | tr '_' ' ' | sed 's/\b\(.\)/\u\1/g')
+    
+    # Run the script with framed output
+    run_framed "$display_name" "$script_full_path"
+    
+done < "$ORDER_FILE"
 
 ###############################################################################
 ### Summary
@@ -1127,12 +313,29 @@ fi
 print_header "Setup Complete!"
 
 echo ""
+if [[ ${#COMPLETED_SCRIPTS[@]} -gt 0 ]]; then
+    print_success "Completed: ${#COMPLETED_SCRIPTS[@]} components"
+fi
+
+if [[ ${#SKIPPED_SCRIPTS[@]} -gt 0 ]]; then
+    print_warning "Skipped: ${#SKIPPED_SCRIPTS[@]} components"
+    for script in "${SKIPPED_SCRIPTS[@]}"; do
+        echo "    - $script"
+    done
+fi
+
+if [[ ${#FAILED_SCRIPTS[@]} -gt 0 ]]; then
+    print_error "Failed: ${#FAILED_SCRIPTS[@]} components"
+    for script in "${FAILED_SCRIPTS[@]}"; do
+        echo "    - $script"
+    done
+fi
+
+echo ""
 if [[ "$HAS_SUDO" == false ]]; then
-    print_warning "Ran in limited mode (no sudo) - skipped: apt packages, snap apps, shell change"
+    print_warning "Ran in limited mode (no sudo) - some components may have been skipped"
     echo ""
 fi
-print_success "All done! Here's what to do next:"
-echo ""
 
 # GitHub CLI auth reminder
 if command -v gh &> /dev/null; then
@@ -1152,6 +355,6 @@ fi
 
 # Exit with failure if any step failed
 if [[ "$SCRIPT_FAILED" == true ]]; then
-    print_error "Some steps failed - review output above"
+    print_error "Some components failed - review output above"
     exit 1
 fi

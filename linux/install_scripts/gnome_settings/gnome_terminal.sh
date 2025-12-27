@@ -1,0 +1,24 @@
+#!/bin/bash
+[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+# Configure GNOME Terminal font
+
+# Only run if not headless
+if [[ "$HEADLESS" == "Y" ]]; then
+    print_skip "GNOME Terminal configuration (headless mode)"
+    exit 0
+fi
+
+# Set GNOME Terminal font (only if GNOME Terminal is installed)
+if gsettings list-schemas | grep -q "org.gnome.Terminal" 2>/dev/null; then
+    configure_gnome_terminal() {
+        local profile
+        profile=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'") || return 1
+        [ -n "$profile" ] || { echo "No GNOME Terminal profile found" >&2; return 1; }
+        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" font 'FiraCode Nerd Font Mono 11' || return 1
+        gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:${profile}/" use-system-font false
+    }
+    step "Configuring GNOME Terminal font" configure_gnome_terminal
+else
+    print_skip "GNOME Terminal font (GNOME Terminal not installed)"
+fi
+
