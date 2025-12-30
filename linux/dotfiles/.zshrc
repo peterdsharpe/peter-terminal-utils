@@ -73,6 +73,9 @@ if command -v nvim &> /dev/null; then
     alias vi="nvim"
 fi
 
+# xdg-open (open files with default application)
+alias o="xdg-open"
+
 ###############################################################################
 ### Git aliases
 ###############################################################################
