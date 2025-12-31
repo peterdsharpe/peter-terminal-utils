@@ -107,11 +107,11 @@ class ScrollState:
 
     def page_up(self) -> None:
         """Scroll up by one page."""
-        self.scroll_up(self.visible - 1)
+        self.scroll_up(max(1, self.visible - 1))
 
     def page_down(self) -> None:
         """Scroll down by one page."""
-        self.scroll_down(self.visible - 1)
+        self.scroll_down(max(1, self.visible - 1))
 
     def go_top(self) -> None:
         """Scroll to the top."""
@@ -863,9 +863,9 @@ class SelectionTUI:
             if self.cursor < len(items) - 1:
                 self.cursor += 1
         elif key == curses.KEY_PPAGE:  # Page Up
-            self.cursor = max(0, self.cursor - self.scroll.visible + 1)
+            self.cursor = max(0, self.cursor - max(1, self.scroll.visible - 1))
         elif key == curses.KEY_NPAGE:  # Page Down
-            self.cursor = min(len(items) - 1, self.cursor + self.scroll.visible - 1)
+            self.cursor = min(len(items) - 1, self.cursor + max(1, self.scroll.visible - 1))
 
         # Toggle
         elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
@@ -1070,13 +1070,13 @@ class ExecutionTUI:
                 if self.viewing_idx == self.running_idx:
                     self.following = True
             elif key == curses.KEY_PPAGE:  # Page Up
-                self.viewing_idx = max(0, self.viewing_idx - self.left_scroll.visible + 1)
+                self.viewing_idx = max(0, self.viewing_idx - max(1, self.left_scroll.visible - 1))
                 self.right_scroll.offset = 0
                 self.following = False
             elif key == curses.KEY_NPAGE:  # Page Down
                 self.viewing_idx = min(
                     len(self.statuses) - 1,
-                    self.viewing_idx + self.left_scroll.visible - 1,
+                    self.viewing_idx + max(1, self.left_scroll.visible - 1),
                 )
                 self.right_scroll.offset = 0
                 if self.viewing_idx == self.running_idx:
