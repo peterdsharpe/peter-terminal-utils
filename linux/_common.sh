@@ -147,6 +147,7 @@ step() {
     fi
     
     echo -e "${CYAN}▶${NC} $msg"
+    echo -e "  ${CYAN}\$${NC} $*"
     if _exec "$@"; then
         echo -e "${GREEN}✓${NC} $msg"
     else
@@ -173,6 +174,7 @@ run() {
         echo -e "    ${BLUE}↳${NC} $*"
         return 0
     fi
+    echo -e "  ${CYAN}\$${NC} $*"
     if ! _exec "$@"; then
         _print_error "$*"
         STEP_FAILED=true
@@ -186,6 +188,7 @@ run_stdin() {
         echo -e "    ${BLUE}↳${NC} $* < $input_file"
         return 0
     fi
+    echo -e "  ${CYAN}\$${NC} $* < $input_file"
     _EXEC_STDIN="$input_file"
     if ! _exec "$@"; then
         _print_error "$* < $input_file"
@@ -613,14 +616,3 @@ standalone_init() {
     # Export for any child processes
     export DRY_RUN HEADLESS HAS_SUDO GIT_NAME GIT_EMAIL
 }
-
-###############################################################################
-### Orchestration Mode - Enable Command Tracing
-###############################################################################
-
-# Enable xtrace (set -x) at the VERY END of this file so that only commands
-# from the actual install scripts are traced, not the boilerplate definitions
-# and helper functions in this common file. This keeps the TUI output clean.
-if [[ "${ORCHESTRATED:-}" == "true" ]]; then
-    set -x
-fi
