@@ -32,7 +32,9 @@ from pathlib import Path
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 
 # Control characters to strip (carriage return, bell, etc.) - excluding newline and tab
-CONTROL_CHARS = str.maketrans("", "", "\r\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f")
+CONTROL_CHARS = str.maketrans(
+    "", "", "\r\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f"
+)
 
 
 ###############################################################################
@@ -405,7 +407,13 @@ def _load_presets_from_config() -> dict[str, PresetDef]:
     Maps preset names to keys 1-5 in order:
     desktop=1, headless=2, desktop_no_sudo=3, headless_no_sudo=4, empty=5
     """
-    preset_order = ["desktop", "headless", "desktop_no_sudo", "headless_no_sudo", "empty"]
+    preset_order = [
+        "desktop",
+        "headless",
+        "desktop_no_sudo",
+        "headless_no_sudo",
+        "empty",
+    ]
     presets: dict[str, PresetDef] = {}
 
     for i, name in enumerate(preset_order, start=1):
@@ -865,7 +873,9 @@ class SelectionTUI:
         elif key == curses.KEY_PPAGE:  # Page Up
             self.cursor = max(0, self.cursor - max(1, self.scroll.visible - 1))
         elif key == curses.KEY_NPAGE:  # Page Down
-            self.cursor = min(len(items) - 1, self.cursor + max(1, self.scroll.visible - 1))
+            self.cursor = min(
+                len(items) - 1, self.cursor + max(1, self.scroll.visible - 1)
+            )
 
         # Toggle
         elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
@@ -1070,7 +1080,9 @@ class ExecutionTUI:
                 if self.viewing_idx == self.running_idx:
                     self.following = True
             elif key == curses.KEY_PPAGE:  # Page Up
-                self.viewing_idx = max(0, self.viewing_idx - max(1, self.left_scroll.visible - 1))
+                self.viewing_idx = max(
+                    0, self.viewing_idx - max(1, self.left_scroll.visible - 1)
+                )
                 self.right_scroll.offset = 0
                 self.following = False
             elif key == curses.KEY_NPAGE:  # Page Down
@@ -1351,7 +1363,9 @@ class ExecutionTUI:
         )
 
         # Controls with navigation hints
-        controls = " [h/l] Panel   [j/k] Scroll   [PgUp/Dn]   [gg/G] Top/Bottom   [q] Quit "
+        controls = (
+            " [h/l] Panel   [j/k] Scroll   [PgUp/Dn]   [gg/G] Top/Bottom   [q] Quit "
+        )
         self.stdscr.addstr(footer_y + 2, 2, controls[: width - 4], self.colors["dim"])
 
     def _execute_script(self, status: ScriptStatus, silent: bool = False) -> bool:
@@ -1443,7 +1457,9 @@ class ExecutionTUI:
                                 data = os.read(master_fd, 4096)
                                 if not data:
                                     break
-                                for line in data.decode("utf-8", errors="replace").split("\n"):
+                                for line in data.decode(
+                                    "utf-8", errors="replace"
+                                ).split("\n"):
                                     if line:
                                         status.output_lines.append(line)
                             except OSError:
