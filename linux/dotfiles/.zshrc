@@ -112,6 +112,9 @@ fi
 # Add user-local binaries to PATH
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
 
+# Suppress MESA Vulkan driver development warnings (harmless FINISHME notices)
+export MESA_DEBUG=silent
+
 # Add TeX Live to PATH if installed
 if [ -d /usr/local/texlive ]; then
     # Find the latest year directory

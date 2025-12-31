@@ -26,6 +26,7 @@ fonts/fontconfig.sh
 # GNOME Settings
 gnome_settings/gnome_terminal.sh
 gnome_settings/desktop_settings.sh
+gnome_settings/libinput_config.sh
 
 # SSH Setup
 ssh_setup/ssh_key.sh

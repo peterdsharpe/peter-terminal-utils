@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Nemo Desktop
+Exec=nemo-desktop
+OnlyShowIn=GNOME;Unity;
+X-GNOME-Autostart-Phase=Desktop
+NoDisplay=true

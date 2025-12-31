@@ -26,13 +26,19 @@ step "Enabling tap to click" gsettings set org.gnome.desktop.peripherals.touchpa
 step "Enabling two-finger right click" gsettings set org.gnome.desktop.peripherals.touchpad click-method 'fingers'
 step "Enabling center new windows" gsettings set org.gnome.mutter center-new-windows true
 step "Setting dark theme" gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'
-step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory
+step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory application/x-gnome-saved-search
 
 # Nemo file manager settings (grouped)
 step_start "Configuring Nemo file manager"
 run gsettings set org.nemo.preferences show-hidden-files true
 run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
 run gsettings set org.nemo.preferences sort-directories-first true
+step_end
+
+# Desktop icon handling - transfer from Nautilus to Nemo
+step_start "Configuring desktop icon handling"
+run gsettings set org.gnome.desktop.background show-desktop-icons false
+run gsettings set org.nemo.desktop show-desktop-icons true
 step_end
 
 # Nautilus file manager settings (only if installed)
@@ -43,3 +49,22 @@ if command -v nautilus &> /dev/null; then
     step_end
 fi
 
+# Get the linux directory (for dotfiles path)
+LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Create nemo-desktop autostart entry
+setup_nemo_autostart() {
+    mkdir -p ~/.config/autostart || return 1
+    cp "$LINUX_DIR/dotfiles/nemo-desktop.desktop" ~/.config/autostart/
+}
+step "Creating Nemo desktop autostart entry" setup_nemo_autostart
+
+# Prevent Nautilus from auto-launching and managing desktop
+hide_nautilus_autostart() {
+    mkdir -p ~/.config/autostart || return 1
+    # Create minimal override file (idempotent - overwrites each time)
+    printf '[Desktop Entry]\nHidden=true\n' > ~/.config/autostart/org.gnome.Nautilus.desktop
+}
+if [[ -f /etc/xdg/autostart/org.gnome.Nautilus.desktop ]]; then
+    step "Hiding Nautilus autostart" hide_nautilus_autostart
+fi
