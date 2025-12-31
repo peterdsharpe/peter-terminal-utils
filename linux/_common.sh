@@ -3,6 +3,13 @@
 # This file is sourced by both the orchestrator (setup.sh) and individual install scripts
 
 ###############################################################################
+### Default Configuration
+###############################################################################
+
+DEFAULT_GIT_NAME="Peter Sharpe"
+DEFAULT_GIT_EMAIL="peterdsharpe@gmail.com"
+
+###############################################################################
 ### Color Definitions
 ###############################################################################
 
@@ -330,43 +337,29 @@ is_wsl2() { is_wsl && grep -qi "wsl2" /proc/version 2>/dev/null; }
 # Usage: arch_suffix=$(get_release_arch "bat")
 get_release_arch() {
     local tool="$1"
-    local suffix
     case "$tool" in
-        bat|fd|ripgrep)
+        # Standard Rust musl/gnu builds (most tools)
+        bat|fd|ripgrep|delta|eza|bottom)
             case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-musl" ;;
-                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
+                x86_64) echo "x86_64-unknown-linux-musl" ;;
+                arm64)  echo "aarch64-unknown-linux-gnu" ;;
             esac ;;
-        delta)
-            case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-musl" ;;
-                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
-            esac ;;
-        eza)
-            case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-musl" ;;
-                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
-            esac ;;
-        lazygit)
-            case "$ARCH" in
-                x86_64) suffix="Linux_x86_64" ;;
-                arm64)  suffix="Linux_arm64" ;;
-            esac ;;
-        bottom)
-            case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-musl" ;;
-                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
-            esac ;;
+        # btop uses musl for both architectures
         btop)
             case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-musl" ;;
-                arm64)  suffix="aarch64-unknown-linux-musl" ;;
+                x86_64) echo "x86_64-unknown-linux-musl" ;;
+                arm64)  echo "aarch64-unknown-linux-musl" ;;
+            esac ;;
+        # lazygit uses different naming convention
+        lazygit)
+            case "$ARCH" in
+                x86_64) echo "Linux_x86_64" ;;
+                arm64)  echo "Linux_arm64" ;;
             esac ;;
         *)
             echo "Unknown tool for arch mapping: $tool" >&2
             return 1 ;;
     esac
-    echo "$suffix"
 }
 
 ###############################################################################
@@ -391,9 +384,7 @@ install_github_binary() {
     arch_suffix=$(get_release_arch "$tool") || return 1
 
     tmpdir=$(mktemp -d)
-
-    # Helper for cleanup on error
-    _cleanup_and_fail() { rm -rf "$tmpdir"; return 1; }
+    trap "rm -rf '$tmpdir'" EXIT TERM INT  # Cleanup on any exit
 
     # Common URL patterns - try different naming conventions
     local base_url="https://github.com/$repo/releases/download"
@@ -424,14 +415,12 @@ install_github_binary() {
 
     if [ -z "$archive_url" ]; then
         echo "Could not find release URL for $tool v$version" >&2
-        rm -rf "$tmpdir"
         return 1
     fi
 
     # Download archive
     local archive_file="$tmpdir/archive"
     if ! curl -fsSL -o "$archive_file" "$archive_url"; then
-        rm -rf "$tmpdir"
         return 1
     fi
 
@@ -453,7 +442,6 @@ install_github_binary() {
     esac
 
     if [ "$extract_ok" != "true" ]; then
-        rm -rf "$tmpdir"
         return 1
     fi
 
@@ -468,11 +456,11 @@ install_github_binary() {
 
     if [ -z "$found_binary" ]; then
         echo "Binary '$binary' not found in archive" >&2
-        rm -rf "$tmpdir"
         return 1
     fi
 
     install -m 755 "$found_binary" "$HOME/.local/bin/$binary"
+    trap - EXIT TERM INT  # Clear trap before successful return
     rm -rf "$tmpdir"
 }
 
@@ -577,11 +565,11 @@ standalone_init() {
     fi
     
     if [[ -z "${GIT_NAME:-}" ]]; then
-        GIT_NAME=$(prompt_input "Git user name" "Peter Sharpe")
+        GIT_NAME=$(prompt_input "Git user name" "$DEFAULT_GIT_NAME")
     fi
     
     if [[ -z "${GIT_EMAIL:-}" ]]; then
-        GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
+        GIT_EMAIL=$(prompt_input "Git email" "$DEFAULT_GIT_EMAIL")
     fi
     
     # Export for any child processes

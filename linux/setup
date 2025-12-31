@@ -30,6 +30,10 @@ from pathlib import Path
 # Regex to match ANSI escape sequences
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 
+# Default git configuration (used when not provided via environment)
+DEFAULT_GIT_NAME = "Peter Sharpe"
+DEFAULT_GIT_EMAIL = "peterdsharpe@gmail.com"
+
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from text."""
@@ -225,46 +229,66 @@ def check_sudo_available() -> bool:
         return False
 
 
+def prepare_script_env(dry_run: bool, headless: bool) -> dict[str, str]:
+    """Prepare environment variables for script execution.
+
+    Args:
+        dry_run: Whether to run in dry-run mode (preview changes only).
+        headless: Whether to skip GUI components.
+
+    Returns:
+        Environment dictionary with all required variables set.
+    """
+    env = os.environ.copy()
+    env["_SOURCED"] = "1"
+    env["ORCHESTRATED"] = "true"
+    env["DRY_RUN"] = "true" if dry_run else "false"
+    env["HEADLESS"] = "Y" if headless else "N"
+    env["INSTALL_SNAPS"] = "N" if headless else "Y"
+    env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
+    env["GIT_NAME"] = env.get("GIT_NAME", DEFAULT_GIT_NAME)
+    env["GIT_EMAIL"] = env.get("GIT_EMAIL", DEFAULT_GIT_EMAIL)
+    return env
+
+
 ###############################################################################
 ### Presets
 ###############################################################################
 
-# Preset definitions: (description, disabled_sections, flags)
-# flags: "no_sudo" = disable scripts with @requires: sudo
-#        "headless" = disable scripts with @headless: skip
-PRESET_DEFS: dict[str, tuple[str, list[str], list[str]]] = {
-    "1": (
-        "Desktop - Full installation with GUI components",
-        [],  # No sections disabled
-        [],  # No flags
-    ),
-    "2": (
+
+@dataclass(frozen=True)
+class PresetDef:
+    """Definition of an installation preset.
+
+    Attributes:
+        description: Human-readable description (e.g., "Desktop - Full installation").
+        disabled_sections: Section names to disable for this preset.
+        flags: Modifier flags ("no_sudo" disables @requires:sudo scripts,
+               "headless" disables @headless:skip scripts).
+    """
+
+    description: str
+    disabled_sections: list[str] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+
+
+PRESETS: dict[str, PresetDef] = {
+    "1": PresetDef("Desktop - Full installation with GUI components"),
+    "2": PresetDef(
         "Headless - Server/CLI only, no GUI components",
-        [
-            "GNOME Settings",
-            "Fonts",
-            "Final Steps",
-        ],
-        ["headless"],  # Disable @headless: skip scripts
+        disabled_sections=["GNOME Settings", "Fonts", "Final Steps"],
+        flags=["headless"],
     ),
-    "3": (
+    "3": PresetDef(
         "Desktop (no sudo) - Desktop without root-requiring scripts",
-        [],  # No sections disabled
-        ["no_sudo"],  # Disable @requires: sudo scripts
+        flags=["no_sudo"],
     ),
-    "4": (
+    "4": PresetDef(
         "Headless (no sudo) - Headless without root-requiring scripts",
-        [
-            "GNOME Settings",
-            "Fonts",
-            "Final Steps",
-        ],
-        ["no_sudo", "headless"],  # Both flags
+        disabled_sections=["GNOME Settings", "Fonts", "Final Steps"],
+        flags=["no_sudo", "headless"],
     ),
 }
-
-# For display in list_presets, we need a way to show what each preset disables
-PRESETS = PRESET_DEFS  # Alias for compatibility
 
 
 def is_headless_preset(preset_key: str) -> bool:
@@ -277,10 +301,10 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
 
     Uses script metadata (@requires, @headless) to determine what to disable.
     """
-    if preset_key not in PRESET_DEFS:
+    if preset_key not in PRESETS:
         return
 
-    _, disabled_sections, flags = PRESET_DEFS[preset_key]
+    preset = PRESETS[preset_key]
 
     # First, enable everything
     for section in manifest.sections:
@@ -288,17 +312,17 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
 
     # Disable specified sections
     for section in manifest.sections:
-        if section.name in disabled_sections:
+        if section.name in preset.disabled_sections:
             section.set_all(False)
 
     # Apply flags based on script metadata
     for section in manifest.sections:
         for script in section.scripts:
             # Disable sudo-requiring scripts if no_sudo flag set
-            if "no_sudo" in flags and script.requires_sudo:
+            if "no_sudo" in preset.flags and script.requires_sudo:
                 script.enabled = False
             # Disable headless-skip scripts if headless flag set
-            if "headless" in flags and script.is_headless_skip:
+            if "headless" in preset.flags and script.is_headless_skip:
                 script.enabled = False
 
 
@@ -388,7 +412,7 @@ class SelectionTUI:
         self.stdscr.attroff(self.colors["header"] | self.colors["bold"])
 
         # Subtitle
-        subtitle = f"Preset: [{self.current_preset}] {PRESETS[self.current_preset][0]}"
+        subtitle = f"Preset: [{self.current_preset}] {PRESETS[self.current_preset].description}"
         self.stdscr.addstr(1, 2, subtitle[: width - 4], self.colors["cyan"])
 
         # Separator
@@ -524,7 +548,7 @@ class SelectionTUI:
 
             # Key bindings - line 2
             preset_keys = "   ".join(
-                f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items()
+                f"[{k}] {p.description.split(' - ')[0]}" for k, p in PRESETS.items()
             )
             keys2 = f" {preset_keys}   [?] Help "
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
@@ -947,16 +971,7 @@ class ExecutionTUI:
             status.exit_code = 1
             return False
 
-        # Prepare environment
-        env = os.environ.copy()
-        env["_SOURCED"] = "1"  # Tell scripts they're being sourced
-        env["ORCHESTRATED"] = "true"
-        env["DRY_RUN"] = "true" if self.dry_run else "false"
-        env["HEADLESS"] = "Y" if self.headless else "N"
-        env["INSTALL_SNAPS"] = "N" if self.headless else "Y"
-        env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
-        env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
-        env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+        env = prepare_script_env(self.dry_run, self.headless)
 
         try:
             # Use pty for proper terminal emulation
@@ -1171,16 +1186,7 @@ class ExecutionTUI:
             status.exit_code = 1
             return False
 
-        # Prepare environment
-        env = os.environ.copy()
-        env["_SOURCED"] = "1"
-        env["ORCHESTRATED"] = "true"
-        env["DRY_RUN"] = "true" if self.dry_run else "false"
-        env["HEADLESS"] = "Y" if self.headless else "N"
-        env["INSTALL_SNAPS"] = "N" if self.headless else "Y"
-        env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
-        env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
-        env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+        env = prepare_script_env(self.dry_run, self.headless)
 
         try:
             common_sh = self.scripts_dir.parent / "_common.sh"
@@ -1269,15 +1275,7 @@ def run_non_interactive(
         print(" (Headless mode - skipping GUI packages)")
     print(f"{'=' * 60}\n")
 
-    env = os.environ.copy()
-    env["_SOURCED"] = "1"
-    env["ORCHESTRATED"] = "true"
-    env["DRY_RUN"] = "true" if dry_run else "false"
-    env["HEADLESS"] = "Y" if headless else "N"
-    env["INSTALL_SNAPS"] = "N" if headless else "Y"
-    env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
-    env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
-    env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+    env = prepare_script_env(dry_run, headless)
 
     success = 0
     fail = 0
@@ -1326,15 +1324,15 @@ def run_non_interactive(
 def list_presets() -> None:
     """Print available presets."""
     print("\nAvailable presets:\n")
-    for key, (desc, disabled_sections, flags) in PRESET_DEFS.items():
-        print(f"  [{key}] {desc}")
-        if disabled_sections:
-            print(f"       Disables sections: {', '.join(disabled_sections)}")
-        if flags:
+    for key, preset in PRESETS.items():
+        print(f"  [{key}] {preset.description}")
+        if preset.disabled_sections:
+            print(f"       Disables sections: {', '.join(preset.disabled_sections)}")
+        if preset.flags:
             flag_desc = []
-            if "no_sudo" in flags:
+            if "no_sudo" in preset.flags:
                 flag_desc.append("scripts requiring sudo")
-            if "headless" in flags:
+            if "headless" in preset.flags:
                 flag_desc.append("GUI-only scripts")
             if flag_desc:
                 print(f"       Disables: {', '.join(flag_desc)}")
@@ -1509,7 +1507,7 @@ Examples:
 
     # Non-interactive mode with preset
     if args.preset:
-        if args.preset not in PRESET_DEFS:
+        if args.preset not in PRESETS:
             print(f"Error: Unknown preset '{args.preset}'", file=sys.stderr)
             print("Use --list to see available presets.", file=sys.stderr)
             return 1

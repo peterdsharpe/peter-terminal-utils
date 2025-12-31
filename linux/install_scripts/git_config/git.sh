@@ -1,13 +1,12 @@
 #!/bin/bash
 # @name: Git Config
-# @description: User, aliases, delta pager, git-lfs
+# @description: Aliases, delta pager, git-lfs, merge/rebase settings
+# @depends: git_user.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 step_start "Configuring git"
-run git config --global user.name "$GIT_NAME"
-run git config --global user.email "$GIT_EMAIL"
 run git config --global init.defaultBranch main
 run git config --global pull.rebase false
 run git config --global core.editor "nvim"

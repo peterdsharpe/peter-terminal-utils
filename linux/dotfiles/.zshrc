@@ -110,7 +110,7 @@ else
 fi
 
 # Add user-local binaries to PATH
-export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Suppress MESA Vulkan driver development warnings (harmless FINISHME notices)
 export MESA_DEBUG=silent

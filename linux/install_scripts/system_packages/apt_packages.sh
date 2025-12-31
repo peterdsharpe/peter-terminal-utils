@@ -15,8 +15,8 @@ install_system_packages() {
         git git-lfs
         # Build tools
         build-essential
-        # CLI utilities
-        ripgrep fd-find fzf bat eza tree ncdu jq cloc zoxide pv
+        # CLI utilities (tools with dedicated GitHub scripts are installed there for newer versions)
+        tree ncdu jq cloc pv
         # Network
         curl wget net-tools openssh-server mtr
         # VPN & firewall
