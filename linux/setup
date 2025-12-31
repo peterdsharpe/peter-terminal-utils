@@ -1,0 +1,1065 @@
+#!/usr/bin/env python3
+"""
+Peter Sharpe's Linux Setup Script - Interactive TUI
+
+A curses-based terminal interface for selecting and installing system components.
+Parses install_scripts/manifest.conf and provides interactive selection with presets.
+
+Usage:
+    setup              # Interactive TUI mode
+    setup --preset 1   # Non-interactive: Desktop preset
+    setup --preset 2   # Non-interactive: Headless preset
+    setup --list       # Show available presets
+    setup --dry-run    # Dry run mode
+    setup --help       # Show help
+"""
+
+from __future__ import annotations
+
+import argparse
+import curses
+import os
+import pty
+import re
+import select
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Regex to match ANSI escape sequences
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    return ANSI_ESCAPE_RE.sub("", text)
+
+###############################################################################
+### Data Model
+###############################################################################
+
+
+@dataclass
+class Script:
+    """A single install script."""
+
+    name: str  # Display name (e.g., "apt_packages")
+    path: str  # Relative path from install_scripts/ (e.g., "system_packages/apt_packages.sh")
+    enabled: bool = True
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name: underscores to spaces, title case."""
+        return self.name.replace("_", " ").title()
+
+
+@dataclass
+class Section:
+    """A section containing multiple scripts."""
+
+    name: str
+    scripts: list[Script] = field(default_factory=list)
+
+    @property
+    def state(self) -> str:
+        """Returns 'all', 'none', or 'partial' based on enabled scripts."""
+        enabled_count = sum(1 for s in self.scripts if s.enabled)
+        if enabled_count == len(self.scripts):
+            return "all"
+        elif enabled_count == 0:
+            return "none"
+        else:
+            return "partial"
+
+    def set_all(self, enabled: bool) -> None:
+        """Set all scripts to enabled or disabled."""
+        for script in self.scripts:
+            script.enabled = enabled
+
+    def toggle(self) -> None:
+        """Toggle section: if any enabled, disable all; otherwise enable all."""
+        if self.state == "none":
+            self.set_all(True)
+        else:
+            self.set_all(False)
+
+
+@dataclass
+class Manifest:
+    """The complete manifest of sections and scripts."""
+
+    sections: list[Section] = field(default_factory=list)
+
+    def get_enabled_scripts(self) -> list[tuple[Section, Script]]:
+        """Return list of (section, script) tuples for enabled scripts."""
+        result = []
+        for section in self.sections:
+            for script in section.scripts:
+                if script.enabled:
+                    result.append((section, script))
+        return result
+
+    def get_flat_items(self) -> list[Section | Script]:
+        """Return flat list of sections and scripts for navigation."""
+        items: list[Section | Script] = []
+        for section in self.sections:
+            items.append(section)
+            items.extend(section.scripts)
+        return items
+
+
+###############################################################################
+### Manifest Parser
+###############################################################################
+
+
+def parse_manifest(manifest_path: Path) -> Manifest:
+    """Parse INI-style manifest.conf into a Manifest object."""
+    manifest = Manifest()
+    current_section: Section | None = None
+
+    with open(manifest_path) as f:
+        for line in f:
+            line = line.strip()
+
+            # Skip empty lines and comments
+            if not line or line.startswith("#"):
+                continue
+
+            # Section header: [Section Name]
+            if line.startswith("[") and line.endswith("]"):
+                section_name = line[1:-1]
+                current_section = Section(name=section_name)
+                manifest.sections.append(current_section)
+            elif current_section is not None:
+                # Script path
+                script_path = line
+                # Extract script name from path (remove directory and .sh)
+                script_name = Path(script_path).stem
+                current_section.scripts.append(
+                    Script(name=script_name, path=script_path)
+                )
+
+    return manifest
+
+
+###############################################################################
+### Sudo Detection
+###############################################################################
+
+
+def check_sudo_available() -> bool:
+    """Check if sudo is available without password (NOPASSWD or cached credentials)."""
+    if os.geteuid() == 0:
+        return True  # Running as root
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+###############################################################################
+### Presets
+###############################################################################
+
+# Scripts that require sudo access
+SUDO_SCRIPTS = [
+    "system_packages/apt_packages.sh",
+    "system_packages/ssh_service.sh",
+    "cli_tools/docker.sh",
+    "cli_tools/github_cli.sh",
+    "cli_tools/lazygit.sh",
+    "dev_tools/texlive.sh",
+    "gnome_settings/libinput_config.sh",
+    "snap_apps/signal.sh",
+    "snap_apps/snap_apps.sh",
+    "final_steps/default_shell.sh",
+]
+
+PRESETS: dict[str, tuple[str, list[str], list[str]]] = {
+    "1": (
+        "Desktop - Full installation with GUI components",
+        [],  # No sections disabled
+        [],  # No scripts disabled
+    ),
+    "2": (
+        "Headless - Server/CLI only, no GUI components",
+        [
+            "GNOME Settings",
+            "Fonts",
+            "Final Steps",
+        ],
+        [
+            "snap_apps/signal.sh",  # GUI app
+        ],
+    ),
+    "3": (
+        "Desktop (no sudo) - Desktop without root-requiring scripts",
+        [],  # No sections disabled
+        SUDO_SCRIPTS,
+    ),
+    "4": (
+        "Headless (no sudo) - Headless without root-requiring scripts",
+        [
+            "GNOME Settings",
+            "Fonts",
+            "Final Steps",
+        ],
+        SUDO_SCRIPTS,  # All sudo scripts already includes signal
+    ),
+}
+
+
+def apply_preset(manifest: Manifest, preset_key: str) -> None:
+    """Apply a preset to the manifest, enabling/disabling sections and scripts."""
+    if preset_key not in PRESETS:
+        return
+
+    _, disabled_sections, disabled_scripts = PRESETS[preset_key]
+
+    # First, enable everything
+    for section in manifest.sections:
+        section.set_all(True)
+
+    # Disable specified sections
+    for section in manifest.sections:
+        if section.name in disabled_sections:
+            section.set_all(False)
+
+    # Disable specified scripts
+    for section in manifest.sections:
+        for script in section.scripts:
+            if script.path in disabled_scripts:
+                script.enabled = False
+
+
+###############################################################################
+### Curses Color Setup
+###############################################################################
+
+
+def init_colors() -> dict[str, int]:
+    """Initialize curses color pairs and return a mapping."""
+    curses.start_color()
+    curses.use_default_colors()
+
+    # Define color pairs
+    curses.init_pair(1, curses.COLOR_GREEN, -1)  # Enabled
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)  # Partial
+    curses.init_pair(3, curses.COLOR_CYAN, -1)  # Running/info
+    curses.init_pair(4, curses.COLOR_RED, -1)  # Failed/error
+    curses.init_pair(5, curses.COLOR_BLUE, -1)  # Header
+    curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLUE)  # Header bar
+
+    return {
+        "green": curses.color_pair(1),
+        "yellow": curses.color_pair(2),
+        "cyan": curses.color_pair(3),
+        "red": curses.color_pair(4),
+        "blue": curses.color_pair(5),
+        "header": curses.color_pair(6),
+        "dim": curses.A_DIM,
+        "bold": curses.A_BOLD,
+        "reverse": curses.A_REVERSE,
+    }
+
+
+###############################################################################
+### Selection TUI
+###############################################################################
+
+
+class SelectionTUI:
+    """Interactive TUI for selecting scripts to install."""
+
+    def __init__(self, stdscr: curses.window, manifest: Manifest):
+        self.stdscr = stdscr
+        self.manifest = manifest
+        self.colors = init_colors()
+        self.cursor = 0  # Index in flat items list
+        self.scroll_offset = 0
+        self.current_preset = "1"  # Start with Desktop preset
+        apply_preset(self.manifest, self.current_preset)
+
+    def get_visible_height(self) -> int:
+        """Get number of lines available for the tree view."""
+        height, _ = self.stdscr.getmaxyx()
+        return height - 7  # Header (3) + footer (4)
+
+    def draw(self) -> None:
+        """Draw the complete selection screen."""
+        self.stdscr.clear()
+        height, width = self.stdscr.getmaxyx()
+
+        # Draw header
+        self.draw_header(width)
+
+        # Draw tree
+        self.draw_tree(height, width)
+
+        # Draw footer
+        self.draw_footer(height, width)
+
+        self.stdscr.refresh()
+
+    def draw_header(self, width: int) -> None:
+        """Draw the header section."""
+        # Top border
+        title = " Peter Sharpe's Linux Setup "
+        padding = (width - len(title) - 2) // 2
+        header_line = "═" * padding + title + "═" * (width - padding - len(title) - 2)
+
+        self.stdscr.attron(self.colors["header"] | self.colors["bold"])
+        self.stdscr.addstr(0, 0, header_line[:width])
+        self.stdscr.attroff(self.colors["header"] | self.colors["bold"])
+
+        # Subtitle
+        subtitle = f"Preset: [{self.current_preset}] {PRESETS[self.current_preset][0]}"
+        self.stdscr.addstr(1, 2, subtitle[: width - 4], self.colors["cyan"])
+
+        # Separator
+        self.stdscr.addstr(2, 0, "─" * width, self.colors["dim"])
+
+    def draw_tree(self, height: int, width: int) -> None:
+        """Draw the tree of sections and scripts."""
+        items = self.manifest.get_flat_items()
+        visible_height = self.get_visible_height()
+
+        # Adjust scroll to keep cursor visible
+        if self.cursor < self.scroll_offset:
+            self.scroll_offset = self.cursor
+        elif self.cursor >= self.scroll_offset + visible_height:
+            self.scroll_offset = self.cursor - visible_height + 1
+
+        # Draw visible items
+        for i in range(visible_height):
+            item_idx = self.scroll_offset + i
+            if item_idx >= len(items):
+                break
+
+            item = items[item_idx]
+            y = 3 + i
+            is_selected = item_idx == self.cursor
+
+            self.draw_item(y, width, item, is_selected)
+
+    def draw_item(
+        self, y: int, width: int, item: Section | Script, is_selected: bool
+    ) -> None:
+        """Draw a single tree item (section or script)."""
+        if isinstance(item, Section):
+            self.draw_section(y, width, item, is_selected)
+        else:
+            self.draw_script(y, width, item, is_selected)
+
+    def draw_section(
+        self, y: int, width: int, section: Section, is_selected: bool
+    ) -> None:
+        """Draw a section header."""
+        state = section.state
+        if state == "all":
+            checkbox = "[x]"
+            color = self.colors["green"]
+        elif state == "partial":
+            checkbox = "[~]"
+            color = self.colors["yellow"]
+        else:
+            checkbox = "[ ]"
+            color = self.colors["dim"]
+
+        line = f"  {checkbox} {section.name}"
+
+        if is_selected:
+            self.stdscr.attron(self.colors["reverse"])
+
+        self.stdscr.addstr(y, 0, " " * width)  # Clear line
+        self.stdscr.addstr(y, 0, line[: width - 1], color | self.colors["bold"])
+
+        if is_selected:
+            self.stdscr.attroff(self.colors["reverse"])
+
+    def draw_script(
+        self, y: int, width: int, script: Script, is_selected: bool
+    ) -> None:
+        """Draw a script entry."""
+        if script.enabled:
+            checkbox = "[x]"
+            color = self.colors["green"]
+        else:
+            checkbox = "[ ]"
+            color = self.colors["dim"]
+
+        line = f"        {checkbox} {script.display_name}"
+
+        if is_selected:
+            self.stdscr.attron(self.colors["reverse"])
+
+        self.stdscr.addstr(y, 0, " " * width)  # Clear line
+        self.stdscr.addstr(y, 0, line[: width - 1], color)
+
+        if is_selected:
+            self.stdscr.attroff(self.colors["reverse"])
+
+    def draw_footer(self, height: int, width: int) -> None:
+        """Draw the footer with key bindings."""
+        footer_y = height - 4
+
+        # Separator
+        self.stdscr.addstr(footer_y, 0, "─" * width, self.colors["dim"])
+
+        # Key bindings - line 1
+        keys1 = " [w/k/↑] Up   [s/j/↓] Down   [Space/Enter] Toggle   [x] Install   [q] Quit "
+        self.stdscr.addstr(footer_y + 1, 2, keys1[: width - 4], self.colors["cyan"])
+
+        # Key bindings - line 2
+        preset_keys = "   ".join(f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items())
+        keys2 = f" {preset_keys}   [?] Help "
+        self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
+
+        # Status line
+        enabled = self.manifest.get_enabled_scripts()
+        status = f" {len(enabled)} scripts selected "
+        self.stdscr.addstr(
+            footer_y + 3, 2, status[: width - 4], self.colors["green"] | self.colors["bold"]
+        )
+
+    def handle_input(self) -> str | None:
+        """Handle keyboard input. Returns 'execute' or 'quit' or None."""
+        key = self.stdscr.getch()
+        items = self.manifest.get_flat_items()
+
+        # Navigation
+        if key in (ord("w"), ord("k"), curses.KEY_UP):
+            if self.cursor > 0:
+                self.cursor -= 1
+        elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+            if self.cursor < len(items) - 1:
+                self.cursor += 1
+
+        # Toggle
+        elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
+            item = items[self.cursor]
+            if isinstance(item, Section):
+                item.toggle()
+            else:
+                item.enabled = not item.enabled
+
+        # Presets
+        elif (chr(key) if 0 <= key < 256 else "") in PRESETS:
+            preset_key = chr(key)
+            self.current_preset = preset_key
+            apply_preset(self.manifest, preset_key)
+
+        # Execute
+        elif key == ord("x"):
+            return "execute"
+
+        # Quit
+        elif key == ord("q"):
+            return "quit"
+
+        # Help
+        elif key == ord("?"):
+            self.show_help()
+
+        return None
+
+    def show_help(self) -> None:
+        """Show help overlay."""
+        height, width = self.stdscr.getmaxyx()
+
+        help_text = [
+            "╔══════════════════════════════════════════╗",
+            "║            Keyboard Shortcuts            ║",
+            "╠══════════════════════════════════════════╣",
+            "║  w, k, ↑     Move cursor up              ║",
+            "║  s, j, ↓     Move cursor down            ║",
+            "║  Space/Enter Toggle selection            ║",
+            "║  1-9         Apply preset                ║",
+            "║  x           Start installation          ║",
+            "║  q           Quit                        ║",
+            "║  ?           Show this help              ║",
+            "╠══════════════════════════════════════════╣",
+            "║  Sections toggle all children            ║",
+            "║  [x]=enabled [~]=partial [ ]=disabled    ║",
+            "╚══════════════════════════════════════════╝",
+            "",
+            "         Press any key to continue         ",
+        ]
+
+        # Center the help box
+        box_height = len(help_text)
+        box_width = len(help_text[0])
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+
+        for i, line in enumerate(help_text):
+            self.stdscr.addstr(
+                start_y + i, start_x, line, self.colors["cyan"] | self.colors["bold"]
+            )
+
+        self.stdscr.refresh()
+        self.stdscr.getch()  # Wait for any key
+
+    def run(self) -> bool:
+        """Run the selection TUI. Returns True if user wants to execute, False to quit."""
+        curses.curs_set(0)  # Hide cursor
+
+        while True:
+            self.draw()
+            result = self.handle_input()
+            if result == "execute":
+                return True
+            elif result == "quit":
+                return False
+
+
+###############################################################################
+### Execution TUI
+###############################################################################
+
+
+@dataclass
+class ScriptStatus:
+    """Status of a script during execution."""
+
+    section: Section
+    script: Script
+    status: str = "pending"  # pending, running, success, failed, skipped
+    output_lines: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+
+
+class ExecutionTUI:
+    """TUI for showing installation progress with live output."""
+
+    def __init__(
+        self,
+        stdscr: curses.window,
+        manifest: Manifest,
+        scripts_dir: Path,
+        dry_run: bool = False,
+    ):
+        self.stdscr = stdscr
+        self.manifest = manifest
+        self.scripts_dir = scripts_dir
+        self.dry_run = dry_run
+        self.colors = init_colors()
+
+        # Build status list from enabled scripts
+        self.statuses: list[ScriptStatus] = []
+        for section, script in manifest.get_enabled_scripts():
+            self.statuses.append(ScriptStatus(section=section, script=script))
+
+        self.current_idx = 0
+        self.scroll_offset = 0
+        self.output_scroll = 0
+        self.cancelled = False
+
+    def draw(self) -> None:
+        """Draw the execution screen."""
+        self.stdscr.clear()
+        height, width = self.stdscr.getmaxyx()
+
+        # Draw header
+        self.draw_header(width)
+
+        # Draw script list (left side)
+        list_width = min(40, width // 2)
+        self.draw_script_list(height, list_width)
+
+        # Draw output panel (right side)
+        self.draw_output_panel(height, width, list_width)
+
+        # Draw footer
+        self.draw_footer(height, width)
+
+        self.stdscr.refresh()
+
+    def draw_header(self, width: int) -> None:
+        """Draw the header with progress."""
+        completed = sum(1 for s in self.statuses if s.status in ("success", "failed", "skipped"))
+        total = len(self.statuses)
+
+        if self.cancelled:
+            title = " Installation Cancelled "
+            title_color = self.colors["yellow"]
+        elif completed == total:
+            failed = sum(1 for s in self.statuses if s.status == "failed")
+            if failed > 0:
+                title = f" Installation Complete - {failed} Failed "
+                title_color = self.colors["red"]
+            else:
+                title = " Installation Complete "
+                title_color = self.colors["green"]
+        else:
+            title = f" Installing... [{completed}/{total}] "
+            title_color = self.colors["cyan"]
+
+        if self.dry_run:
+            title = f" [DRY RUN]{title}"
+
+        padding = (width - len(title) - 2) // 2
+        header_line = "═" * padding + title + "═" * (width - padding - len(title) - 2)
+
+        self.stdscr.attron(title_color | self.colors["bold"])
+        self.stdscr.addstr(0, 0, header_line[:width])
+        self.stdscr.attroff(title_color | self.colors["bold"])
+
+    def draw_script_list(self, height: int, list_width: int) -> None:
+        """Draw the list of scripts with status indicators."""
+        visible_height = height - 5  # Header + footer
+
+        # Draw separator
+        for y in range(1, height - 3):
+            try:
+                self.stdscr.addch(y, list_width, "│", self.colors["dim"])
+            except curses.error:
+                pass
+
+        # Adjust scroll to show current
+        if self.current_idx < self.scroll_offset:
+            self.scroll_offset = self.current_idx
+        elif self.current_idx >= self.scroll_offset + visible_height:
+            self.scroll_offset = self.current_idx - visible_height + 1
+
+        for i in range(visible_height):
+            idx = self.scroll_offset + i
+            if idx >= len(self.statuses):
+                break
+
+            status = self.statuses[idx]
+            y = 1 + i
+            self.draw_status_line(y, list_width - 1, status, idx == self.current_idx)
+
+    def draw_status_line(
+        self, y: int, width: int, status: ScriptStatus, is_current: bool
+    ) -> None:
+        """Draw a single script status line."""
+        # Status indicator
+        if status.status == "pending":
+            indicator = "○"
+            color = self.colors["dim"]
+        elif status.status == "running":
+            indicator = "▶"
+            color = self.colors["cyan"]
+        elif status.status == "success":
+            indicator = "✓"
+            color = self.colors["green"]
+        elif status.status == "failed":
+            indicator = "✗"
+            color = self.colors["red"]
+        else:  # skipped
+            indicator = "○"
+            color = self.colors["yellow"]
+
+        line = f" {indicator} {status.script.display_name}"
+
+        if is_current:
+            self.stdscr.attron(self.colors["reverse"])
+
+        self.stdscr.addstr(y, 0, line[:width].ljust(width), color)
+
+        if is_current:
+            self.stdscr.attroff(self.colors["reverse"])
+
+    def draw_output_panel(self, height: int, width: int, list_width: int) -> None:
+        """Draw the live output panel."""
+        panel_x = list_width + 1
+        panel_width = width - list_width - 2
+        panel_height = height - 5
+
+        # Get current script output
+        if 0 <= self.current_idx < len(self.statuses):
+            current = self.statuses[self.current_idx]
+            lines = current.output_lines
+        else:
+            lines = []
+
+        # Auto-scroll to bottom during execution
+        if lines:
+            max_scroll = max(0, len(lines) - panel_height)
+            self.output_scroll = max_scroll
+
+        # Draw output lines
+        for i in range(panel_height):
+            line_idx = self.output_scroll + i
+            y = 1 + i
+
+            # Clear the line area first
+            try:
+                self.stdscr.addstr(y, panel_x, " " * panel_width)
+            except curses.error:
+                pass
+
+            if line_idx < len(lines):
+                line = lines[line_idx]
+                # Strip ANSI escape codes and truncate
+                line = strip_ansi(line).rstrip()[:panel_width]
+                try:
+                    self.stdscr.addstr(y, panel_x, line, self.colors["dim"])
+                except curses.error:
+                    pass
+
+    def draw_footer(self, height: int, width: int) -> None:
+        """Draw the footer."""
+        footer_y = height - 3
+
+        # Separator
+        self.stdscr.addstr(footer_y, 0, "─" * width, self.colors["dim"])
+
+        # Status
+        if self.current_idx < len(self.statuses):
+            current = self.statuses[self.current_idx]
+            status_text = f" {current.section.name} / {current.script.display_name} "
+        else:
+            status_text = " Complete "
+
+        self.stdscr.addstr(footer_y + 1, 2, status_text[: width - 4], self.colors["cyan"])
+
+        # Controls
+        controls = " [Ctrl+C] Cancel "
+        self.stdscr.addstr(footer_y + 2, 2, controls[: width - 4], self.colors["dim"])
+
+    def run_script(self, status: ScriptStatus) -> bool:
+        """Run a single script with live output capture. Returns True on success."""
+        status.status = "running"
+        self.draw()
+
+        script_path = self.scripts_dir / status.script.path
+
+        if not script_path.exists():
+            status.output_lines.append(f"Script not found: {script_path}")
+            status.status = "failed"
+            status.exit_code = 1
+            return False
+
+        if not os.access(script_path, os.X_OK):
+            status.output_lines.append(f"Script not executable: {script_path}")
+            status.status = "failed"
+            status.exit_code = 1
+            return False
+
+        # Prepare environment
+        env = os.environ.copy()
+        env["_SOURCED"] = "1"  # Tell scripts they're being sourced
+        env["ORCHESTRATED"] = "true"
+        env["DRY_RUN"] = "true" if self.dry_run else "false"
+        env["HEADLESS"] = "N"  # TODO: could be configurable
+        env["INSTALL_SNAPS"] = "Y"
+        env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
+        env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
+        env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+
+        try:
+            # Use pty for proper terminal emulation
+            master_fd, slave_fd = pty.openpty()
+
+            # Build bash command that sources _common.sh first, then the script
+            common_sh = self.scripts_dir.parent / "_common.sh"
+            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
+
+            process = subprocess.Popen(
+                ["bash", "-c", bash_cmd],
+                stdout=slave_fd,
+                stderr=slave_fd,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                cwd=self.scripts_dir.parent,
+            )
+
+            os.close(slave_fd)
+
+            # Read output with non-blocking I/O
+            while True:
+                # Check if process has finished
+                retcode = process.poll()
+
+                # Read available output
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                if ready:
+                    try:
+                        data = os.read(master_fd, 4096)
+                        if data:
+                            text = data.decode("utf-8", errors="replace")
+                            # Split into lines, handling partial lines
+                            lines = text.split("\n")
+                            for line in lines:
+                                if line:
+                                    status.output_lines.append(line)
+                            self.draw()
+                    except OSError:
+                        break
+
+                if retcode is not None:
+                    # Read any remaining output
+                    while True:
+                        ready, _, _ = select.select([master_fd], [], [], 0)
+                        if not ready:
+                            break
+                        try:
+                            data = os.read(master_fd, 4096)
+                            if not data:
+                                break
+                            text = data.decode("utf-8", errors="replace")
+                            for line in text.split("\n"):
+                                if line:
+                                    status.output_lines.append(line)
+                        except OSError:
+                            break
+                    break
+
+            os.close(master_fd)
+            status.exit_code = process.returncode
+
+            if process.returncode == 0:
+                status.status = "success"
+                return True
+            else:
+                status.status = "failed"
+                return False
+
+        except Exception as e:
+            status.output_lines.append(f"Error: {e}")
+            status.status = "failed"
+            status.exit_code = 1
+            return False
+
+    def run(self) -> tuple[int, int]:
+        """Run all selected scripts. Returns (success_count, fail_count)."""
+        curses.curs_set(0)
+
+        success_count = 0
+        fail_count = 0
+
+        try:
+            for idx, status in enumerate(self.statuses):
+                if self.cancelled:
+                    status.status = "skipped"
+                    continue
+
+                self.current_idx = idx
+                self.draw()
+
+                if self.run_script(status):
+                    success_count += 1
+                else:
+                    fail_count += 1
+
+                self.draw()
+
+        except KeyboardInterrupt:
+            self.cancelled = True
+            # Mark remaining as skipped
+            for status in self.statuses[self.current_idx :]:
+                if status.status == "pending":
+                    status.status = "skipped"
+
+        # Final draw
+        self.draw()
+
+        # Wait for keypress to exit
+        height, width = self.stdscr.getmaxyx()
+        # Clear the line first, then write the message
+        self.stdscr.move(height - 2, 0)
+        self.stdscr.clrtoeol()
+        self.stdscr.addstr(
+            height - 2,
+            2,
+            " Press any key to exit... ",
+            self.colors["cyan"] | self.colors["bold"],
+        )
+        self.stdscr.refresh()
+        self.stdscr.nodelay(False)
+        self.stdscr.getch()
+
+        return success_count, fail_count
+
+
+###############################################################################
+### Main Entry Point
+###############################################################################
+
+
+def get_script_dir() -> Path:
+    """Get the directory containing this script."""
+    return Path(__file__).parent.resolve()
+
+
+def run_interactive(stdscr: curses.window, manifest: Manifest, scripts_dir: Path, dry_run: bool) -> int:
+    """Run the interactive TUI. Returns exit code."""
+    # Selection phase
+    selection_tui = SelectionTUI(stdscr, manifest)
+    if not selection_tui.run():
+        return 0  # User quit
+
+    # Check if any scripts selected
+    enabled = manifest.get_enabled_scripts()
+    if not enabled:
+        return 0
+
+    # Execution phase
+    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run)
+    success, fail = execution_tui.run()
+
+    return 1 if fail > 0 else 0
+
+
+def run_non_interactive(manifest: Manifest, scripts_dir: Path, dry_run: bool) -> int:
+    """Run scripts without TUI. Returns exit code."""
+    enabled = manifest.get_enabled_scripts()
+    if not enabled:
+        print("No scripts selected.")
+        return 0
+
+    print(f"\n{'=' * 60}")
+    print(f" Installing {len(enabled)} components...")
+    print(f"{'=' * 60}\n")
+
+    env = os.environ.copy()
+    env["_SOURCED"] = "1"
+    env["ORCHESTRATED"] = "true"
+    env["DRY_RUN"] = "true" if dry_run else "false"
+    env["HEADLESS"] = "N"
+    env["INSTALL_SNAPS"] = "Y"
+    env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
+    env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
+    env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+
+    success = 0
+    fail = 0
+
+    for section, script in enabled:
+        script_path = scripts_dir / script.path
+        print(f"▶ {script.display_name}...", end=" ", flush=True)
+
+        if not script_path.exists() or not os.access(script_path, os.X_OK):
+            print("✗ (not found or not executable)")
+            fail += 1
+            continue
+
+        try:
+            # Build bash command that sources _common.sh first, then the script
+            common_sh = scripts_dir.parent / "_common.sh"
+            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
+
+            result = subprocess.run(
+                ["bash", "-c", bash_cmd],
+                env=env,
+                cwd=scripts_dir.parent,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print("✓")
+                success += 1
+            else:
+                print("✗")
+                if result.stderr:
+                    for line in result.stderr.strip().split("\n")[:5]:
+                        print(f"    {line}")
+                fail += 1
+        except Exception as e:
+            print(f"✗ ({e})")
+            fail += 1
+
+    print(f"\n{'=' * 60}")
+    print(f" Complete: {success} succeeded, {fail} failed")
+    print(f"{'=' * 60}\n")
+
+    return 1 if fail > 0 else 0
+
+
+def list_presets() -> None:
+    """Print available presets."""
+    print("\nAvailable presets:\n")
+    for key, (desc, disabled_sections, disabled_scripts) in PRESETS.items():
+        print(f"  [{key}] {desc}")
+        if disabled_sections:
+            print(f"       Disables sections: {', '.join(disabled_sections)}")
+        if disabled_scripts:
+            # Show count if many scripts disabled (e.g., no-sudo presets)
+            if len(disabled_scripts) > 3:
+                print(f"       Disables {len(disabled_scripts)} scripts requiring sudo")
+            else:
+                script_names = [Path(s).stem.replace("_", " ").title() for s in disabled_scripts]
+                print(f"       Disables scripts: {', '.join(script_names)}")
+    print()
+
+
+def main() -> int:
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Peter Sharpe's Linux Setup - Interactive TUI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  setup              Interactive TUI mode
+  setup --preset 1   Non-interactive with Desktop preset
+  setup --preset 2   Non-interactive with Headless preset
+  setup --list       Show available presets
+  setup --dry-run    Preview changes without making them
+""",
+    )
+    parser.add_argument(
+        "-p", "--preset",
+        metavar="N",
+        help="Apply preset N and run non-interactively",
+    )
+    parser.add_argument(
+        "-l", "--list",
+        action="store_true",
+        help="List available presets",
+    )
+    parser.add_argument(
+        "-n", "--dry-run",
+        action="store_true",
+        help="Dry run mode (preview changes)",
+    )
+
+    args = parser.parse_args()
+
+    # Find paths
+    script_dir = get_script_dir()
+    manifest_path = script_dir / "install_scripts" / "manifest.conf"
+    scripts_dir = script_dir / "install_scripts"
+
+    if not manifest_path.exists():
+        print(f"Error: Manifest not found: {manifest_path}", file=sys.stderr)
+        return 1
+
+    # List presets
+    if args.list:
+        list_presets()
+        return 0
+
+    # Parse manifest
+    manifest = parse_manifest(manifest_path)
+
+    # Non-interactive mode with preset
+    if args.preset:
+        if args.preset not in PRESETS:
+            print(f"Error: Unknown preset '{args.preset}'", file=sys.stderr)
+            print("Use --list to see available presets.", file=sys.stderr)
+            return 1
+        apply_preset(manifest, args.preset)
+        return run_non_interactive(manifest, scripts_dir, args.dry_run)
+
+    # Interactive mode
+    try:
+        return curses.wrapper(
+            lambda stdscr: run_interactive(stdscr, manifest, scripts_dir, args.dry_run)
+        )
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
+standalone_init
 # Install zsh (build from source if no sudo)
 
 install_zsh_from_source() {

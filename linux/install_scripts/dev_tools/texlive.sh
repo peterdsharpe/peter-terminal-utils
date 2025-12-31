@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
+standalone_init
 # Install TeX Live (full distribution - warning: 7+GB, may take 30+ minutes)
 # See: https://www.tug.org/texlive/quickinstall.html
 

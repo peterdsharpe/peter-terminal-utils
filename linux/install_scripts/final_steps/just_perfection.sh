@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
+standalone_init
 # Install and configure Just Perfection GNOME extension
 
 # Only run if not headless

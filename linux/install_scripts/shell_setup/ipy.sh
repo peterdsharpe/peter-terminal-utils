@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
+standalone_init
 # Set up global ipy Python environment
 
 # Get the linux directory (where ipy folder is relative to)

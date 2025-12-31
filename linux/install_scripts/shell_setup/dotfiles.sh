@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ "${_SOURCED:-}" ]] || exec "$(dirname "$0")/../../_runner.sh" "$0"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
+standalone_init
 # Symlink dotfiles (.zshrc, neovim config, .p10k.zsh)
 
 # Get the linux directory (where dotfiles are stored)
