@@ -33,12 +33,12 @@ fi
 # Build dependencies + clone + build + install
 step_start "Installing libinput-config"
 run sudo apt-get install -y meson ninja-build libinput-dev
-TMPDIR=$(mktemp -d)
-run git clone --depth 1 https://gitlab.com/warningnonpotablewater/libinput-config.git "$TMPDIR/libinput-config"
-run meson setup "$TMPDIR/libinput-config/build" "$TMPDIR/libinput-config"
-run ninja -C "$TMPDIR/libinput-config/build"
-run sudo ninja -C "$TMPDIR/libinput-config/build" install
-run rm -rf "$TMPDIR"
+tmpdir=$(mktemp -d)
+run git clone --depth 1 https://gitlab.com/warningnonpotablewater/libinput-config.git "$tmpdir/libinput-config"
+run meson setup "$tmpdir/libinput-config/build" "$tmpdir/libinput-config"
+run ninja -C "$tmpdir/libinput-config/build"
+run sudo ninja -C "$tmpdir/libinput-config/build" install
+run rm -rf "$tmpdir"
 step_end
 
 # Configure scroll factor
