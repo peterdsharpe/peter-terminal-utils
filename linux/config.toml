@@ -21,3 +21,7 @@ flags = ["no_sudo"]
 description = "Headless (no sudo) - Headless without root-requiring scripts"
 disabled_sections = ["GNOME Settings", "Fonts", "Final Steps"]
 flags = ["no_sudo", "headless"]
+
+[presets.empty]
+description = "Empty - No scripts selected (manual selection)"
+flags = ["empty"]

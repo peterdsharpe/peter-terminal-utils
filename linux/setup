@@ -31,6 +31,9 @@ from pathlib import Path
 # Regex to match ANSI escape sequences
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 
+# Control characters to strip (carriage return, bell, etc.) - excluding newline and tab
+CONTROL_CHARS = str.maketrans("", "", "\r\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f")
+
 
 ###############################################################################
 ### Configuration Loading
@@ -61,8 +64,13 @@ DEFAULT_GIT_EMAIL = _CONFIG["user"]["git_email"]
 
 
 def strip_ansi(text: str) -> str:
-    """Remove ANSI escape sequences from text."""
-    return ANSI_ESCAPE_RE.sub("", text)
+    """Remove ANSI escape sequences and control characters from text.
+
+    Strips ANSI color codes, cursor movement sequences, and control characters
+    like carriage return that could corrupt curses display.
+    """
+    text = ANSI_ESCAPE_RE.sub("", text)
+    return text.translate(CONTROL_CHARS)
 
 
 ###############################################################################
@@ -327,10 +335,10 @@ class PresetDef:
 def _load_presets_from_config() -> dict[str, PresetDef]:
     """Load presets from config.toml and map to numeric keys.
 
-    Maps preset names to keys 1-4 in order:
-    desktop=1, headless=2, desktop_no_sudo=3, headless_no_sudo=4
+    Maps preset names to keys 1-5 in order:
+    desktop=1, headless=2, desktop_no_sudo=3, headless_no_sudo=4, empty=5
     """
-    preset_order = ["desktop", "headless", "desktop_no_sudo", "headless_no_sudo"]
+    preset_order = ["desktop", "headless", "desktop_no_sudo", "headless_no_sudo", "empty"]
     presets: dict[str, PresetDef] = {}
 
     for i, name in enumerate(preset_order, start=1):
@@ -363,6 +371,12 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
         return
 
     preset = PRESETS[preset_key]
+
+    # Handle "empty" preset - disable everything for manual selection
+    if "empty" in preset.flags:
+        for section in manifest.sections:
+            section.set_all(False)
+        return
 
     # First, enable everything
     for section in manifest.sections:
@@ -656,9 +670,10 @@ class SelectionTUI:
             keys2 = f" {preset_keys}   [?] Help "
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
 
-        # Status line
-        enabled = self.manifest.get_enabled_scripts()
-        status = f" {len(enabled)} scripts selected "
+        # Status line showing selected/total scripts
+        enabled_count = len(self.manifest.get_enabled_scripts())
+        total_count = sum(len(s.scripts) for s in self.manifest.sections)
+        status = f" {enabled_count}/{total_count} scripts selected "
         self.stdscr.addstr(
             footer_y + 3,
             2,
@@ -869,10 +884,76 @@ class ExecutionTUI:
         for section, script in manifest.get_enabled_scripts():
             self.statuses.append(ScriptStatus(section=section, script=script))
 
-        self.current_idx = 0
+        # Execution progress tracking
+        self.running_idx = 0  # Index of currently running (or last run) script
+        self.viewing_idx = 0  # Index of script user is viewing (for log browsing)
+        self.following = True  # When True, viewing_idx tracks running_idx automatically
         self.scroll_offset = 0
         self.output_scroll = 0
         self.cancelled = False
+        self._last_key = -1  # For detecting 'gg' sequence
+
+    def _set_running_idx(self, idx: int) -> None:
+        """Update running index, and viewing index if following."""
+        self.running_idx = idx
+        if self.following:
+            self.viewing_idx = idx
+            self.output_scroll = 0  # Reset scroll when switching scripts
+
+    def _handle_input_during_execution(self, key: int) -> None:
+        """Handle keyboard input during script execution for log navigation.
+
+        Allows users to browse logs of already-completed scripts while
+        installation continues. Returning to the running script resumes
+        auto-follow behavior.
+        """
+        # Vim-style gg (go to top) - detect 'g' followed by 'g'
+        if key == ord("g"):
+            if self._last_key == ord("g"):
+                self.viewing_idx = 0
+                self.output_scroll = 0
+                self.following = False
+                self._last_key = -1
+            else:
+                self._last_key = key
+            return
+        self._last_key = -1
+
+        # Navigation keys (w/k/up = up, s/j/down = down, matching SelectionTUI)
+        if key in (ord("w"), ord("k"), curses.KEY_UP):
+            # Move viewing up
+            if self.viewing_idx > 0:
+                self.viewing_idx -= 1
+                self.output_scroll = 0  # Reset scroll for new script
+                self.following = False
+        elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+            # Move viewing down
+            if self.viewing_idx < len(self.statuses) - 1:
+                self.viewing_idx += 1
+                self.output_scroll = 0
+            # Resume following if we've navigated back to running script
+            if self.viewing_idx == self.running_idx:
+                self.following = True
+        elif key == ord("G"):
+            # Jump to running script and resume following
+            self.viewing_idx = self.running_idx
+            self.following = True
+            self.output_scroll = 0
+        # Note: 'q' is handled in the run() loop, not here
+
+    def _poll_input(self) -> None:
+        """Poll for and handle any pending keyboard input (non-blocking).
+
+        Uses a short timeout to allow multi-byte escape sequences (arrow keys)
+        to be read correctly while remaining responsive.
+        """
+        self.stdscr.timeout(50)  # 50ms timeout for escape sequences
+        while True:
+            key = self.stdscr.getch()
+            if key == -1:
+                break
+            self._handle_input_during_execution(key)
+        self.stdscr.timeout(-1)  # Restore blocking
 
     def draw(self) -> None:
         """Draw the execution screen."""
@@ -940,20 +1021,22 @@ class ExecutionTUI:
 
     def draw_script_list(self, height: int, list_width: int) -> None:
         """Draw the list of scripts with status indicators."""
-        visible_height = height - 5  # Header + footer
+        # Scripts start at row 2 (after header rows 0-1)
+        start_row = 2
+        visible_height = height - 5  # Accounts for header (2) + footer (3)
 
         # Draw separator
-        for y in range(1, height - 3):
+        for y in range(start_row, height - 3):
             try:
                 self.stdscr.addch(y, list_width, "│", self.colors["dim"])
             except curses.error:
                 pass
 
-        # Adjust scroll to show current
-        if self.current_idx < self.scroll_offset:
-            self.scroll_offset = self.current_idx
-        elif self.current_idx >= self.scroll_offset + visible_height:
-            self.scroll_offset = self.current_idx - visible_height + 1
+        # Adjust scroll to show viewed script
+        if self.viewing_idx < self.scroll_offset:
+            self.scroll_offset = self.viewing_idx
+        elif self.viewing_idx >= self.scroll_offset + visible_height:
+            self.scroll_offset = self.viewing_idx - visible_height + 1
 
         for i in range(visible_height):
             idx = self.scroll_offset + i
@@ -961,14 +1044,29 @@ class ExecutionTUI:
                 break
 
             status = self.statuses[idx]
-            y = 1 + i
-            self.draw_status_line(y, list_width - 1, status, idx == self.current_idx)
+            y = start_row + i
+            is_viewing = idx == self.viewing_idx
+            is_running = idx == self.running_idx
+            self.draw_status_line(y, list_width - 1, status, is_viewing, is_running)
 
     def draw_status_line(
-        self, y: int, width: int, status: ScriptStatus, is_current: bool
+        self,
+        y: int,
+        width: int,
+        status: ScriptStatus,
+        is_viewing: bool,
+        is_running: bool,
     ) -> None:
-        """Draw a single script status line."""
-        # Status indicator
+        """Draw a single script status line.
+
+        Args:
+            y: Row position to draw at.
+            width: Available width for the line.
+            status: The ScriptStatus object to display.
+            is_viewing: Whether this is the script the user is currently viewing.
+            is_running: Whether this is the currently running (or last run) script.
+        """
+        # Status indicator based on script execution state
         if status.status == "pending":
             indicator = "○"
             color = self.colors["dim"]
@@ -985,38 +1083,42 @@ class ExecutionTUI:
             indicator = "○"
             color = self.colors["yellow"]
 
-        line = f" {indicator} {status.script.display_name}"
+        # Show cursor marker for running script when user is viewing elsewhere
+        cursor = "»" if is_running and not is_viewing else " "
+        line = f"{cursor}{indicator} {status.script.display_name}"
 
-        if is_current:
-            self.stdscr.attron(self.colors["reverse"])
-
-        self.stdscr.addstr(y, 0, line[:width].ljust(width), color)
-
-        if is_current:
-            self.stdscr.attroff(self.colors["reverse"])
+        # Combine color with reverse highlight if this script is being viewed
+        attr = color | self.colors["reverse"] if is_viewing else color
+        self.stdscr.addstr(y, 0, line[:width].ljust(width), attr)
 
     def draw_output_panel(self, height: int, width: int, list_width: int) -> None:
-        """Draw the live output panel."""
+        """Draw the live output panel for the currently viewed script."""
         panel_x = list_width + 1
         panel_width = width - list_width - 2
         panel_height = height - 5
 
-        # Get current script output
-        if 0 <= self.current_idx < len(self.statuses):
-            current = self.statuses[self.current_idx]
-            lines = current.output_lines
+        # Get viewed script's output, filtering out nested xtrace lines (++, +++, etc.)
+        # We only want top-level commands (single +) and regular output
+        if 0 <= self.viewing_idx < len(self.statuses):
+            viewed = self.statuses[self.viewing_idx]
+            lines = [ln for ln in viewed.output_lines if not ln.startswith("++")]
         else:
             lines = []
 
-        # Auto-scroll to bottom during execution
+        # Auto-scroll to bottom only when following the running script
         if lines:
             max_scroll = max(0, len(lines) - panel_height)
-            self.output_scroll = max_scroll
+            if self.following:
+                self.output_scroll = max_scroll
+            else:
+                # Clamp scroll position to valid range when browsing
+                self.output_scroll = min(self.output_scroll, max_scroll)
 
-        # Draw output lines
+        # Draw output lines (starting at row 2, after header)
+        start_row = 2
         for i in range(panel_height):
             line_idx = self.output_scroll + i
-            y = 1 + i
+            y = start_row + i
 
             # Clear the line area first
             try:
@@ -1034,16 +1136,19 @@ class ExecutionTUI:
                     pass
 
     def draw_footer(self, height: int, width: int) -> None:
-        """Draw the footer."""
+        """Draw the footer with navigation hints."""
         footer_y = height - 3
 
         # Separator
         self.stdscr.addstr(footer_y, 0, "─" * width, self.colors["dim"])
 
-        # Status
-        if self.current_idx < len(self.statuses):
-            current = self.statuses[self.current_idx]
-            status_text = f" {current.section.name} / {current.script.display_name} "
+        # Status line showing viewed script
+        if self.viewing_idx < len(self.statuses):
+            viewed = self.statuses[self.viewing_idx]
+            status_text = f" {viewed.section.name} / {viewed.script.display_name} "
+            # Show follow indicator
+            if not self.following:
+                status_text += "(browsing) "
         else:
             status_text = " Complete "
 
@@ -1051,8 +1156,8 @@ class ExecutionTUI:
             footer_y + 1, 2, status_text[: width - 4], self.colors["cyan"]
         )
 
-        # Controls
-        controls = " [Ctrl+C] Cancel "
+        # Controls with navigation hints
+        controls = " [j/k/↑↓] Navigate   [G] Follow   [Ctrl+C] Cancel   [q] Quit "
         self.stdscr.addstr(footer_y + 2, 2, controls[: width - 4], self.colors["dim"])
 
     def _execute_script(self, status: ScriptStatus, silent: bool = False) -> bool:
@@ -1097,7 +1202,7 @@ class ExecutionTUI:
                 if result.stderr:
                     status.output_lines.extend(result.stderr.strip().split("\n"))
             else:
-                # PTY for live output with display updates
+                # PTY for live output with display updates and keyboard input
                 master_fd, slave_fd = pty.openpty()
                 process = subprocess.Popen(
                     ["bash", "-c", bash_cmd],
@@ -1109,10 +1214,20 @@ class ExecutionTUI:
                 )
                 os.close(slave_fd)
 
+                # Enable non-blocking keyboard input with short timeout for escape sequences
+                self.stdscr.timeout(50)  # 50ms allows arrow key sequences to be read
+
                 # Read output with non-blocking I/O
                 while True:
                     retcode = process.poll()
-                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+
+                    # Poll for keyboard input (non-blocking with timeout)
+                    key = self.stdscr.getch()
+                    if key != -1:
+                        self._handle_input_during_execution(key)
+                        self.draw()
+
+                    ready, _, _ = select.select([master_fd], [], [], 0.05)
                     if ready:
                         try:
                             data = os.read(master_fd, 4096)
@@ -1142,6 +1257,7 @@ class ExecutionTUI:
                         break
 
                 os.close(master_fd)
+                self.stdscr.timeout(-1)  # Restore blocking input
                 status.exit_code = process.returncode
 
             # Update status based on exit code
@@ -1205,6 +1321,7 @@ class ExecutionTUI:
         Returns (success_count, fail_count).
         """
         curses.curs_set(0)
+        self.stdscr.keypad(True)  # Enable arrow key recognition
 
         success_count = 0
         fail_count = 0
@@ -1227,7 +1344,8 @@ class ExecutionTUI:
                     # Run group in parallel
                     for status in group:
                         status.status = "running"
-                    self.current_idx = self.statuses.index(group[0])
+                    self._set_running_idx(self.statuses.index(group[0]))
+                    self._poll_input()
                     self.draw()
 
                     with concurrent.futures.ThreadPoolExecutor(
@@ -1239,7 +1357,7 @@ class ExecutionTUI:
                         }
                         for future in concurrent.futures.as_completed(futures):
                             status = futures[future]
-                            self.current_idx = self.statuses.index(status)
+                            self._set_running_idx(self.statuses.index(status))
                             try:
                                 if future.result():
                                     success_count += 1
@@ -1248,6 +1366,7 @@ class ExecutionTUI:
                             except Exception:
                                 status.status = "failed"
                                 fail_count += 1
+                            self._poll_input()
                             self.draw()
                 else:
                     # Run sequentially
@@ -1256,7 +1375,8 @@ class ExecutionTUI:
                             status.status = "skipped"
                             continue
 
-                        self.current_idx = self.statuses.index(status)
+                        self._set_running_idx(self.statuses.index(status))
+                        self._poll_input()
                         self.draw()
 
                         if self.run_script(status):
@@ -1264,6 +1384,7 @@ class ExecutionTUI:
                         else:
                             fail_count += 1
 
+                        self._poll_input()
                         self.draw()
 
         except KeyboardInterrupt:
@@ -1273,23 +1394,17 @@ class ExecutionTUI:
                 if status.status in ("pending", "running"):
                     status.status = "skipped"
 
-        # Final draw
+        # Final draw and allow browsing until 'q' is pressed
         self.draw()
 
-        # Wait for keypress to exit
-        height, width = self.stdscr.getmaxyx()
-        # Clear the line first, then write the message
-        self.stdscr.move(height - 2, 0)
-        self.stdscr.clrtoeol()
-        self.stdscr.addstr(
-            height - 2,
-            2,
-            " Press any key to exit... ",
-            self.colors["cyan"] | self.colors["bold"],
-        )
-        self.stdscr.refresh()
-        self.stdscr.nodelay(False)
-        self.stdscr.getch()
+        # Allow user to continue browsing logs after completion
+        self.stdscr.timeout(-1)  # Blocking input
+        while True:
+            key = self.stdscr.getch()
+            if key == ord("q"):
+                break
+            self._handle_input_during_execution(key)
+            self.draw()
 
         return success_count, fail_count
 

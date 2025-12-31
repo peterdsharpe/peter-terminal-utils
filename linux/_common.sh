@@ -3,6 +3,16 @@
 # This file is sourced by both the orchestrator (setup) and individual install scripts
 
 ###############################################################################
+### Orchestration Mode
+###############################################################################
+
+# When run by the Python orchestrator, enable command tracing so the TUI
+# can show exactly what commands are being executed.
+if [[ "${ORCHESTRATED:-}" == "true" ]]; then
+    set -x
+fi
+
+###############################################################################
 ### Color Definitions
 ###############################################################################
 
@@ -146,12 +156,10 @@ step() {
         return 0
     fi
     
-    printf "${CYAN}▶${NC} %s " "$msg"
+    echo -e "${CYAN}▶${NC} $msg"
     if _exec "$@"; then
-        printf "\r\033[K"
         echo -e "${GREEN}✓${NC} $msg"
     else
-        printf "\r\033[K"
         echo -e "${RED}✗${NC} $msg"
         _print_error "$*"
         return 1
@@ -165,7 +173,7 @@ step_start() {
     if [[ "${DRY_RUN:-false}" == true ]]; then
         echo -e "${BLUE}ℹ${NC} [DRY RUN] $STEP_MSG"
     else
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
+        echo -e "${CYAN}▶${NC} $STEP_MSG"
     fi
 }
 
@@ -176,9 +184,7 @@ run() {
         return 0
     fi
     if ! _exec "$@"; then
-        printf "\r\033[K"
         _print_error "$*"
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
 }
@@ -192,9 +198,7 @@ run_stdin() {
     fi
     _EXEC_STDIN="$input_file"
     if ! _exec "$@"; then
-        printf "\r\033[K"
         _print_error "$* < $input_file"
-        printf "${CYAN}▶${NC} %s " "$STEP_MSG"
         STEP_FAILED=true
     fi
 }
@@ -204,7 +208,6 @@ step_end() {
     if [[ "${DRY_RUN:-false}" == true ]]; then
         return 0
     fi
-    printf "\r\033[K"
     if [[ "$STEP_FAILED" == true ]]; then
         echo -e "${RED}✗${NC} $STEP_MSG"
         return 1
@@ -241,7 +244,7 @@ ensure_command() {
     fi
     
     if ! command -v "$cmd" &> /dev/null; then
-        step "Installing $name" "$install_func"
+        step "Installing $name" eval "$install_func"
     else
         print_skip "$name already installed"
     fi
