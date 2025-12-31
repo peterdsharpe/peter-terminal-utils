@@ -131,16 +131,6 @@ class ScrollState:
             self.offset = idx - self.visible + 1
         self.clamp()
 
-    @property
-    def can_scroll_up(self) -> bool:
-        """Whether there's content above the visible area."""
-        return self.offset > 0
-
-    @property
-    def can_scroll_down(self) -> bool:
-        """Whether there's content below the visible area."""
-        return self.offset + self.visible < self.total
-
 
 ###############################################################################
 ### Data Model
@@ -339,7 +329,7 @@ def parse_manifest(manifest_path: Path, scripts_dir: Path | None = None) -> Mani
 
 
 ###############################################################################
-### Sudo Detection
+### Script Execution Helpers
 ###############################################################################
 
 
@@ -378,6 +368,45 @@ def prepare_script_env(dry_run: bool, headless: bool) -> dict[str, str]:
     env["GIT_NAME"] = env.get("GIT_NAME", DEFAULT_GIT_NAME)
     env["GIT_EMAIL"] = env.get("GIT_EMAIL", DEFAULT_GIT_EMAIL)
     return env
+
+
+def build_script_command(scripts_dir: Path, script_path: Path) -> str:
+    """Build bash command that sources _common.sh then executes a script.
+
+    Args:
+        scripts_dir: Directory containing install scripts (install_scripts/).
+        script_path: Full path to the script to execute.
+
+    Returns:
+        Bash command string suitable for `bash -c`.
+    """
+    common_sh = scripts_dir.parent / "_common.sh"
+    return f'source "{common_sh}" && source "{script_path}"'
+
+
+def run_script_simple(
+    script_path: Path,
+    scripts_dir: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Execute a script with captured output (non-interactive).
+
+    Args:
+        script_path: Full path to the script to execute.
+        scripts_dir: Directory containing install scripts.
+        env: Environment variables for execution.
+
+    Returns:
+        CompletedProcess with captured stdout/stderr.
+    """
+    bash_cmd = build_script_command(scripts_dir, script_path)
+    return subprocess.run(
+        ["bash", "-c", bash_cmd],
+        env=env,
+        cwd=scripts_dir.parent,
+        capture_output=True,
+        text=True,
+    )
 
 
 ###############################################################################
@@ -474,8 +503,17 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
 
 
 ###############################################################################
-### Curses Color Setup
+### Curses Helpers
 ###############################################################################
+
+
+def make_title_bar(title: str, width: int) -> str:
+    """Create a centered title bar with ═ borders.
+
+    Example: "══════ My Title ══════" (padded to width).
+    """
+    padding = (width - len(title) - 2) // 2
+    return "═" * padding + title + "═" * (width - padding - len(title) - 2)
 
 
 def init_colors() -> dict[str, int]:
@@ -617,11 +655,8 @@ class SelectionTUI:
 
     def draw_header(self, width: int) -> None:
         """Draw the header section."""
-        # Top border
         title = " Peter Sharpe's Linux Setup "
-        padding = (width - len(title) - 2) // 2
-        header_line = "═" * padding + title + "═" * (width - padding - len(title) - 2)
-
+        header_line = make_title_bar(title, width)
         self.stdscr.attron(self.colors["header"] | self.colors["bold"])
         self.stdscr.addstr(0, 0, header_line[:width])
         self.stdscr.attroff(self.colors["header"] | self.colors["bold"])
@@ -816,7 +851,7 @@ class SelectionTUI:
             if key == 27:  # Escape - cancel search
                 self.search_mode = False
                 self.search_query = ""
-            elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):  # Enter - apply filter
+            elif key in (curses.KEY_ENTER, 10, 13):  # Enter (KEY_ENTER, LF, CR)
                 self.search_mode = False
                 if self.search_query:
                     self._apply_search_filter(items)
@@ -878,16 +913,15 @@ class SelectionTUI:
             )
 
         # Toggle
-        elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
+        elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
             item = items[self.cursor]
             if isinstance(item, Section):
                 item.toggle()
             else:
                 item.enabled = not item.enabled
 
-        # Presets
-        elif (chr(key) if 0 <= key < 256 else "") in PRESETS:
-            preset_key = chr(key)
+        # Presets (keys 1-5)
+        elif ord("1") <= key <= ord("5") and (preset_key := chr(key)) in PRESETS:
             self.current_preset = preset_key
             apply_preset(self.manifest, preset_key)
             # Clear any filter when applying preset
@@ -938,7 +972,7 @@ class SelectionTUI:
             "║  Space/Enter Toggle selection            ║",
             "║  /           Search scripts              ║",
             "║  Esc         Clear search filter         ║",
-            "║  1-4         Apply preset                ║",
+            "║  1-5         Apply preset                ║",
             "║  x           Start installation          ║",
             "║  q           Quit                        ║",
             "║  ?           Show this help              ║",
@@ -1060,7 +1094,7 @@ class ExecutionTUI:
         if key in (ord("h"), ord("a"), curses.KEY_LEFT, 27):  # 27 = Esc
             self.focus_panel = "left"
             return
-        elif key in (ord("l"), ord("d"), curses.KEY_RIGHT, ord("\n"), 10, 13):
+        elif key in (ord("l"), ord("d"), curses.KEY_RIGHT, curses.KEY_ENTER, 10, 13):
             self.focus_panel = "right"
             return
 
@@ -1177,9 +1211,7 @@ class ExecutionTUI:
         if self.dry_run:
             title = f" [DRY RUN]{title}"
 
-        padding = (width - len(title) - 2) // 2
-        header_line = "═" * padding + title + "═" * (width - padding - len(title) - 2)
-
+        header_line = make_title_bar(title, width)
         self.stdscr.attron(title_color | self.colors["bold"])
         self.stdscr.addstr(0, 0, header_line[:width])
         self.stdscr.attroff(title_color | self.colors["bold"])
@@ -1390,8 +1422,7 @@ class ExecutionTUI:
             return False
 
         env = prepare_script_env(self.dry_run, self.headless)
-        common_sh = self.scripts_dir.parent / "_common.sh"
-        bash_cmd = f'source "{common_sh}" && source "{script_path}"'
+        bash_cmd = build_script_command(self.scripts_dir, script_path)
 
         try:
             if silent:
@@ -1687,17 +1718,7 @@ def run_non_interactive(
             continue
 
         try:
-            # Build bash command that sources _common.sh first, then the script
-            common_sh = scripts_dir.parent / "_common.sh"
-            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
-
-            result = subprocess.run(
-                ["bash", "-c", bash_cmd],
-                env=env,
-                cwd=scripts_dir.parent,
-                capture_output=True,
-                text=True,
-            )
+            result = run_script_simple(script_path, scripts_dir, env)
             if result.returncode == 0:
                 print("✓")
                 success += 1
