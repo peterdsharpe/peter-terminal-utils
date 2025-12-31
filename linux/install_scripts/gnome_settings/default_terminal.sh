@@ -8,8 +8,14 @@ standalone_init
 
 skip_if_headless "Default terminal configuration"
 
-PTYXIS_EXEC='flatpak run app.devsuite.Ptyxis --new-window'
-PTYXIS_DESKTOP='app.devsuite.Ptyxis.desktop'
+# Check if Ptyxis is installed
+if ! command -v ptyxis &> /dev/null; then
+    print_skip "Default terminal (ptyxis not installed)"
+    exit 0
+fi
+
+PTYXIS_EXEC='ptyxis'
+PTYXIS_DESKTOP='org.gnome.Ptyxis.desktop'
 
 ### Cinnamon default terminal (used by Nemo "Open in Terminal")
 step "Setting Ptyxis as default terminal for Nemo" gsettings set org.cinnamon.desktop.default-applications.terminal exec "$PTYXIS_EXEC"
