@@ -359,8 +359,8 @@ get_release_arch() {
             esac ;;
         btop)
             case "$ARCH" in
-                x86_64) suffix="x86_64-linux-musl" ;;
-                arm64)  suffix="aarch64-linux-musl" ;;
+                x86_64) suffix="x86_64-unknown-linux-musl" ;;
+                arm64)  suffix="aarch64-unknown-linux-musl" ;;
             esac ;;
         *)
             echo "Unknown tool for arch mapping: $tool" >&2
