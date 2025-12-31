@@ -1,7 +1,11 @@
 #!/bin/bash
+# @name: GitHub CLI
+# @description: GitHub's official CLI for managing repos, PRs, and issues
+# @repo: cli/cli
+# @requires: sudo
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install GitHub CLI (gh)
 
 install_github_cli() {
     if [[ "$HAS_SUDO" == true ]]; then

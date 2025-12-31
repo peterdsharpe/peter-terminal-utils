@@ -1,7 +1,11 @@
 #!/bin/bash
+# @name: Signal Desktop
+# @description: Encrypted messaging app via official apt repository
+# @requires: sudo
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Signal Desktop via official apt repository (preferred over Snap)
 
 install_signal() {
     # Official Signal apt repository - https://signal.org/download/linux/

@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: GNOME Terminal
+# @description: Set terminal font to Fira Code Nerd Font
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Configure GNOME Terminal font
 
 # Only run if not headless
 if [[ "$HEADLESS" == "Y" ]]; then

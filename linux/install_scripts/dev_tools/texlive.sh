@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: TeX Live
+# @description: Full TeX Live distribution (7+GB, ~30 min)
+# @requires: sudo
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install TeX Live (full distribution - warning: 7+GB, may take 30+ minutes)
 # See: https://www.tug.org/texlive/quickinstall.html
 
 install_texlive() {

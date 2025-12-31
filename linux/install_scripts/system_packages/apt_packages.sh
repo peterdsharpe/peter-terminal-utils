@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: System Packages
+# @description: Shells, editors, build tools, networking via apt
+# @requires: sudo
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install system packages via apt
 
 install_system_packages() {
     # Core packages (always installed)

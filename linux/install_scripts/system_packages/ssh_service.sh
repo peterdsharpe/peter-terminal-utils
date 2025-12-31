@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: SSH Service
+# @description: Enable sshd and allow through ufw firewall
+# @requires: sudo
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Configure SSH service to start at boot
 
 configure_ssh_service() {
     step "Enabling SSH service (starts at boot)" sudo systemctl enable --now ssh

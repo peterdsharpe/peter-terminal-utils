@@ -83,6 +83,8 @@ _exec() {
     _EXEC_ERR=$(cat "$tmp_err")
     rm -f "$tmp_out" "$tmp_err"
     _EXEC_STDIN=""  # Reset after use
+    # Log command execution if logging is enabled
+    log_cmd "$@"
     return $_EXEC_EXIT
 }
 
@@ -90,13 +92,43 @@ _exec() {
 _print_error() {
     local cmd_desc="$1"
     echo -e "  ${RED}Failed:${NC} $cmd_desc (exit code: $_EXEC_EXIT)"
+
+    # Log the error
+    log "ERROR: $cmd_desc (exit $_EXEC_EXIT)"
+
+    # Contextual suggestions based on common error patterns
+    local combined_output="$_EXEC_OUT $_EXEC_ERR"
+    case "$combined_output" in
+        *"Permission denied"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Try running with sudo, or check file/directory permissions" ;;
+        *"not found"*|*"No such file"*|*"command not found"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Ensure the file/command exists and PATH includes ~/.local/bin" ;;
+        *"Connection refused"*|*"Could not resolve"*|*"Network is unreachable"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Check your network connection and try again" ;;
+        *"apt"*"lock"*|*"dpkg"*"lock"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Another package manager may be running. Try: sudo rm /var/lib/dpkg/lock* /var/lib/apt/lists/lock" ;;
+        *"ENOSPC"*|*"No space left"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Disk is full. Free up space and try again" ;;
+        *"rate limit"*|*"API rate"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} GitHub API rate limit hit. Wait a few minutes or set GITHUB_TOKEN" ;;
+        *"certificate"*|*"SSL"*|*"TLS"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} SSL/TLS error. Check system time and ca-certificates package" ;;
+    esac
+
+    # Show truncated output (first 10 lines each)
     if [ -n "$_EXEC_OUT" ]; then
         echo -e "  ${RED}Stdout:${NC}"
-        echo "$_EXEC_OUT" | sed 's/^/    /'
+        echo "$_EXEC_OUT" | head -10 | sed 's/^/    /'
+        local out_lines
+        out_lines=$(echo "$_EXEC_OUT" | wc -l)
+        [ "$out_lines" -gt 10 ] && echo -e "    ${YELLOW}... ($((out_lines - 10)) more lines)${NC}"
     fi
     if [ -n "$_EXEC_ERR" ]; then
         echo -e "  ${RED}Stderr:${NC}"
-        echo "$_EXEC_ERR" | sed 's/^/    /'
+        echo "$_EXEC_ERR" | head -10 | sed 's/^/    /'
+        local err_lines
+        err_lines=$(echo "$_EXEC_ERR" | wc -l)
+        [ "$err_lines" -gt 10 ] && echo -e "    ${YELLOW}... ($((err_lines - 10)) more lines)${NC}"
     fi
 }
 
@@ -264,6 +296,246 @@ case "$ARCH" in
         exit 1
         ;;
 esac
+
+###############################################################################
+### Distro Detection
+###############################################################################
+
+detect_distro() {
+    if [ -f /etc/os-release ]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        echo "$ID"
+    else
+        echo "unknown"
+    fi
+}
+
+DISTRO=$(detect_distro)
+# shellcheck source=/dev/null
+DISTRO_VERSION=$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}" || echo "")
+
+is_ubuntu() { [[ "$DISTRO" == "ubuntu" ]]; }
+is_debian() { [[ "$DISTRO" == "debian" ]]; }
+is_fedora() { [[ "$DISTRO" == "fedora" ]]; }
+is_arch() { [[ "$DISTRO" == "arch" ]]; }
+is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+is_wsl2() { is_wsl && grep -qi "wsl2" /proc/version 2>/dev/null; }
+
+###############################################################################
+### GitHub Release Architecture Mapping
+###############################################################################
+
+# Maps tool name to its GitHub release architecture suffix
+# Usage: arch_suffix=$(get_release_arch "bat")
+get_release_arch() {
+    local tool="$1"
+    local suffix
+    case "$tool" in
+        bat|fd|ripgrep)
+            case "$ARCH" in
+                x86_64) suffix="x86_64-unknown-linux-musl" ;;
+                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
+            esac ;;
+        delta)
+            case "$ARCH" in
+                x86_64) suffix="x86_64-unknown-linux-gnu" ;;
+                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
+            esac ;;
+        eza)
+            case "$ARCH" in
+                x86_64) suffix="x86_64-unknown-linux-musl" ;;
+                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
+            esac ;;
+        lazygit)
+            case "$ARCH" in
+                x86_64) suffix="Linux_x86_64" ;;
+                arm64)  suffix="Linux_arm64" ;;
+            esac ;;
+        bottom)
+            case "$ARCH" in
+                x86_64) suffix="x86_64-unknown-linux-musl" ;;
+                arm64)  suffix="aarch64-unknown-linux-gnu" ;;
+            esac ;;
+        btop)
+            case "$ARCH" in
+                x86_64) suffix="x86_64-linux-musl" ;;
+                arm64)  suffix="aarch64-linux-musl" ;;
+            esac ;;
+        *)
+            echo "Unknown tool for arch mapping: $tool" >&2
+            return 1 ;;
+    esac
+    echo "$suffix"
+}
+
+###############################################################################
+### Generic GitHub Binary Installer
+###############################################################################
+
+# Install a binary from GitHub releases
+# Usage: install_github_binary "owner/repo" "tool_name" [binary_name] [strip_components]
+#   - owner/repo: GitHub repository (e.g., "sharkdp/bat")
+#   - tool_name: Tool name for arch lookup and tarball naming
+#   - binary_name: Name of binary inside archive (defaults to tool_name)
+#   - strip_components: tar --strip-components value (default: 1)
+install_github_binary() {
+    local repo="$1"
+    local tool="$2"
+    local binary="${3:-$tool}"
+    local strip="${4:-1}"
+
+    local version arch_suffix tmpdir archive_url
+
+    version=$(github_latest_version "$repo") || return 1
+    arch_suffix=$(get_release_arch "$tool") || return 1
+
+    tmpdir=$(mktemp -d)
+
+    # Helper for cleanup on error
+    _cleanup_and_fail() { rm -rf "$tmpdir"; return 1; }
+
+    # Common URL patterns - try different naming conventions
+    local base_url="https://github.com/$repo/releases/download"
+    local patterns=(
+        # v-prefixed tag, v-prefixed filename: bat-v0.24.0-x86_64-...
+        "$base_url/v${version}/${tool}-v${version}-${arch_suffix}.tar.gz"
+        # v-prefixed tag, no v in filename: some tools
+        "$base_url/v${version}/${tool}-${version}-${arch_suffix}.tar.gz"
+        # No v-prefix in tag, no v in filename: delta-0.18.2-x86_64-...
+        "$base_url/${version}/${tool}-${version}-${arch_suffix}.tar.gz"
+        # lazygit style: lazygit_0.44.1_Linux_x86_64.tar.gz
+        "$base_url/v${version}/${tool}_${version}_${arch_suffix}.tar.gz"
+        # eza style: eza_x86_64-unknown-linux-musl.tar.gz (no version in filename)
+        "$base_url/v${version}/${tool}_${arch_suffix}.tar.gz"
+        # bottom style (no v-prefix): bottom_x86_64-unknown-linux-musl.tar.gz
+        "$base_url/${version}/${tool}_${arch_suffix}.tar.gz"
+        # btop style: btop-x86_64-linux-musl.tbz
+        "$base_url/v${version}/${tool}-${arch_suffix}.tbz"
+    )
+
+    archive_url=""
+    for pattern in "${patterns[@]}"; do
+        if curl -fsSL --head "$pattern" &>/dev/null; then
+            archive_url="$pattern"
+            break
+        fi
+    done
+
+    if [ -z "$archive_url" ]; then
+        echo "Could not find release URL for $tool v$version" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Download archive
+    local archive_file="$tmpdir/archive"
+    if ! curl -fsSL -o "$archive_file" "$archive_url"; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Extract based on extension
+    local extract_ok=false
+    case "$archive_url" in
+        *.tar.gz|*.tgz)
+            tar xzf "$archive_file" -C "$tmpdir" --strip-components="$strip" && extract_ok=true
+            ;;
+        *.tbz|*.tar.bz2)
+            tar xjf "$archive_file" -C "$tmpdir" --strip-components="$strip" && extract_ok=true
+            ;;
+        *.zip)
+            unzip -q "$archive_file" -d "$tmpdir" && extract_ok=true
+            ;;
+        *)
+            echo "Unknown archive format: $archive_url" >&2
+            ;;
+    esac
+
+    if [ "$extract_ok" != "true" ]; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Find and install the binary
+    mkdir -p "$HOME/.local/bin"
+    local found_binary
+    found_binary=$(find "$tmpdir" -name "$binary" -type f -executable 2>/dev/null | head -1)
+    if [ -z "$found_binary" ]; then
+        # Try without executable check (might need to chmod)
+        found_binary=$(find "$tmpdir" -name "$binary" -type f 2>/dev/null | head -1)
+    fi
+
+    if [ -z "$found_binary" ]; then
+        echo "Binary '$binary' not found in archive" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    install -m 755 "$found_binary" "$HOME/.local/bin/$binary"
+    rm -rf "$tmpdir"
+}
+
+###############################################################################
+### Persistent Logging
+###############################################################################
+
+LOG_DIR="$HOME/.config/peter-terminal-utils/logs"
+LOG_FILE=""
+
+# Initialize logging - call once at script start
+init_logging() {
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "=== Installation started at $(date -Iseconds) ==="
+        echo "Distro: $DISTRO $DISTRO_VERSION | Arch: $ARCH | WSL: $(is_wsl && echo yes || echo no)"
+        echo "User: $USER | Home: $HOME"
+        echo "==="
+    } >> "$LOG_FILE"
+}
+
+# Log a message to the log file
+log() {
+    [ -n "$LOG_FILE" ] && echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"
+}
+
+# Log command execution details (called after _exec)
+log_cmd() {
+    if [ -n "$LOG_FILE" ]; then
+        {
+            echo "[$(date +%H:%M:%S)] CMD: $*"
+            echo "  EXIT: $_EXEC_EXIT"
+            [ -n "$_EXEC_ERR" ] && echo "  STDERR: $_EXEC_ERR" | head -5
+        } >> "$LOG_FILE"
+    fi
+}
+
+###############################################################################
+### Script Metadata
+###############################################################################
+
+# Extract metadata from a script file
+# Usage: value=$(get_script_meta "/path/to/script.sh" "key")
+# Returns empty string if key not found
+get_script_meta() {
+    local script="$1" key="$2"
+    grep -m1 "^# @${key}:" "$script" 2>/dev/null | sed "s/^# @${key}:[[:space:]]*//"
+}
+
+# Check if script requires sudo (looks for @requires: sudo)
+script_requires_sudo() {
+    local script="$1"
+    local requires
+    requires=$(get_script_meta "$script" "requires")
+    [[ "$requires" == *"sudo"* ]]
+}
+
+# Check if script can run in parallel
+script_is_parallel() {
+    local script="$1"
+    [[ "$(get_script_meta "$script" "parallel")" == "true" ]]
+}
 
 ###############################################################################
 ### Standalone Script Support

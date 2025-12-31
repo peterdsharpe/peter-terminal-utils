@@ -1,7 +1,11 @@
 #!/bin/bash
+# @name: Snap Apps
+# @description: Obsidian, VS Code, Firefox, Inkscape, Steam
+# @requires: sudo
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install snap applications
 
 # Check if snaps are enabled (via INSTALL_SNAPS env var or standalone prompt)
 if [[ "${INSTALL_SNAPS:-}" != "Y" ]]; then

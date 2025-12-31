@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: Symbols Nerd Font
+# @description: Fallback font for missing glyphs and icons
+# @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Symbols Nerd Font (fallback for missing glyphs)
 
 install_symbols_font() {
     local tmpdir

@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: Fontconfig
+# @description: Font fallback config for Nerd Font symbols
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Configure fontconfig to use Symbols Nerd Font as fallback
 
 configure_fontconfig() {
     mkdir -p ~/.config/fontconfig || return 1

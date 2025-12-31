@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: fzf
+# @description: Command-line fuzzy finder for files, history, and more
+# @repo: junegunn/fzf
+# @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install fzf (fuzzy finder)
 
 install_fzf() {
     # Remove any existing/incomplete install for idempotency

@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: Fira Code Nerd Font
+# @description: Programming font with ligatures and icons
+# @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Fira Code Nerd Font (for terminal icons)
 
 install_firacode() {
     local tmpdir

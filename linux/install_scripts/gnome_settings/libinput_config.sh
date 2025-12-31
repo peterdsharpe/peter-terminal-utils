@@ -1,7 +1,11 @@
 #!/bin/bash
+# @name: Libinput Config
+# @description: Custom scroll speed via LD_PRELOAD
+# @requires: sudo
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install libinput-config for scroll speed adjustment
 # Source: https://gitlab.com/warningnonpotablewater/libinput-config
 #
 # This uses LD_PRELOAD to intercept libinput calls and apply a scroll factor.

@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Dash to Panel
+# @description: GNOME extension for Windows-style taskbar
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install and configure Dash to Panel GNOME extension
 
 # Get the linux directory (where settings file is stored)
 LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Desktop Settings
+# @description: Keyboard, touchpad, dark theme, Nemo file manager
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Configure GNOME desktop settings
 
 # Only run if not headless
 if [[ "$HEADLESS" == "Y" ]]; then

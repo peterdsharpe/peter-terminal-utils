@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Docker
+# @description: Container runtime for building and running applications
+# @requires: sudo
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Docker
 
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1

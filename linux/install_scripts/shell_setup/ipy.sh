@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: IPy
+# @description: Interactive Python with NumPy, Matplotlib, etc.
+# @depends: uv.sh
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Set up global ipy Python environment
 
 # Get the linux directory (where ipy folder is relative to)
 LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

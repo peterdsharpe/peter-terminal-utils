@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: Dotfiles
+# @description: Symlink .zshrc, nvim config, .p10k.zsh
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Symlink dotfiles (.zshrc, neovim config, .p10k.zsh)
 
 # Get the linux directory (where dotfiles are stored)
 LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

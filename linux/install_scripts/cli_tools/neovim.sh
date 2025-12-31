@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: neovim
+# @description: Hyperextensible Vim-based text editor
+# @repo: neovim/neovim
+# @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install neovim
 
 install_neovim() {
     local version nvim_arch nvim_dir tmpdir

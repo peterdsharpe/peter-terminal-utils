@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: Git Config
+# @description: User, aliases, delta pager, git-lfs
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Configure git
 
 step_start "Configuring git"
 run git config --global user.name "$GIT_NAME"

@@ -14,10 +14,10 @@ Usage:
     setup --help       # Show help
 """
 
-from __future__ import annotations
-
 import argparse
+import concurrent.futures
 import curses
+import json
 import os
 import pty
 import re
@@ -48,11 +48,32 @@ class Script:
     name: str  # Display name (e.g., "apt_packages")
     path: str  # Relative path from install_scripts/ (e.g., "system_packages/apt_packages.sh")
     enabled: bool = True
+    metadata: dict[str, str] = field(default_factory=dict)
 
     @property
     def display_name(self) -> str:
-        """Human-readable name: underscores to spaces, title case."""
-        return self.name.replace("_", " ").title()
+        """Human-readable name from @name metadata, or derived from filename."""
+        return self.metadata.get("name", self.name.replace("_", " ").title())
+
+    @property
+    def description(self) -> str:
+        """Script description from @description metadata."""
+        return self.metadata.get("description", "")
+
+    @property
+    def requires_sudo(self) -> bool:
+        """Whether script requires sudo (from @requires metadata)."""
+        return "sudo" in self.metadata.get("requires", "")
+
+    @property
+    def is_parallel(self) -> bool:
+        """Whether script can run in parallel (from @parallel metadata)."""
+        return self.metadata.get("parallel", "").lower() == "true"
+
+    @property
+    def is_headless_skip(self) -> bool:
+        """Whether script should be skipped in headless mode."""
+        return self.metadata.get("headless", "").lower() == "skip"
 
 
 @dataclass
@@ -111,14 +132,51 @@ class Manifest:
 
 
 ###############################################################################
+### Script Metadata Parser
+###############################################################################
+
+
+def parse_script_metadata(script_path: Path) -> dict[str, str]:
+    """Extract @key: value metadata from script header comments.
+
+    Parses lines like:
+        # @name: bat
+        # @description: Modern cat replacement
+        # @requires: sudo
+        # @parallel: true
+    """
+    metadata: dict[str, str] = {}
+    try:
+        with open(script_path) as f:
+            for line in f:
+                line = line.strip()
+                # Stop at first non-comment, non-shebang, non-empty line
+                if line and not line.startswith("#"):
+                    break
+                # Parse @key: value pattern
+                if match := re.match(r"^#\s*@(\w+):\s*(.+)$", line):
+                    metadata[match.group(1)] = match.group(2).strip()
+    except (OSError, IOError):
+        pass  # File not readable, return empty metadata
+    return metadata
+
+
+###############################################################################
 ### Manifest Parser
 ###############################################################################
 
 
-def parse_manifest(manifest_path: Path) -> Manifest:
-    """Parse INI-style manifest.conf into a Manifest object."""
+def parse_manifest(manifest_path: Path, scripts_dir: Path | None = None) -> Manifest:
+    """Parse INI-style manifest.conf into a Manifest object.
+
+    If scripts_dir is provided, also loads @metadata from each script file.
+    """
     manifest = Manifest()
     current_section: Section | None = None
+
+    # Default scripts_dir to same directory as manifest
+    if scripts_dir is None:
+        scripts_dir = manifest_path.parent
 
     with open(manifest_path) as f:
         for line in f:
@@ -138,8 +196,10 @@ def parse_manifest(manifest_path: Path) -> Manifest:
                 script_path = line
                 # Extract script name from path (remove directory and .sh)
                 script_name = Path(script_path).stem
+                # Load metadata from script file
+                metadata = parse_script_metadata(scripts_dir / script_path)
                 current_section.scripts.append(
-                    Script(name=script_name, path=script_path)
+                    Script(name=script_name, path=script_path, metadata=metadata)
                 )
 
     return manifest
@@ -169,25 +229,14 @@ def check_sudo_available() -> bool:
 ### Presets
 ###############################################################################
 
-# Scripts that require sudo access
-SUDO_SCRIPTS = [
-    "system_packages/apt_packages.sh",
-    "system_packages/ssh_service.sh",
-    "cli_tools/docker.sh",
-    "cli_tools/github_cli.sh",
-    "cli_tools/lazygit.sh",
-    "dev_tools/texlive.sh",
-    "gnome_settings/libinput_config.sh",
-    "snap_apps/signal.sh",
-    "snap_apps/snap_apps.sh",
-    "final_steps/default_shell.sh",
-]
-
-PRESETS: dict[str, tuple[str, list[str], list[str]]] = {
+# Preset definitions: (description, disabled_sections, flags)
+# flags: "no_sudo" = disable scripts with @requires: sudo
+#        "headless" = disable scripts with @headless: skip
+PRESET_DEFS: dict[str, tuple[str, list[str], list[str]]] = {
     "1": (
         "Desktop - Full installation with GUI components",
         [],  # No sections disabled
-        [],  # No scripts disabled
+        [],  # No flags
     ),
     "2": (
         "Headless - Server/CLI only, no GUI components",
@@ -196,14 +245,12 @@ PRESETS: dict[str, tuple[str, list[str], list[str]]] = {
             "Fonts",
             "Final Steps",
         ],
-        [
-            "snap_apps/signal.sh",  # GUI app
-        ],
+        ["headless"],  # Disable @headless: skip scripts
     ),
     "3": (
         "Desktop (no sudo) - Desktop without root-requiring scripts",
         [],  # No sections disabled
-        SUDO_SCRIPTS,
+        ["no_sudo"],  # Disable @requires: sudo scripts
     ),
     "4": (
         "Headless (no sudo) - Headless without root-requiring scripts",
@@ -212,17 +259,23 @@ PRESETS: dict[str, tuple[str, list[str], list[str]]] = {
             "Fonts",
             "Final Steps",
         ],
-        SUDO_SCRIPTS,  # All sudo scripts already includes signal
+        ["no_sudo", "headless"],  # Both flags
     ),
 }
 
+# For display in list_presets, we need a way to show what each preset disables
+PRESETS = PRESET_DEFS  # Alias for compatibility
+
 
 def apply_preset(manifest: Manifest, preset_key: str) -> None:
-    """Apply a preset to the manifest, enabling/disabling sections and scripts."""
-    if preset_key not in PRESETS:
+    """Apply a preset to the manifest, enabling/disabling sections and scripts.
+
+    Uses script metadata (@requires, @headless) to determine what to disable.
+    """
+    if preset_key not in PRESET_DEFS:
         return
 
-    _, disabled_sections, disabled_scripts = PRESETS[preset_key]
+    _, disabled_sections, flags = PRESET_DEFS[preset_key]
 
     # First, enable everything
     for section in manifest.sections:
@@ -233,10 +286,14 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
         if section.name in disabled_sections:
             section.set_all(False)
 
-    # Disable specified scripts
+    # Apply flags based on script metadata
     for section in manifest.sections:
         for script in section.scripts:
-            if script.path in disabled_scripts:
+            # Disable sudo-requiring scripts if no_sudo flag set
+            if "no_sudo" in flags and script.requires_sudo:
+                script.enabled = False
+            # Disable headless-skip scripts if headless flag set
+            if "headless" in flags and script.is_headless_skip:
                 script.enabled = False
 
 
@@ -287,6 +344,11 @@ class SelectionTUI:
         self.scroll_offset = 0
         self.current_preset = "1"  # Start with Desktop preset
         apply_preset(self.manifest, self.current_preset)
+        # Search state
+        self.search_mode = False
+        self.search_query = ""
+        self.filtered_indices: list[int] | None = None  # None = no filter
+        self.last_key = -1  # For detecting 'gg' sequence
 
     def get_visible_height(self) -> int:
         """Get number of lines available for the tree view."""
@@ -376,19 +438,16 @@ class SelectionTUI:
 
         line = f"  {checkbox} {section.name}"
 
-        if is_selected:
-            self.stdscr.attron(self.colors["reverse"])
+        # Combine with reverse if selected
+        rev = self.colors["reverse"] if is_selected else 0
 
-        self.stdscr.addstr(y, 0, " " * width)  # Clear line
-        self.stdscr.addstr(y, 0, line[: width - 1], color | self.colors["bold"])
-
-        if is_selected:
-            self.stdscr.attroff(self.colors["reverse"])
+        self.stdscr.addstr(y, 0, " " * width, rev)  # Clear line with selection
+        self.stdscr.addstr(y, 0, line[: width - 1], color | self.colors["bold"] | rev)
 
     def draw_script(
         self, y: int, width: int, script: Script, is_selected: bool
     ) -> None:
-        """Draw a script entry."""
+        """Draw a script entry with its description in faded text."""
         if script.enabled:
             checkbox = "[x]"
             color = self.colors["green"]
@@ -396,16 +455,35 @@ class SelectionTUI:
             checkbox = "[ ]"
             color = self.colors["dim"]
 
-        line = f"        {checkbox} {script.display_name}"
+        name = script.display_name
+        desc = script.description
 
-        if is_selected:
-            self.stdscr.attron(self.colors["reverse"])
+        # Calculate how much space we have for description
+        # Format: "        [x] Name - Description"
+        prefix = f"        {checkbox} {name}"
+        prefix_len = len(prefix)
 
-        self.stdscr.addstr(y, 0, " " * width)  # Clear line
-        self.stdscr.addstr(y, 0, line[: width - 1], color)
+        # Reserve space for description (dim separator + text)
+        desc_available = width - prefix_len - 4  # 4 = " - " + margin
 
-        if is_selected:
-            self.stdscr.attroff(self.colors["reverse"])
+        # Combine with reverse if selected
+        rev = self.colors["reverse"] if is_selected else 0
+
+        self.stdscr.addstr(y, 0, " " * width, rev)  # Clear line with selection
+        self.stdscr.addstr(y, 0, prefix[: width - 1], color | rev)
+
+        # Add description in dim/faded style if there's room
+        if desc and desc_available > 10:
+            desc_text = desc[:desc_available]
+            if len(desc) > desc_available:
+                desc_text = desc[: desc_available - 1] + "…"
+            try:
+                # Draw separator and description in dim color
+                dim_attr = self.colors["dim"] | rev
+                self.stdscr.addstr(y, prefix_len, " - ", dim_attr)
+                self.stdscr.addstr(y, prefix_len + 3, desc_text, dim_attr)
+            except curses.error:
+                pass  # Line too long, skip description
 
     def draw_footer(self, height: int, width: int) -> None:
         """Draw the footer with key bindings."""
@@ -414,16 +492,28 @@ class SelectionTUI:
         # Separator
         self.stdscr.addstr(footer_y, 0, "─" * width, self.colors["dim"])
 
-        # Key bindings - line 1
-        keys1 = " [w/k/↑] Up   [s/j/↓] Down   [Space/Enter] Toggle   [x] Install   [q] Quit "
-        self.stdscr.addstr(footer_y + 1, 2, keys1[: width - 4], self.colors["cyan"])
+        # Search mode display
+        if self.search_mode:
+            search_line = f" Search: {self.search_query}_ "
+            self.stdscr.addstr(footer_y + 1, 2, search_line[: width - 4], self.colors["cyan"])
+            self.stdscr.addstr(footer_y + 2, 2, " [Enter] Apply   [Esc] Cancel "[: width - 4], self.colors["dim"])
+        elif self.filtered_indices is not None:
+            # Show filter active
+            filter_line = f" Filter: '{self.search_query}' ({len(self.filtered_indices)} matches)   [Esc] Clear "
+            self.stdscr.addstr(footer_y + 1, 2, filter_line[: width - 4], self.colors["yellow"])
+            keys2 = " [/] Search   [gg] Top   [G] Bottom   [x] Install   [q] Quit "
+            self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
+        else:
+            # Key bindings - line 1
+            keys1 = " [j/↓] Down   [k/↑] Up   [Space] Toggle   [/] Search   [x] Install   [q] Quit "
+            self.stdscr.addstr(footer_y + 1, 2, keys1[: width - 4], self.colors["cyan"])
 
-        # Key bindings - line 2
-        preset_keys = "   ".join(
-            f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items()
-        )
-        keys2 = f" {preset_keys}   [?] Help "
-        self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
+            # Key bindings - line 2
+            preset_keys = "   ".join(
+                f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items()
+            )
+            keys2 = f" {preset_keys}   [?] Help "
+            self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
 
         # Status line
         enabled = self.manifest.get_enabled_scripts()
@@ -439,6 +529,58 @@ class SelectionTUI:
         """Handle keyboard input. Returns 'execute' or 'quit' or None."""
         key = self.stdscr.getch()
         items = self.manifest.get_flat_items()
+
+        # Search mode input handling
+        if self.search_mode:
+            if key == 27:  # Escape - cancel search
+                self.search_mode = False
+                self.search_query = ""
+            elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):  # Enter - apply filter
+                self.search_mode = False
+                if self.search_query:
+                    self._apply_search_filter(items)
+                else:
+                    self.filtered_indices = None
+            elif key in (curses.KEY_BACKSPACE, 127, 8):  # Backspace
+                self.search_query = self.search_query[:-1]
+            elif 32 <= key < 127:  # Printable ASCII
+                self.search_query += chr(key)
+            self.last_key = -1
+            return None
+
+        # Clear filter on Escape
+        if key == 27 and self.filtered_indices is not None:
+            self.filtered_indices = None
+            self.search_query = ""
+            self.last_key = -1
+            return None
+
+        # Start search mode
+        if key == ord("/"):
+            self.search_mode = True
+            self.search_query = ""
+            self.last_key = -1
+            return None
+
+        # Vim-style gg (go to top) - need to detect 'g' followed by 'g'
+        if key == ord("g"):
+            if self.last_key == ord("g"):
+                self.cursor = 0
+                self.scroll_offset = 0
+                self.last_key = -1
+                return None
+            else:
+                self.last_key = key
+                return None
+
+        # Vim-style G (go to bottom)
+        if key == ord("G"):
+            self.cursor = len(items) - 1
+            self.last_key = -1
+            return None
+
+        # Reset last_key for non-g keys
+        self.last_key = -1
 
         # Navigation
         if key in (ord("w"), ord("k"), curses.KEY_UP):
@@ -461,6 +603,9 @@ class SelectionTUI:
             preset_key = chr(key)
             self.current_preset = preset_key
             apply_preset(self.manifest, preset_key)
+            # Clear any filter when applying preset
+            self.filtered_indices = None
+            self.search_query = ""
 
         # Execute
         elif key == ord("x"):
@@ -476,6 +621,21 @@ class SelectionTUI:
 
         return None
 
+    def _apply_search_filter(self, items: list[Section | Script]) -> None:
+        """Apply search filter and highlight matching items."""
+        query = self.search_query.lower()
+        self.filtered_indices = []
+        for i, item in enumerate(items):
+            name = item.name if isinstance(item, Section) else item.display_name
+            if query in name.lower():
+                self.filtered_indices.append(i)
+                # Also enable if it's a script (search = select)
+                if isinstance(item, Script):
+                    item.enabled = True
+        # Move cursor to first match
+        if self.filtered_indices:
+            self.cursor = self.filtered_indices[0]
+
     def show_help(self) -> None:
         """Show help overlay."""
         height, width = self.stdscr.getmaxyx()
@@ -484,10 +644,13 @@ class SelectionTUI:
             "╔══════════════════════════════════════════╗",
             "║            Keyboard Shortcuts            ║",
             "╠══════════════════════════════════════════╣",
-            "║  w, k, ↑     Move cursor up              ║",
-            "║  s, j, ↓     Move cursor down            ║",
+            "║  j, k, ↑↓    Move cursor up/down         ║",
+            "║  gg          Jump to top                 ║",
+            "║  G           Jump to bottom              ║",
             "║  Space/Enter Toggle selection            ║",
-            "║  1-9         Apply preset                ║",
+            "║  /           Search scripts              ║",
+            "║  Esc         Clear search filter         ║",
+            "║  1-4         Apply preset                ║",
             "║  x           Start installation          ║",
             "║  q           Quit                        ║",
             "║  ?           Show this help              ║",
@@ -589,7 +752,7 @@ class ExecutionTUI:
         self.stdscr.refresh()
 
     def draw_header(self, width: int) -> None:
-        """Draw the header with progress."""
+        """Draw the header with progress bar."""
         completed = sum(
             1 for s in self.statuses if s.status in ("success", "failed", "skipped")
         )
@@ -619,6 +782,18 @@ class ExecutionTUI:
         self.stdscr.attron(title_color | self.colors["bold"])
         self.stdscr.addstr(0, 0, header_line[:width])
         self.stdscr.attroff(title_color | self.colors["bold"])
+
+        # Draw progress bar on line 1
+        bar_width = min(40, width - 20)
+        if total > 0 and bar_width > 5:
+            filled = int(bar_width * completed / total)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            pct = int(100 * completed / total)
+            progress_str = f" [{bar}] {pct:3d}% "
+            try:
+                self.stdscr.addstr(1, 2, progress_str[:width - 4], self.colors["cyan"])
+            except curses.error:
+                pass
 
     def draw_script_list(self, height: int, list_width: int) -> None:
         """Draw the list of scripts with status indicators."""
@@ -841,34 +1016,106 @@ class ExecutionTUI:
             status.exit_code = 1
             return False
 
+    def _group_by_parallelism(self) -> list[list[ScriptStatus]]:
+        """Group consecutive scripts by whether they can run in parallel.
+
+        Returns list of groups where each group is either:
+        - A single non-parallel script, or
+        - Multiple parallel-safe scripts that can run concurrently
+        """
+        groups: list[list[ScriptStatus]] = []
+        current_group: list[ScriptStatus] = []
+        current_is_parallel = False
+
+        for status in self.statuses:
+            is_parallel = status.script.is_parallel
+            if not current_group:
+                current_group = [status]
+                current_is_parallel = is_parallel
+            elif is_parallel and current_is_parallel:
+                # Continue parallel group
+                current_group.append(status)
+            else:
+                # Different parallelism - start new group
+                groups.append(current_group)
+                current_group = [status]
+                current_is_parallel = is_parallel
+
+        if current_group:
+            groups.append(current_group)
+
+        return groups
+
     def run(self) -> tuple[int, int]:
-        """Run all selected scripts. Returns (success_count, fail_count)."""
+        """Run all selected scripts, parallelizing where safe.
+
+        Returns (success_count, fail_count).
+        """
         curses.curs_set(0)
 
         success_count = 0
         fail_count = 0
 
         try:
-            for idx, status in enumerate(self.statuses):
+            groups = self._group_by_parallelism()
+
+            for group in groups:
                 if self.cancelled:
-                    status.status = "skipped"
+                    for status in group:
+                        status.status = "skipped"
                     continue
 
-                self.current_idx = idx
-                self.draw()
+                # Check if this is a parallel group (multiple parallel-safe scripts)
+                is_parallel_group = len(group) > 1 and all(
+                    s.script.is_parallel for s in group
+                )
 
-                if self.run_script(status):
-                    success_count += 1
+                if is_parallel_group:
+                    # Run group in parallel
+                    for status in group:
+                        status.status = "running"
+                    self.current_idx = self.statuses.index(group[0])
+                    self.draw()
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                        futures = {
+                            executor.submit(self._run_script_silent, s): s
+                            for s in group
+                        }
+                        for future in concurrent.futures.as_completed(futures):
+                            status = futures[future]
+                            self.current_idx = self.statuses.index(status)
+                            try:
+                                if future.result():
+                                    success_count += 1
+                                else:
+                                    fail_count += 1
+                            except Exception:
+                                status.status = "failed"
+                                fail_count += 1
+                            self.draw()
                 else:
-                    fail_count += 1
+                    # Run sequentially
+                    for status in group:
+                        if self.cancelled:
+                            status.status = "skipped"
+                            continue
 
-                self.draw()
+                        self.current_idx = self.statuses.index(status)
+                        self.draw()
+
+                        if self.run_script(status):
+                            success_count += 1
+                        else:
+                            fail_count += 1
+
+                        self.draw()
 
         except KeyboardInterrupt:
             self.cancelled = True
             # Mark remaining as skipped
-            for status in self.statuses[self.current_idx :]:
-                if status.status == "pending":
+            for status in self.statuses:
+                if status.status in ("pending", "running"):
                     status.status = "skipped"
 
         # Final draw
@@ -890,6 +1137,67 @@ class ExecutionTUI:
         self.stdscr.getch()
 
         return success_count, fail_count
+
+    def _run_script_silent(self, status: ScriptStatus) -> bool:
+        """Run a script without updating display (for parallel execution).
+
+        This is a simplified version of run_script for thread-safe parallel execution.
+        """
+        script_path = self.scripts_dir / status.script.path
+
+        if not script_path.exists() or not os.access(script_path, os.X_OK):
+            status.output_lines.append(f"Script not found or not executable: {script_path}")
+            status.status = "failed"
+            status.exit_code = 1
+            return False
+
+        # Prepare environment
+        env = os.environ.copy()
+        env["_SOURCED"] = "1"
+        env["ORCHESTRATED"] = "true"
+        env["DRY_RUN"] = "true" if self.dry_run else "false"
+        env["HEADLESS"] = "N"
+        env["INSTALL_SNAPS"] = "Y"
+        env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
+        env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
+        env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
+
+        try:
+            common_sh = self.scripts_dir.parent / "_common.sh"
+            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
+
+            result = subprocess.run(
+                ["bash", "-c", bash_cmd],
+                env=env,
+                cwd=self.scripts_dir.parent,
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 minute timeout
+            )
+
+            status.exit_code = result.returncode
+            if result.stdout:
+                status.output_lines.extend(result.stdout.strip().split("\n"))
+            if result.stderr:
+                status.output_lines.extend(result.stderr.strip().split("\n"))
+
+            if result.returncode == 0:
+                status.status = "success"
+                return True
+            else:
+                status.status = "failed"
+                return False
+
+        except subprocess.TimeoutExpired:
+            status.output_lines.append("Script timed out after 10 minutes")
+            status.status = "failed"
+            status.exit_code = 124
+            return False
+        except Exception as e:
+            status.output_lines.append(f"Error: {e}")
+            status.status = "failed"
+            status.exit_code = 1
+            return False
 
 
 ###############################################################################
@@ -991,20 +1299,87 @@ def run_non_interactive(manifest: Manifest, scripts_dir: Path, dry_run: bool) ->
 def list_presets() -> None:
     """Print available presets."""
     print("\nAvailable presets:\n")
-    for key, (desc, disabled_sections, disabled_scripts) in PRESETS.items():
+    for key, (desc, disabled_sections, flags) in PRESET_DEFS.items():
         print(f"  [{key}] {desc}")
         if disabled_sections:
             print(f"       Disables sections: {', '.join(disabled_sections)}")
-        if disabled_scripts:
-            # Show count if many scripts disabled (e.g., no-sudo presets)
-            if len(disabled_scripts) > 3:
-                print(f"       Disables {len(disabled_scripts)} scripts requiring sudo")
-            else:
-                script_names = [
-                    Path(s).stem.replace("_", " ").title() for s in disabled_scripts
-                ]
-                print(f"       Disables scripts: {', '.join(script_names)}")
+        if flags:
+            flag_desc = []
+            if "no_sudo" in flags:
+                flag_desc.append("scripts requiring sudo")
+            if "headless" in flags:
+                flag_desc.append("GUI-only scripts")
+            if flag_desc:
+                print(f"       Disables: {', '.join(flag_desc)}")
     print()
+
+
+###############################################################################
+### Export/Import
+###############################################################################
+
+
+def export_selections(manifest: Manifest, output_path: Path) -> None:
+    """Export current script selections to a JSON file."""
+    data = {
+        "version": 1,
+        "description": "peter-terminal-utils selection export",
+        "scripts": [script.path for _, script in manifest.get_enabled_scripts()],
+    }
+    with open(output_path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"Exported {len(data['scripts'])} selections to {output_path}")
+
+
+def import_selections(manifest: Manifest, input_path: Path) -> None:
+    """Import script selections from a JSON file."""
+    with open(input_path) as f:
+        data = json.load(f)
+
+    if data.get("version") != 1:
+        print(f"Warning: Unknown export version {data.get('version')}", file=sys.stderr)
+
+    enabled_paths = set(data.get("scripts", []))
+
+    # Disable all, then enable only those in the import
+    for section in manifest.sections:
+        for script in section.scripts:
+            script.enabled = script.path in enabled_paths
+
+    enabled_count = len(manifest.get_enabled_scripts())
+    print(f"Imported selections: {enabled_count} scripts enabled")
+
+
+###############################################################################
+### Documentation Generation
+###############################################################################
+
+
+def generate_docs(manifest: Manifest) -> None:
+    """Generate markdown documentation from script metadata."""
+    print("# Install Scripts")
+    print()
+    print("Auto-generated documentation from script `@metadata` headers.")
+    print()
+
+    for section in manifest.sections:
+        print(f"## {section.name}")
+        print()
+        print("| Script | Description | Requirements |")
+        print("|--------|-------------|--------------|")
+
+        for script in section.scripts:
+            name = script.display_name
+            desc = script.description or "-"
+            reqs = []
+            if script.requires_sudo:
+                reqs.append("sudo")
+            if script.is_headless_skip:
+                reqs.append("GUI")
+            req_str = ", ".join(reqs) if reqs else "-"
+            print(f"| {name} | {desc} | {req_str} |")
+
+        print()
 
 
 def main() -> int:
@@ -1014,11 +1389,14 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  setup              Interactive TUI mode
-  setup --preset 1   Non-interactive with Desktop preset
-  setup --preset 2   Non-interactive with Headless preset
-  setup --list       Show available presets
-  setup --dry-run    Preview changes without making them
+  setup                    Interactive TUI mode
+  setup --preset 1         Non-interactive with Desktop preset
+  setup --preset 2         Non-interactive with Headless preset
+  setup --list             Show available presets
+  setup --dry-run          Preview changes without making them
+  setup --export sel.json  Export current selections
+  setup --import sel.json  Import selections from file
+  setup --docs             Generate markdown documentation
 """,
     )
     parser.add_argument(
@@ -1039,6 +1417,22 @@ Examples:
         action="store_true",
         help="Dry run mode (preview changes)",
     )
+    parser.add_argument(
+        "--export",
+        metavar="FILE",
+        help="Export current selections to JSON file",
+    )
+    parser.add_argument(
+        "--import",
+        dest="import_file",
+        metavar="FILE",
+        help="Import selections from JSON file",
+    )
+    parser.add_argument(
+        "--docs",
+        action="store_true",
+        help="Generate markdown documentation from script metadata",
+    )
 
     args = parser.parse_args()
 
@@ -1056,12 +1450,36 @@ Examples:
         list_presets()
         return 0
 
-    # Parse manifest
-    manifest = parse_manifest(manifest_path)
+    # Parse manifest (with metadata)
+    manifest = parse_manifest(manifest_path, scripts_dir)
+
+    # Generate documentation
+    if args.docs:
+        generate_docs(manifest)
+        return 0
+
+    # Export selections
+    if args.export:
+        # Apply preset if specified, otherwise use preset 1 (all enabled)
+        if args.preset:
+            apply_preset(manifest, args.preset)
+        else:
+            apply_preset(manifest, "1")
+        export_selections(manifest, Path(args.export))
+        return 0
+
+    # Import selections
+    if args.import_file:
+        import_path = Path(args.import_file)
+        if not import_path.exists():
+            print(f"Error: Import file not found: {import_path}", file=sys.stderr)
+            return 1
+        import_selections(manifest, import_path)
+        return run_non_interactive(manifest, scripts_dir, args.dry_run)
 
     # Non-interactive mode with preset
     if args.preset:
-        if args.preset not in PRESETS:
+        if args.preset not in PRESET_DEFS:
             print(f"Error: Unknown preset '{args.preset}'", file=sys.stderr)
             print("Use --list to see available presets.", file=sys.stderr)
             return 1

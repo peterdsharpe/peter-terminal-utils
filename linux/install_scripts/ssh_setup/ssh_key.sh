@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: SSH Key
+# @description: Generate ~/.ssh/id_ed25519 key pair
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Generate SSH key pair
 
 generate_ssh_key() {
     mkdir -p "$HOME/.ssh" || return 1

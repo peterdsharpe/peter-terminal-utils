@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Zsh Plugins
+# @description: Syntax highlighting, autosuggestions, autocomplete
+# @depends: ohmyzsh.sh
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Oh My Zsh plugins
 
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 

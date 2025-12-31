@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Python Tools
+# @description: ruff, ty, jupyterlab, pre-commit, yt-dlp via uv
+# @depends: uv.sh
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install Python tools via uv
 
 step_start "Installing Python tools"
 run ~/.local/bin/uv tool install ruff        # Fast linter/formatter

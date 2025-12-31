@@ -1,7 +1,9 @@
 #!/bin/bash
+# @name: zsh
+# @description: Powerful shell with advanced features and plugins
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install zsh (build from source if no sudo)
 
 install_zsh_from_source() {
     # Check for required build tools

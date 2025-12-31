@@ -1,7 +1,10 @@
 #!/bin/bash
+# @name: Just Perfection
+# @description: GNOME extension to disable animations and popup delays
+# @headless: skip
+# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
-# Install and configure Just Perfection GNOME extension
 
 # Only run if not headless
 if [[ "$HEADLESS" == "Y" ]]; then
