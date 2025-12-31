@@ -267,6 +267,11 @@ PRESET_DEFS: dict[str, tuple[str, list[str], list[str]]] = {
 PRESETS = PRESET_DEFS  # Alias for compatibility
 
 
+def is_headless_preset(preset_key: str) -> bool:
+    """Check if a preset is a headless preset (no GUI components)."""
+    return preset_key in ("2", "4")
+
+
 def apply_preset(manifest: Manifest, preset_key: str) -> None:
     """Apply a preset to the manifest, enabling/disabling sections and scripts.
 
@@ -714,11 +719,13 @@ class ExecutionTUI:
         manifest: Manifest,
         scripts_dir: Path,
         dry_run: bool = False,
+        headless: bool = False,
     ):
         self.stdscr = stdscr
         self.manifest = manifest
         self.scripts_dir = scripts_dir
         self.dry_run = dry_run
+        self.headless = headless
         self.colors = init_colors()
 
         # Build status list from enabled scripts
@@ -936,8 +943,8 @@ class ExecutionTUI:
         env["_SOURCED"] = "1"  # Tell scripts they're being sourced
         env["ORCHESTRATED"] = "true"
         env["DRY_RUN"] = "true" if self.dry_run else "false"
-        env["HEADLESS"] = "N"  # TODO: could be configurable
-        env["INSTALL_SNAPS"] = "Y"
+        env["HEADLESS"] = "Y" if self.headless else "N"
+        env["INSTALL_SNAPS"] = "N" if self.headless else "Y"
         env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
         env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
         env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
@@ -1156,8 +1163,8 @@ class ExecutionTUI:
         env["_SOURCED"] = "1"
         env["ORCHESTRATED"] = "true"
         env["DRY_RUN"] = "true" if self.dry_run else "false"
-        env["HEADLESS"] = "N"
-        env["INSTALL_SNAPS"] = "Y"
+        env["HEADLESS"] = "Y" if self.headless else "N"
+        env["INSTALL_SNAPS"] = "N" if self.headless else "Y"
         env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
         env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
         env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
@@ -1224,14 +1231,19 @@ def run_interactive(
     if not enabled:
         return 0
 
+    # Determine if headless mode based on selected preset
+    headless = is_headless_preset(selection_tui.current_preset)
+
     # Execution phase
-    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run)
+    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run, headless)
     success, fail = execution_tui.run()
 
     return 1 if fail > 0 else 0
 
 
-def run_non_interactive(manifest: Manifest, scripts_dir: Path, dry_run: bool) -> int:
+def run_non_interactive(
+    manifest: Manifest, scripts_dir: Path, dry_run: bool, headless: bool = False
+) -> int:
     """Run scripts without TUI. Returns exit code."""
     enabled = manifest.get_enabled_scripts()
     if not enabled:
@@ -1240,14 +1252,16 @@ def run_non_interactive(manifest: Manifest, scripts_dir: Path, dry_run: bool) ->
 
     print(f"\n{'=' * 60}")
     print(f" Installing {len(enabled)} components...")
+    if headless:
+        print(" (Headless mode - skipping GUI packages)")
     print(f"{'=' * 60}\n")
 
     env = os.environ.copy()
     env["_SOURCED"] = "1"
     env["ORCHESTRATED"] = "true"
     env["DRY_RUN"] = "true" if dry_run else "false"
-    env["HEADLESS"] = "N"
-    env["INSTALL_SNAPS"] = "Y"
+    env["HEADLESS"] = "Y" if headless else "N"
+    env["INSTALL_SNAPS"] = "N" if headless else "Y"
     env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
     env["GIT_NAME"] = env.get("GIT_NAME", "Peter Sharpe")
     env["GIT_EMAIL"] = env.get("GIT_EMAIL", "peterdsharpe@gmail.com")
@@ -1475,7 +1489,9 @@ Examples:
             print(f"Error: Import file not found: {import_path}", file=sys.stderr)
             return 1
         import_selections(manifest, import_path)
-        return run_non_interactive(manifest, scripts_dir, args.dry_run)
+        # When importing, check if HEADLESS was set in environment or default to N
+        headless = os.environ.get("HEADLESS", "N") == "Y"
+        return run_non_interactive(manifest, scripts_dir, args.dry_run, headless)
 
     # Non-interactive mode with preset
     if args.preset:
@@ -1484,7 +1500,8 @@ Examples:
             print("Use --list to see available presets.", file=sys.stderr)
             return 1
         apply_preset(manifest, args.preset)
-        return run_non_interactive(manifest, scripts_dir, args.dry_run)
+        headless = is_headless_preset(args.preset)
+        return run_non_interactive(manifest, scripts_dir, args.dry_run, headless)
 
     # Interactive mode
     try:
