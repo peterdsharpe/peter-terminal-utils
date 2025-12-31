@@ -3,16 +3,6 @@
 # This file is sourced by both the orchestrator (setup) and individual install scripts
 
 ###############################################################################
-### Orchestration Mode
-###############################################################################
-
-# When run by the Python orchestrator, enable command tracing so the TUI
-# can show exactly what commands are being executed.
-if [[ "${ORCHESTRATED:-}" == "true" ]]; then
-    set -x
-fi
-
-###############################################################################
 ### Color Definitions
 ###############################################################################
 
@@ -624,3 +614,13 @@ standalone_init() {
     export DRY_RUN HEADLESS HAS_SUDO GIT_NAME GIT_EMAIL
 }
 
+###############################################################################
+### Orchestration Mode - Enable Command Tracing
+###############################################################################
+
+# Enable xtrace (set -x) at the VERY END of this file so that only commands
+# from the actual install scripts are traced, not the boilerplate definitions
+# and helper functions in this common file. This keeps the TUI output clean.
+if [[ "${ORCHESTRATED:-}" == "true" ]]; then
+    set -x
+fi

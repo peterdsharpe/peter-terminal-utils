@@ -74,6 +74,73 @@ def strip_ansi(text: str) -> str:
 
 
 ###############################################################################
+### Scroll State
+###############################################################################
+
+
+@dataclass
+class ScrollState:
+    """Manages scroll position for a scrollable panel.
+
+    Tracks offset (first visible item), total items, and visible height.
+    Provides methods for navigation and ensures offset stays in valid range.
+    """
+
+    offset: int = 0  # Index of first visible item
+    total: int = 0  # Total number of items
+    visible: int = 0  # Number of items that fit in the view
+
+    def clamp(self) -> None:
+        """Ensure offset is within valid range."""
+        max_offset = max(0, self.total - self.visible)
+        self.offset = max(0, min(self.offset, max_offset))
+
+    def scroll_up(self, n: int = 1) -> None:
+        """Scroll up by n items."""
+        self.offset -= n
+        self.clamp()
+
+    def scroll_down(self, n: int = 1) -> None:
+        """Scroll down by n items."""
+        self.offset += n
+        self.clamp()
+
+    def page_up(self) -> None:
+        """Scroll up by one page."""
+        self.scroll_up(self.visible - 1)
+
+    def page_down(self) -> None:
+        """Scroll down by one page."""
+        self.scroll_down(self.visible - 1)
+
+    def go_top(self) -> None:
+        """Scroll to the top."""
+        self.offset = 0
+
+    def go_bottom(self) -> None:
+        """Scroll to the bottom."""
+        self.offset = max(0, self.total - self.visible)
+
+    def ensure_visible(self, idx: int) -> None:
+        """Adjust offset to ensure item at idx is visible."""
+        if idx < self.offset:
+            self.offset = idx
+        elif idx >= self.offset + self.visible:
+            self.offset = idx - self.visible + 1
+        self.clamp()
+
+    @property
+    def can_scroll_up(self) -> bool:
+        """Whether there's content above the visible area."""
+        return self.offset > 0
+
+    @property
+    def can_scroll_down(self) -> bool:
+        """Whether there's content below the visible area."""
+        return self.offset + self.visible < self.total
+
+
+###############################################################################
 ### Data Model
 ###############################################################################
 
@@ -414,7 +481,7 @@ def init_colors() -> dict[str, int]:
     curses.init_pair(3, curses.COLOR_CYAN, -1)  # Running/info
     curses.init_pair(4, curses.COLOR_RED, -1)  # Failed/error
     curses.init_pair(5, curses.COLOR_BLUE, -1)  # Header
-    curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLUE)  # Header bar
+    curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Header bar
 
     return {
         "green": curses.color_pair(1),
@@ -427,6 +494,47 @@ def init_colors() -> dict[str, int]:
         "bold": curses.A_BOLD,
         "reverse": curses.A_REVERSE,
     }
+
+
+def draw_scrollbar(
+    stdscr: curses.window,
+    x: int,
+    y_start: int,
+    height: int,
+    scroll: ScrollState,
+    color: int,
+) -> None:
+    """Draw a vertical scrollbar showing position in content.
+
+    Args:
+        stdscr: Curses window to draw on.
+        x: Column position for the scrollbar.
+        y_start: First row of the scrollbar.
+        height: Height of the scrollbar area.
+        scroll: Current scroll state.
+        color: Color attribute for the scrollbar (use for focus indication).
+    """
+    if height < 2 or scroll.total <= scroll.visible:
+        # No scrollbar needed if everything fits
+        return
+
+    # Calculate thumb size and position
+    # Thumb size proportional to visible/total ratio, minimum 1 char
+    thumb_size = max(1, int(height * scroll.visible / scroll.total))
+    # Thumb position based on scroll offset
+    max_offset = max(1, scroll.total - scroll.visible)
+    thumb_pos = int((height - thumb_size) * scroll.offset / max_offset)
+
+    for i in range(height):
+        y = y_start + i
+        if thumb_pos <= i < thumb_pos + thumb_size:
+            char = "█"  # Thumb
+        else:
+            char = "░"  # Track
+        try:
+            stdscr.addstr(y, x, char, color)
+        except curses.error:
+            pass
 
 
 ###############################################################################
@@ -442,7 +550,7 @@ class SelectionTUI:
         self.manifest = manifest
         self.colors = init_colors()
         self.cursor = 0  # Index in flat items list
-        self.scroll_offset = 0
+        self.scroll = ScrollState()  # Scroll state for the tree view
         self.current_preset = "1"  # Start with Desktop preset
         apply_preset(self.manifest, self.current_preset)
         # Search state
@@ -522,15 +630,14 @@ class SelectionTUI:
         items = self.manifest.get_flat_items()
         visible_height = self.get_visible_height()
 
-        # Adjust scroll to keep cursor visible
-        if self.cursor < self.scroll_offset:
-            self.scroll_offset = self.cursor
-        elif self.cursor >= self.scroll_offset + visible_height:
-            self.scroll_offset = self.cursor - visible_height + 1
+        # Update scroll state
+        self.scroll.total = len(items)
+        self.scroll.visible = visible_height
+        self.scroll.ensure_visible(self.cursor)
 
-        # Draw visible items
+        # Draw visible items (reserve rightmost column for scrollbar)
         for i in range(visible_height):
-            item_idx = self.scroll_offset + i
+            item_idx = self.scroll.offset + i
             if item_idx >= len(items):
                 break
 
@@ -538,7 +645,17 @@ class SelectionTUI:
             y = 3 + i
             is_selected = item_idx == self.cursor
 
-            self.draw_item(y, width, item, is_selected)
+            self.draw_item(y, width - 1, item, is_selected)
+
+        # Draw scrollbar
+        draw_scrollbar(
+            self.stdscr,
+            x=width - 1,
+            y_start=3,
+            height=visible_height,
+            scroll=self.scroll,
+            color=self.colors["cyan"],
+        )
 
     def draw_item(
         self, y: int, width: int, item: Section | Script, is_selected: bool
@@ -722,7 +839,7 @@ class SelectionTUI:
         if key == ord("g"):
             if self.last_key == ord("g"):
                 self.cursor = 0
-                self.scroll_offset = 0
+                self.scroll.go_top()
                 self.last_key = -1
                 return None
             else:
@@ -745,6 +862,10 @@ class SelectionTUI:
         elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
             if self.cursor < len(items) - 1:
                 self.cursor += 1
+        elif key == curses.KEY_PPAGE:  # Page Up
+            self.cursor = max(0, self.cursor - self.scroll.visible + 1)
+        elif key == curses.KEY_NPAGE:  # Page Down
+            self.cursor = min(len(items) - 1, self.cursor + self.scroll.visible - 1)
 
         # Toggle
         elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
@@ -801,6 +922,7 @@ class SelectionTUI:
             "║            Keyboard Shortcuts            ║",
             "╠══════════════════════════════════════════╣",
             "║  j, k, ↑↓    Move cursor up/down         ║",
+            "║  PgUp/PgDn   Page up/down                ║",
             "║  gg          Jump to top                 ║",
             "║  G           Jump to bottom              ║",
             "║  Space/Enter Toggle selection            ║",
@@ -888,57 +1010,100 @@ class ExecutionTUI:
         self.running_idx = 0  # Index of currently running (or last run) script
         self.viewing_idx = 0  # Index of script user is viewing (for log browsing)
         self.following = True  # When True, viewing_idx tracks running_idx automatically
-        self.scroll_offset = 0
-        self.output_scroll = 0
+        self.left_scroll = ScrollState()  # Script list scroll
+        self.right_scroll = ScrollState()  # Output panel scroll
         self.cancelled = False
         self._last_key = -1  # For detecting 'gg' sequence
+        self.focus_panel = "left"  # "left" (script list) or "right" (output)
 
     def _set_running_idx(self, idx: int) -> None:
         """Update running index, and viewing index if following."""
         self.running_idx = idx
         if self.following:
             self.viewing_idx = idx
-            self.output_scroll = 0  # Reset scroll when switching scripts
+            self.right_scroll.offset = 0  # Reset scroll when switching scripts
 
     def _handle_input_during_execution(self, key: int) -> None:
         """Handle keyboard input during script execution for log navigation.
 
         Allows users to browse logs of already-completed scripts while
-        installation continues. Returning to the running script resumes
-        auto-follow behavior.
+        installation continues. Supports switching focus between left (script
+        list) and right (output) panels for independent scrolling.
         """
         # Vim-style gg (go to top) - detect 'g' followed by 'g'
         if key == ord("g"):
             if self._last_key == ord("g"):
-                self.viewing_idx = 0
-                self.output_scroll = 0
-                self.following = False
+                if self.focus_panel == "left":
+                    self.viewing_idx = 0
+                    self.left_scroll.go_top()
+                    self.following = False
+                else:
+                    self.right_scroll.go_top()
+                    self.following = False
                 self._last_key = -1
             else:
                 self._last_key = key
             return
         self._last_key = -1
 
-        # Navigation keys (w/k/up = up, s/j/down = down, matching SelectionTUI)
-        if key in (ord("w"), ord("k"), curses.KEY_UP):
-            # Move viewing up
-            if self.viewing_idx > 0:
-                self.viewing_idx -= 1
-                self.output_scroll = 0  # Reset scroll for new script
+        # Panel switching keys
+        if key in (ord("h"), ord("a"), curses.KEY_LEFT, 27):  # 27 = Esc
+            self.focus_panel = "left"
+            return
+        elif key in (ord("l"), ord("d"), curses.KEY_RIGHT, ord("\n"), 10, 13):
+            self.focus_panel = "right"
+            return
+
+        # Navigation behavior depends on focused panel
+        if self.focus_panel == "left":
+            # Left panel: navigate script list
+            if key in (ord("w"), ord("k"), curses.KEY_UP):
+                if self.viewing_idx > 0:
+                    self.viewing_idx -= 1
+                    self.right_scroll.offset = 0  # Reset scroll for new script
+                    self.following = False
+            elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+                if self.viewing_idx < len(self.statuses) - 1:
+                    self.viewing_idx += 1
+                    self.right_scroll.offset = 0
+                # Resume following if we've navigated back to running script
+                if self.viewing_idx == self.running_idx:
+                    self.following = True
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self.viewing_idx = max(0, self.viewing_idx - self.left_scroll.visible + 1)
+                self.right_scroll.offset = 0
                 self.following = False
-        elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
-            # Move viewing down
-            if self.viewing_idx < len(self.statuses) - 1:
-                self.viewing_idx += 1
-                self.output_scroll = 0
-            # Resume following if we've navigated back to running script
-            if self.viewing_idx == self.running_idx:
+            elif key == curses.KEY_NPAGE:  # Page Down
+                self.viewing_idx = min(
+                    len(self.statuses) - 1,
+                    self.viewing_idx + self.left_scroll.visible - 1,
+                )
+                self.right_scroll.offset = 0
+                if self.viewing_idx == self.running_idx:
+                    self.following = True
+            elif key == ord("G"):
+                # Jump to running script and resume following
+                self.viewing_idx = self.running_idx
                 self.following = True
-        elif key == ord("G"):
-            # Jump to running script and resume following
-            self.viewing_idx = self.running_idx
-            self.following = True
-            self.output_scroll = 0
+                self.right_scroll.offset = 0
+        else:
+            # Right panel: scroll output
+            if key in (ord("w"), ord("k"), curses.KEY_UP):
+                self.right_scroll.scroll_up()
+                self.following = False  # Manual scroll disables auto-follow
+            elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+                self.right_scroll.scroll_down()
+                self.following = False
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self.right_scroll.page_up()
+                self.following = False
+            elif key == curses.KEY_NPAGE:  # Page Down
+                self.right_scroll.page_down()
+                self.following = False
+            elif key == ord("G"):
+                # Jump to bottom of output and resume following
+                self.right_scroll.go_bottom()
+                self.following = True
         # Note: 'q' is handled in the run() loop, not here
 
     def _poll_input(self) -> None:
@@ -1025,21 +1190,22 @@ class ExecutionTUI:
         start_row = 2
         visible_height = height - 5  # Accounts for header (2) + footer (3)
 
-        # Draw separator
+        # Update scroll state
+        self.left_scroll.total = len(self.statuses)
+        self.left_scroll.visible = visible_height
+        self.left_scroll.ensure_visible(self.viewing_idx)
+
+        # Draw separator (reserve 1 column for scrollbar)
+        scrollbar_x = list_width - 1
+        separator_x = list_width
         for y in range(start_row, height - 3):
             try:
-                self.stdscr.addch(y, list_width, "│", self.colors["dim"])
+                self.stdscr.addch(y, separator_x, "│", self.colors["dim"])
             except curses.error:
                 pass
 
-        # Adjust scroll to show viewed script
-        if self.viewing_idx < self.scroll_offset:
-            self.scroll_offset = self.viewing_idx
-        elif self.viewing_idx >= self.scroll_offset + visible_height:
-            self.scroll_offset = self.viewing_idx - visible_height + 1
-
         for i in range(visible_height):
-            idx = self.scroll_offset + i
+            idx = self.left_scroll.offset + i
             if idx >= len(self.statuses):
                 break
 
@@ -1047,7 +1213,21 @@ class ExecutionTUI:
             y = start_row + i
             is_viewing = idx == self.viewing_idx
             is_running = idx == self.running_idx
-            self.draw_status_line(y, list_width - 1, status, is_viewing, is_running)
+            # Reserve 1 column for scrollbar
+            self.draw_status_line(y, list_width - 2, status, is_viewing, is_running)
+
+        # Draw scrollbar with color based on focus
+        scrollbar_color = (
+            self.colors["cyan"] if self.focus_panel == "left" else self.colors["dim"]
+        )
+        draw_scrollbar(
+            self.stdscr,
+            x=scrollbar_x,
+            y_start=start_row,
+            height=visible_height,
+            scroll=self.left_scroll,
+            color=scrollbar_color,
+        )
 
     def draw_status_line(
         self,
@@ -1094,30 +1274,31 @@ class ExecutionTUI:
     def draw_output_panel(self, height: int, width: int, list_width: int) -> None:
         """Draw the live output panel for the currently viewed script."""
         panel_x = list_width + 1
-        panel_width = width - list_width - 2
+        panel_width = width - list_width - 3  # Reserve 1 column for scrollbar
         panel_height = height - 5
+        scrollbar_x = width - 1
 
-        # Get viewed script's output, filtering out nested xtrace lines (++, +++, etc.)
-        # We only want top-level commands (single +) and regular output
+        # Get viewed script's output
         if 0 <= self.viewing_idx < len(self.statuses):
             viewed = self.statuses[self.viewing_idx]
-            lines = [ln for ln in viewed.output_lines if not ln.startswith("++")]
+            lines = viewed.output_lines
         else:
             lines = []
 
+        # Update scroll state
+        self.right_scroll.total = len(lines)
+        self.right_scroll.visible = panel_height
+
         # Auto-scroll to bottom only when following the running script
-        if lines:
-            max_scroll = max(0, len(lines) - panel_height)
-            if self.following:
-                self.output_scroll = max_scroll
-            else:
-                # Clamp scroll position to valid range when browsing
-                self.output_scroll = min(self.output_scroll, max_scroll)
+        if self.following:
+            self.right_scroll.go_bottom()
+        else:
+            self.right_scroll.clamp()
 
         # Draw output lines (starting at row 2, after header)
         start_row = 2
         for i in range(panel_height):
-            line_idx = self.output_scroll + i
+            line_idx = self.right_scroll.offset + i
             y = start_row + i
 
             # Clear the line area first
@@ -1135,6 +1316,19 @@ class ExecutionTUI:
                 except curses.error:
                     pass
 
+        # Draw scrollbar with color based on focus
+        scrollbar_color = (
+            self.colors["cyan"] if self.focus_panel == "right" else self.colors["dim"]
+        )
+        draw_scrollbar(
+            self.stdscr,
+            x=scrollbar_x,
+            y_start=start_row,
+            height=panel_height,
+            scroll=self.right_scroll,
+            color=scrollbar_color,
+        )
+
     def draw_footer(self, height: int, width: int) -> None:
         """Draw the footer with navigation hints."""
         footer_y = height - 3
@@ -1142,13 +1336,13 @@ class ExecutionTUI:
         # Separator
         self.stdscr.addstr(footer_y, 0, "─" * width, self.colors["dim"])
 
-        # Status line showing viewed script
+        # Status line showing viewed script and focused panel
         if self.viewing_idx < len(self.statuses):
             viewed = self.statuses[self.viewing_idx]
-            status_text = f" {viewed.section.name} / {viewed.script.display_name} "
-            # Show follow indicator
+            panel_indicator = "◀ scripts" if self.focus_panel == "left" else "output ▶"
+            status_text = f" {viewed.section.name} / {viewed.script.display_name} [{panel_indicator}]"
             if not self.following:
-                status_text += "(browsing) "
+                status_text += " (browsing)"
         else:
             status_text = " Complete "
 
@@ -1157,7 +1351,7 @@ class ExecutionTUI:
         )
 
         # Controls with navigation hints
-        controls = " [j/k/↑↓] Navigate   [G] Follow   [Ctrl+C] Cancel   [q] Quit "
+        controls = " [h/l] Panel   [j/k] Scroll   [PgUp/Dn]   [gg/G] Top/Bottom   [q] Quit "
         self.stdscr.addstr(footer_y + 2, 2, controls[: width - 4], self.colors["dim"])
 
     def _execute_script(self, status: ScriptStatus, silent: bool = False) -> bool:
