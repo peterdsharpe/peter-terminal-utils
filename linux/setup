@@ -1348,14 +1348,15 @@ def list_presets() -> None:
 
 def export_selections(manifest: Manifest, output_path: Path) -> None:
     """Export current script selections to a JSON file."""
+    scripts = [script.path for _, script in manifest.get_enabled_scripts()]
     data = {
         "version": 1,
         "description": "peter-terminal-utils selection export",
-        "scripts": [script.path for _, script in manifest.get_enabled_scripts()],
+        "scripts": scripts,
     }
     with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
-    print(f"Exported {len(data['scripts'])} selections to {output_path}")
+    print(f"Exported {len(scripts)} selections to {output_path}")
 
 
 def import_selections(manifest: Manifest, input_path: Path) -> None:
