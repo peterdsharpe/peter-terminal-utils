@@ -500,12 +500,21 @@ class SelectionTUI:
         # Search mode display
         if self.search_mode:
             search_line = f" Search: {self.search_query}_ "
-            self.stdscr.addstr(footer_y + 1, 2, search_line[: width - 4], self.colors["cyan"])
-            self.stdscr.addstr(footer_y + 2, 2, " [Enter] Apply   [Esc] Cancel "[: width - 4], self.colors["dim"])
+            self.stdscr.addstr(
+                footer_y + 1, 2, search_line[: width - 4], self.colors["cyan"]
+            )
+            self.stdscr.addstr(
+                footer_y + 2,
+                2,
+                " [Enter] Apply   [Esc] Cancel "[: width - 4],
+                self.colors["dim"],
+            )
         elif self.filtered_indices is not None:
             # Show filter active
             filter_line = f" Filter: '{self.search_query}' ({len(self.filtered_indices)} matches)   [Esc] Clear "
-            self.stdscr.addstr(footer_y + 1, 2, filter_line[: width - 4], self.colors["yellow"])
+            self.stdscr.addstr(
+                footer_y + 1, 2, filter_line[: width - 4], self.colors["yellow"]
+            )
             keys2 = " [/] Search   [gg] Top   [G] Bottom   [x] Install   [q] Quit "
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
         else:
@@ -798,7 +807,7 @@ class ExecutionTUI:
             pct = int(100 * completed / total)
             progress_str = f" [{bar}] {pct:3d}% "
             try:
-                self.stdscr.addstr(1, 2, progress_str[:width - 4], self.colors["cyan"])
+                self.stdscr.addstr(1, 2, progress_str[: width - 4], self.colors["cyan"])
             except curses.error:
                 pass
 
@@ -1084,7 +1093,9 @@ class ExecutionTUI:
                     self.current_idx = self.statuses.index(group[0])
                     self.draw()
 
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=4
+                    ) as executor:
                         futures = {
                             executor.submit(self._run_script_silent, s): s
                             for s in group
@@ -1153,7 +1164,9 @@ class ExecutionTUI:
         script_path = self.scripts_dir / status.script.path
 
         if not script_path.exists() or not os.access(script_path, os.X_OK):
-            status.output_lines.append(f"Script not found or not executable: {script_path}")
+            status.output_lines.append(
+                f"Script not found or not executable: {script_path}"
+            )
             status.status = "failed"
             status.exit_code = 1
             return False
