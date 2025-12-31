@@ -7,7 +7,7 @@ set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 #
 # This script orchestrates the installation of all components by:
 # 1. Gathering configuration from the user
-# 2. Parsing the install_scripts/order.txt manifest
+# 2. Parsing the install_scripts/order.yaml manifest
 # 3. Running each install script with framed output display
 # 4. Showing a summary of results
 #
@@ -172,11 +172,38 @@ print_info "Git: $GIT_NAME <$GIT_EMAIL>"
 ### Parse Manifest and Execute Scripts
 ###############################################################################
 
-ORDER_FILE="$SCRIPT_DIR/install_scripts/order.txt"
+MANIFEST_FILE="$SCRIPT_DIR/install_scripts/manifest.conf"
 INSTALL_SCRIPTS_DIR="$SCRIPT_DIR/install_scripts"
 
-if [[ ! -f "$ORDER_FILE" ]]; then
-    print_error "Manifest file not found: $ORDER_FILE"
+if [[ ! -f "$MANIFEST_FILE" ]]; then
+    print_error "Manifest file not found: $MANIFEST_FILE"
+    exit 1
+fi
+
+# Parse INI-style manifest (pure bash, no external dependencies)
+# Outputs lines in format: SECTION:name or SCRIPT:path
+parse_manifest() {
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        
+        # Section header: [Section Name]
+        if [[ "$line" == \[*\] ]]; then
+            # Extract section name by removing brackets
+            local section="${line#[}"
+            section="${section%]}"
+            echo "SECTION:$section"
+        else
+            # Script path
+            echo "SCRIPT:$line"
+        fi
+    done < "$MANIFEST_FILE"
+}
+
+# Cache parsed manifest
+PARSED_MANIFEST=$(parse_manifest)
+if [[ -z "$PARSED_MANIFEST" ]]; then
+    print_error "Failed to parse manifest file"
     exit 1
 fi
 
@@ -184,13 +211,13 @@ fi
 ### Manifest Validation
 ###############################################################################
 
-# Collect scripts referenced in order.txt
+# Collect scripts referenced in manifest
 declare -a MANIFEST_SCRIPTS=()
-while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" ]] && continue
-    [[ "$line" == \#* ]] && continue
-    MANIFEST_SCRIPTS+=("$line")
-done < "$ORDER_FILE"
+while IFS= read -r line; do
+    if [[ "$line" == SCRIPT:* ]]; then
+        MANIFEST_SCRIPTS+=("${line#SCRIPT:}")
+    fi
+done <<< "$PARSED_MANIFEST"
 
 # Find all .sh files in install_scripts/
 declare -a DISK_SCRIPTS=()
@@ -229,7 +256,7 @@ validation_failed=false
 if [[ ${#MISSING_ON_DISK[@]} -gt 0 ]]; then
     echo ""
     echo -e "${RED}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  WARNING: Scripts in order.txt that don't exist on disk                      ║${NC}"
+    echo -e "${RED}║  WARNING: Scripts in manifest that don't exist on disk                       ║${NC}"
     echo -e "${RED}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
     for script in "${MISSING_ON_DISK[@]}"; do
         echo -e "${RED}║${NC}   $script"
@@ -241,7 +268,7 @@ fi
 if [[ ${#NOT_IN_MANIFEST[@]} -gt 0 ]]; then
     echo ""
     echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║  WARNING: Scripts on disk not referenced in order.txt                        ║${NC}"
+    echo -e "${YELLOW}║  WARNING: Scripts on disk not referenced in manifest                         ║${NC}"
     echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
     for script in "${NOT_IN_MANIFEST[@]}"; do
         echo -e "${YELLOW}║${NC}   $script"
@@ -263,48 +290,40 @@ fi
 ### Execute Scripts
 ###############################################################################
 
-current_section=""
-
-while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip empty lines
-    [[ -z "$line" ]] && continue
+while IFS= read -r line; do
+    # Handle section headers
+    if [[ "$line" == SECTION:* ]]; then
+        section_name="${line#SECTION:}"
+        print_header "$section_name"
+        continue
+    fi
     
-    # Handle section headers (lines starting with #)
-    if [[ "$line" == \#* ]]; then
-        # Extract section name (remove # and leading/trailing whitespace)
-        current_section="${line#\#}"
-        current_section="${current_section#"${current_section%%[![:space:]]*}"}"
-        current_section="${current_section%"${current_section##*[![:space:]]}"}"
+    # Handle script entries
+    if [[ "$line" == SCRIPT:* ]]; then
+        script_rel_path="${line#SCRIPT:}"
+        script_full_path="$SCRIPT_DIR/install_scripts/$script_rel_path"
         
-        print_header "$current_section"
-        continue
+        if [[ ! -f "$script_full_path" ]]; then
+            print_warning "Script not found: $script_rel_path"
+            SKIPPED_SCRIPTS+=("$script_rel_path (not found)")
+            continue
+        fi
+        
+        if [[ ! -x "$script_full_path" ]]; then
+            print_warning "Script not executable: $script_rel_path"
+            SKIPPED_SCRIPTS+=("$script_rel_path (not executable)")
+            continue
+        fi
+        
+        # Extract display name from script filename (remove .sh and path)
+        display_name=$(basename "$script_rel_path" .sh)
+        # Convert underscores to spaces and capitalize
+        display_name=$(echo "$display_name" | tr '_' ' ' | sed 's/\b\(.\)/\u\1/g')
+        
+        # Run the script with framed output
+        run_framed "$display_name" "$script_full_path"
     fi
-    
-    # Process script path
-    script_rel_path="$line"
-    script_full_path="$SCRIPT_DIR/install_scripts/$script_rel_path"
-    
-    if [[ ! -f "$script_full_path" ]]; then
-        print_warning "Script not found: $script_rel_path"
-        SKIPPED_SCRIPTS+=("$script_rel_path (not found)")
-        continue
-    fi
-    
-    if [[ ! -x "$script_full_path" ]]; then
-        print_warning "Script not executable: $script_rel_path"
-        SKIPPED_SCRIPTS+=("$script_rel_path (not executable)")
-        continue
-    fi
-    
-    # Extract display name from script filename (remove .sh and path)
-    display_name=$(basename "$script_rel_path" .sh)
-    # Convert underscores to spaces and capitalize
-    display_name=$(echo "$display_name" | tr '_' ' ' | sed 's/\b\(.\)/\u\1/g')
-    
-    # Run the script with framed output
-    run_framed "$display_name" "$script_full_path"
-    
-done < "$ORDER_FILE"
+done <<< "$PARSED_MANIFEST"
 
 ###############################################################################
 ### Summary
