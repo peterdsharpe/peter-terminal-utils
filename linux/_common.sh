@@ -339,7 +339,7 @@ get_release_arch() {
             esac ;;
         delta)
             case "$ARCH" in
-                x86_64) suffix="x86_64-unknown-linux-gnu" ;;
+                x86_64) suffix="x86_64-unknown-linux-musl" ;;
                 arm64)  suffix="aarch64-unknown-linux-gnu" ;;
             esac ;;
         eza)
