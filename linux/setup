@@ -35,6 +35,7 @@ def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from text."""
     return ANSI_ESCAPE_RE.sub("", text)
 
+
 ###############################################################################
 ### Data Model
 ###############################################################################
@@ -418,7 +419,9 @@ class SelectionTUI:
         self.stdscr.addstr(footer_y + 1, 2, keys1[: width - 4], self.colors["cyan"])
 
         # Key bindings - line 2
-        preset_keys = "   ".join(f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items())
+        preset_keys = "   ".join(
+            f"[{k}] {v[0].split(' - ')[0]}" for k, v in PRESETS.items()
+        )
         keys2 = f" {preset_keys}   [?] Help "
         self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
 
@@ -426,7 +429,10 @@ class SelectionTUI:
         enabled = self.manifest.get_enabled_scripts()
         status = f" {len(enabled)} scripts selected "
         self.stdscr.addstr(
-            footer_y + 3, 2, status[: width - 4], self.colors["green"] | self.colors["bold"]
+            footer_y + 3,
+            2,
+            status[: width - 4],
+            self.colors["green"] | self.colors["bold"],
         )
 
     def handle_input(self) -> str | None:
@@ -584,7 +590,9 @@ class ExecutionTUI:
 
     def draw_header(self, width: int) -> None:
         """Draw the header with progress."""
-        completed = sum(1 for s in self.statuses if s.status in ("success", "failed", "skipped"))
+        completed = sum(
+            1 for s in self.statuses if s.status in ("success", "failed", "skipped")
+        )
         total = len(self.statuses)
 
         if self.cancelled:
@@ -721,7 +729,9 @@ class ExecutionTUI:
         else:
             status_text = " Complete "
 
-        self.stdscr.addstr(footer_y + 1, 2, status_text[: width - 4], self.colors["cyan"])
+        self.stdscr.addstr(
+            footer_y + 1, 2, status_text[: width - 4], self.colors["cyan"]
+        )
 
         # Controls
         controls = " [Ctrl+C] Cancel "
@@ -892,7 +902,9 @@ def get_script_dir() -> Path:
     return Path(__file__).parent.resolve()
 
 
-def run_interactive(stdscr: curses.window, manifest: Manifest, scripts_dir: Path, dry_run: bool) -> int:
+def run_interactive(
+    stdscr: curses.window, manifest: Manifest, scripts_dir: Path, dry_run: bool
+) -> int:
     """Run the interactive TUI. Returns exit code."""
     # Selection phase
     selection_tui = SelectionTUI(stdscr, manifest)
@@ -988,7 +1000,9 @@ def list_presets() -> None:
             if len(disabled_scripts) > 3:
                 print(f"       Disables {len(disabled_scripts)} scripts requiring sudo")
             else:
-                script_names = [Path(s).stem.replace("_", " ").title() for s in disabled_scripts]
+                script_names = [
+                    Path(s).stem.replace("_", " ").title() for s in disabled_scripts
+                ]
                 print(f"       Disables scripts: {', '.join(script_names)}")
     print()
 
@@ -1008,17 +1022,20 @@ Examples:
 """,
     )
     parser.add_argument(
-        "-p", "--preset",
+        "-p",
+        "--preset",
         metavar="N",
         help="Apply preset N and run non-interactively",
     )
     parser.add_argument(
-        "-l", "--list",
+        "-l",
+        "--list",
         action="store_true",
         help="List available presets",
     )
     parser.add_argument(
-        "-n", "--dry-run",
+        "-n",
+        "--dry-run",
         action="store_true",
         help="Dry run mode (preview changes)",
     )
