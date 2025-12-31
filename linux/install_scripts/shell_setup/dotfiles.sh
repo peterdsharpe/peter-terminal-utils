@@ -5,8 +5,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-# Get the linux directory (where dotfiles are stored)
-LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINUX_DIR=$(get_linux_dir)
 
 ### Symlink .zshrc from dotfiles
 setup_zshrc() {

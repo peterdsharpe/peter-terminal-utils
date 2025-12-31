@@ -79,6 +79,15 @@ class Script:
         """Whether script should be skipped in headless mode."""
         return self.metadata.get("headless", "").lower() == "skip"
 
+    @property
+    def dependencies(self) -> list[str]:
+        """List of script names this script depends on (from @depends metadata)."""
+        depends_str = self.metadata.get("depends", "")
+        if not depends_str:
+            return []
+        # Parse comma-separated list, strip .sh extension if present
+        return [d.strip().removesuffix(".sh") for d in depends_str.split(",")]
+
 
 @dataclass
 class Section:
@@ -133,6 +142,24 @@ class Manifest:
             items.append(section)
             items.extend(section.scripts)
         return items
+
+    def get_script_order(self) -> dict[str, int]:
+        """Return dict mapping script names to their order index in the manifest."""
+        order: dict[str, int] = {}
+        idx = 0
+        for section in self.sections:
+            for script in section.scripts:
+                order[script.name] = idx
+                idx += 1
+        return order
+
+    def get_script_by_name(self, name: str) -> Script | None:
+        """Find a script by its name (stem without .sh)."""
+        for section in self.sections:
+            for script in section.scripts:
+                if script.name == name:
+                    return script
+        return None
 
 
 ###############################################################################
@@ -268,32 +295,32 @@ class PresetDef:
     """
 
     description: str
-    disabled_sections: list[str] = field(default_factory=list)
-    flags: list[str] = field(default_factory=list)
+    disabled_sections: tuple[str, ...] = ()
+    flags: tuple[str, ...] = ()
 
 
 PRESETS: dict[str, PresetDef] = {
     "1": PresetDef("Desktop - Full installation with GUI components"),
     "2": PresetDef(
         "Headless - Server/CLI only, no GUI components",
-        disabled_sections=["GNOME Settings", "Fonts", "Final Steps"],
-        flags=["headless"],
+        disabled_sections=("GNOME Settings", "Fonts", "Final Steps"),
+        flags=("headless",),
     ),
     "3": PresetDef(
         "Desktop (no sudo) - Desktop without root-requiring scripts",
-        flags=["no_sudo"],
+        flags=("no_sudo",),
     ),
     "4": PresetDef(
         "Headless (no sudo) - Headless without root-requiring scripts",
-        disabled_sections=["GNOME Settings", "Fonts", "Final Steps"],
-        flags=["no_sudo", "headless"],
+        disabled_sections=("GNOME Settings", "Fonts", "Final Steps"),
+        flags=("no_sudo", "headless"),
     ),
 }
 
 
 def is_headless_preset(preset_key: str) -> bool:
     """Check if a preset is a headless preset (no GUI components)."""
-    return preset_key in ("2", "4")
+    return preset_key in PRESETS and "headless" in PRESETS[preset_key].flags
 
 
 def apply_preset(manifest: Manifest, preset_key: str) -> None:
@@ -378,6 +405,33 @@ class SelectionTUI:
         self.search_query = ""
         self.filtered_indices: list[int] | None = None  # None = no filter
         self.last_key = -1  # For detecting 'gg' sequence
+        # Cache script order for dependency checking
+        self._script_order = manifest.get_script_order()
+
+    def get_dependency_warnings(self, script: Script) -> list[str]:
+        """Get list of dependency warnings for a script.
+
+        Checks for:
+        - Dependencies that are disabled
+        - Dependencies that run after this script (wrong order)
+        """
+        warnings: list[str] = []
+        if not script.dependencies:
+            return warnings
+
+        script_idx = self._script_order.get(script.name, 0)
+
+        for dep_name in script.dependencies:
+            dep_script = self.manifest.get_script_by_name(dep_name)
+            if dep_script is None:
+                warnings.append(f"unknown dep: {dep_name}")
+            elif not dep_script.enabled:
+                warnings.append(f"{dep_script.display_name} disabled")
+            else:
+                dep_idx = self._script_order.get(dep_name, 0)
+                if dep_idx >= script_idx:
+                    warnings.append(f"{dep_script.display_name} runs later")
+        return warnings
 
     def get_visible_height(self) -> int:
         """Get number of lines available for the tree view."""
@@ -476,7 +530,7 @@ class SelectionTUI:
     def draw_script(
         self, y: int, width: int, script: Script, is_selected: bool
     ) -> None:
-        """Draw a script entry with its description in faded text."""
+        """Draw a script entry with its description and dependency warnings."""
         if script.enabled:
             checkbox = "[x]"
             color = self.colors["green"]
@@ -486,6 +540,9 @@ class SelectionTUI:
 
         name = script.display_name
         desc = script.description
+
+        # Check for dependency warnings
+        dep_warnings = self.get_dependency_warnings(script) if script.enabled else []
 
         # Calculate how much space we have for description
         # Format: "        [x] Name - Description"
@@ -501,18 +558,33 @@ class SelectionTUI:
         self.stdscr.addstr(y, 0, " " * width, rev)  # Clear line with selection
         self.stdscr.addstr(y, 0, prefix[: width - 1], color | rev)
 
+        # Current position after prefix
+        pos = prefix_len
+
         # Add description in dim/faded style if there's room
-        if desc and desc_available > 10:
+        if desc and desc_available > 10 and not dep_warnings:
             desc_text = desc[:desc_available]
             if len(desc) > desc_available:
                 desc_text = desc[: desc_available - 1] + "…"
             try:
                 # Draw separator and description in dim color
                 dim_attr = self.colors["dim"] | rev
-                self.stdscr.addstr(y, prefix_len, " - ", dim_attr)
-                self.stdscr.addstr(y, prefix_len + 3, desc_text, dim_attr)
+                self.stdscr.addstr(y, pos, " - ", dim_attr)
+                self.stdscr.addstr(y, pos + 3, desc_text, dim_attr)
             except curses.error:
                 pass  # Line too long, skip description
+        elif dep_warnings:
+            # Show dependency warnings in red
+            warning_text = " ⚠ " + ", ".join(dep_warnings)
+            available = width - pos - 2
+            if len(warning_text) > available:
+                warning_text = warning_text[: available - 1] + "…"
+            try:
+                self.stdscr.addstr(
+                    y, pos, warning_text, self.colors["red"] | self.colors["dim"] | rev
+                )
+            except curses.error:
+                pass
 
     def draw_footer(self, height: int, width: int) -> None:
         """Draw the footer with key bindings."""
@@ -952,100 +1024,119 @@ class ExecutionTUI:
         controls = " [Ctrl+C] Cancel "
         self.stdscr.addstr(footer_y + 2, 2, controls[: width - 4], self.colors["dim"])
 
-    def run_script(self, status: ScriptStatus) -> bool:
-        """Run a single script with live output capture. Returns True on success."""
-        status.status = "running"
-        self.draw()
+    def _execute_script(self, status: ScriptStatus, silent: bool = False) -> bool:
+        """Execute a script and update its status.
 
+        Args:
+            status: ScriptStatus object to update.
+            silent: If True, capture output without PTY (for parallel execution).
+                   If False, use PTY for live output with display updates.
+
+        Returns:
+            True on success, False on failure.
+        """
         script_path = self.scripts_dir / status.script.path
 
-        if not script_path.exists():
-            status.output_lines.append(f"Script not found: {script_path}")
-            status.status = "failed"
-            status.exit_code = 1
-            return False
-
-        if not os.access(script_path, os.X_OK):
-            status.output_lines.append(f"Script not executable: {script_path}")
+        if not script_path.exists() or not os.access(script_path, os.X_OK):
+            status.output_lines.append(
+                f"Script not found or not executable: {script_path}"
+            )
             status.status = "failed"
             status.exit_code = 1
             return False
 
         env = prepare_script_env(self.dry_run, self.headless)
+        common_sh = self.scripts_dir.parent / "_common.sh"
+        bash_cmd = f'source "{common_sh}" && source "{script_path}"'
 
         try:
-            # Use pty for proper terminal emulation
-            master_fd, slave_fd = pty.openpty()
+            if silent:
+                # Batch capture for parallel execution
+                result = subprocess.run(
+                    ["bash", "-c", bash_cmd],
+                    env=env,
+                    cwd=self.scripts_dir.parent,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,  # 10 minute timeout
+                )
+                status.exit_code = result.returncode
+                if result.stdout:
+                    status.output_lines.extend(result.stdout.strip().split("\n"))
+                if result.stderr:
+                    status.output_lines.extend(result.stderr.strip().split("\n"))
+            else:
+                # PTY for live output with display updates
+                master_fd, slave_fd = pty.openpty()
+                process = subprocess.Popen(
+                    ["bash", "-c", bash_cmd],
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    stdin=subprocess.DEVNULL,
+                    env=env,
+                    cwd=self.scripts_dir.parent,
+                )
+                os.close(slave_fd)
 
-            # Build bash command that sources _common.sh first, then the script
-            common_sh = self.scripts_dir.parent / "_common.sh"
-            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
-
-            process = subprocess.Popen(
-                ["bash", "-c", bash_cmd],
-                stdout=slave_fd,
-                stderr=slave_fd,
-                stdin=subprocess.DEVNULL,
-                env=env,
-                cwd=self.scripts_dir.parent,
-            )
-
-            os.close(slave_fd)
-
-            # Read output with non-blocking I/O
-            while True:
-                # Check if process has finished
-                retcode = process.poll()
-
-                # Read available output
-                ready, _, _ = select.select([master_fd], [], [], 0.1)
-                if ready:
-                    try:
-                        data = os.read(master_fd, 4096)
-                        if data:
-                            text = data.decode("utf-8", errors="replace")
-                            # Split into lines, handling partial lines
-                            lines = text.split("\n")
-                            for line in lines:
-                                if line:
-                                    status.output_lines.append(line)
-                            self.draw()
-                    except OSError:
-                        break
-
-                if retcode is not None:
-                    # Read any remaining output
-                    while True:
-                        ready, _, _ = select.select([master_fd], [], [], 0)
-                        if not ready:
-                            break
+                # Read output with non-blocking I/O
+                while True:
+                    retcode = process.poll()
+                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                    if ready:
                         try:
                             data = os.read(master_fd, 4096)
-                            if not data:
-                                break
-                            text = data.decode("utf-8", errors="replace")
-                            for line in text.split("\n"):
-                                if line:
-                                    status.output_lines.append(line)
+                            if data:
+                                text = data.decode("utf-8", errors="replace")
+                                for line in text.split("\n"):
+                                    if line:
+                                        status.output_lines.append(line)
+                                self.draw()
                         except OSError:
                             break
-                    break
+                    if retcode is not None:
+                        # Drain remaining output
+                        while True:
+                            ready, _, _ = select.select([master_fd], [], [], 0)
+                            if not ready:
+                                break
+                            try:
+                                data = os.read(master_fd, 4096)
+                                if not data:
+                                    break
+                                for line in data.decode("utf-8", errors="replace").split("\n"):
+                                    if line:
+                                        status.output_lines.append(line)
+                            except OSError:
+                                break
+                        break
 
-            os.close(master_fd)
-            status.exit_code = process.returncode
+                os.close(master_fd)
+                status.exit_code = process.returncode
 
-            if process.returncode == 0:
+            # Update status based on exit code
+            if status.exit_code == 0:
                 status.status = "success"
                 return True
             else:
                 status.status = "failed"
                 return False
 
+        except subprocess.TimeoutExpired:
+            status.output_lines.append("Script timed out after 10 minutes")
+            status.status = "failed"
+            status.exit_code = 124
+            return False
         except Exception as e:
             status.output_lines.append(f"Error: {e}")
             status.status = "failed"
             status.exit_code = 1
             return False
+
+    def run_script(self, status: ScriptStatus) -> bool:
+        """Run a single script with live output capture. Returns True on success."""
+        status.status = "running"
+        self.draw()
+        return self._execute_script(status, silent=False)
 
     def _group_by_parallelism(self) -> list[list[ScriptStatus]]:
         """Group consecutive scripts by whether they can run in parallel.
@@ -1172,58 +1263,8 @@ class ExecutionTUI:
         return success_count, fail_count
 
     def _run_script_silent(self, status: ScriptStatus) -> bool:
-        """Run a script without updating display (for parallel execution).
-
-        This is a simplified version of run_script for thread-safe parallel execution.
-        """
-        script_path = self.scripts_dir / status.script.path
-
-        if not script_path.exists() or not os.access(script_path, os.X_OK):
-            status.output_lines.append(
-                f"Script not found or not executable: {script_path}"
-            )
-            status.status = "failed"
-            status.exit_code = 1
-            return False
-
-        env = prepare_script_env(self.dry_run, self.headless)
-
-        try:
-            common_sh = self.scripts_dir.parent / "_common.sh"
-            bash_cmd = f'source "{common_sh}" && source "{script_path}"'
-
-            result = subprocess.run(
-                ["bash", "-c", bash_cmd],
-                env=env,
-                cwd=self.scripts_dir.parent,
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 minute timeout
-            )
-
-            status.exit_code = result.returncode
-            if result.stdout:
-                status.output_lines.extend(result.stdout.strip().split("\n"))
-            if result.stderr:
-                status.output_lines.extend(result.stderr.strip().split("\n"))
-
-            if result.returncode == 0:
-                status.status = "success"
-                return True
-            else:
-                status.status = "failed"
-                return False
-
-        except subprocess.TimeoutExpired:
-            status.output_lines.append("Script timed out after 10 minutes")
-            status.status = "failed"
-            status.exit_code = 124
-            return False
-        except Exception as e:
-            status.output_lines.append(f"Error: {e}")
-            status.status = "failed"
-            status.exit_code = 1
-            return False
+        """Run a script without display updates (for parallel execution)."""
+        return self._execute_script(status, silent=True)
 
 
 ###############################################################################

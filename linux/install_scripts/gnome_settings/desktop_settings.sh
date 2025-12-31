@@ -53,8 +53,7 @@ if command -v nautilus &> /dev/null; then
     step_end
 fi
 
-# Get the linux directory (for dotfiles path)
-LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINUX_DIR=$(get_linux_dir)
 
 # Create nemo-desktop autostart entry
 setup_nemo_autostart() {

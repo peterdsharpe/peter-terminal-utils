@@ -1,13 +1,6 @@
 #!/bin/bash
 # Shared utilities for peter-terminal-utils install scripts
-# This file is sourced by both the orchestrator (setup.sh) and individual install scripts
-
-###############################################################################
-### Default Configuration
-###############################################################################
-
-DEFAULT_GIT_NAME="Peter Sharpe"
-DEFAULT_GIT_EMAIL="peterdsharpe@gmail.com"
+# This file is sourced by both the orchestrator (setup) and individual install scripts
 
 ###############################################################################
 ### Color Definitions
@@ -63,9 +56,6 @@ print_info() {
 # State for grouped commands
 STEP_FAILED=false
 STEP_MSG=""
-
-# Track if any step in the entire script failed
-SCRIPT_FAILED=false
 
 # Captured output from last _exec call (used for error display)
 _EXEC_EXIT=0
@@ -156,7 +146,7 @@ step() {
         printf "\r\033[K"
         echo -e "${RED}✗${NC} $msg"
         _print_error "$*"
-        SCRIPT_FAILED=true
+        return 1
     fi
 }
 
@@ -209,7 +199,7 @@ step_end() {
     printf "\r\033[K"
     if [[ "$STEP_FAILED" == true ]]; then
         echo -e "${RED}✗${NC} $STEP_MSG"
-        SCRIPT_FAILED=true
+        return 1
     else
         echo -e "${GREEN}✓${NC} $STEP_MSG"
     fi
@@ -339,7 +329,7 @@ get_release_arch() {
     local tool="$1"
     case "$tool" in
         # Standard Rust musl/gnu builds (most tools)
-        bat|fd|ripgrep|delta|eza|bottom)
+        bat|fd|delta|eza|bottom)
             case "$ARCH" in
                 x86_64) echo "x86_64-unknown-linux-musl" ;;
                 arm64)  echo "aarch64-unknown-linux-gnu" ;;
@@ -500,6 +490,17 @@ log_cmd() {
 }
 
 ###############################################################################
+### Path Helpers
+###############################################################################
+
+# Get the linux directory (two levels up from any install script)
+# Usage: LINUX_DIR=$(get_linux_dir)
+# Note: BASH_SOURCE[1] is the caller of this function
+get_linux_dir() {
+    cd "$(dirname "${BASH_SOURCE[1]}")/../.." && pwd
+}
+
+###############################################################################
 ### Script Metadata
 ###############################################################################
 
@@ -565,11 +566,11 @@ standalone_init() {
     fi
     
     if [[ -z "${GIT_NAME:-}" ]]; then
-        GIT_NAME=$(prompt_input "Git user name" "$DEFAULT_GIT_NAME")
+        GIT_NAME=$(prompt_input "Git user name" "Peter Sharpe")
     fi
     
     if [[ -z "${GIT_EMAIL:-}" ]]; then
-        GIT_EMAIL=$(prompt_input "Git email" "$DEFAULT_GIT_EMAIL")
+        GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
     fi
     
     # Export for any child processes
