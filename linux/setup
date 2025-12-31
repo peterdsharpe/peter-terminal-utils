@@ -24,15 +24,40 @@ import re
 import select
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 # Regex to match ANSI escape sequences
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 
-# Default git configuration (used when not provided via environment)
-DEFAULT_GIT_NAME = "Peter Sharpe"
-DEFAULT_GIT_EMAIL = "peterdsharpe@gmail.com"
+
+###############################################################################
+### Configuration Loading
+###############################################################################
+
+
+def load_config(config_path: Path) -> dict:
+    """Load configuration from TOML file.
+
+    Returns:
+        Parsed config dict with 'user' and 'presets' sections.
+    """
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
+
+def get_config_path() -> Path:
+    """Get path to config.toml (same directory as this script)."""
+    return Path(__file__).parent / "config.toml"
+
+
+# Load configuration at module level
+_CONFIG = load_config(get_config_path())
+
+# User defaults from config
+DEFAULT_GIT_NAME = _CONFIG["user"]["git_name"]
+DEFAULT_GIT_EMAIL = _CONFIG["user"]["git_email"]
 
 
 def strip_ansi(text: str) -> str:
@@ -299,23 +324,29 @@ class PresetDef:
     flags: tuple[str, ...] = ()
 
 
-PRESETS: dict[str, PresetDef] = {
-    "1": PresetDef("Desktop - Full installation with GUI components"),
-    "2": PresetDef(
-        "Headless - Server/CLI only, no GUI components",
-        disabled_sections=("GNOME Settings", "Fonts", "Final Steps"),
-        flags=("headless",),
-    ),
-    "3": PresetDef(
-        "Desktop (no sudo) - Desktop without root-requiring scripts",
-        flags=("no_sudo",),
-    ),
-    "4": PresetDef(
-        "Headless (no sudo) - Headless without root-requiring scripts",
-        disabled_sections=("GNOME Settings", "Fonts", "Final Steps"),
-        flags=("no_sudo", "headless"),
-    ),
-}
+def _load_presets_from_config() -> dict[str, PresetDef]:
+    """Load presets from config.toml and map to numeric keys.
+
+    Maps preset names to keys 1-4 in order:
+    desktop=1, headless=2, desktop_no_sudo=3, headless_no_sudo=4
+    """
+    preset_order = ["desktop", "headless", "desktop_no_sudo", "headless_no_sudo"]
+    presets: dict[str, PresetDef] = {}
+
+    for i, name in enumerate(preset_order, start=1):
+        if name not in _CONFIG.get("presets", {}):
+            continue
+        cfg = _CONFIG["presets"][name]
+        presets[str(i)] = PresetDef(
+            description=cfg.get("description", name),
+            disabled_sections=tuple(cfg.get("disabled_sections", [])),
+            flags=tuple(cfg.get("flags", [])),
+        )
+
+    return presets
+
+
+PRESETS: dict[str, PresetDef] = _load_presets_from_config()
 
 
 def is_headless_preset(preset_key: str) -> bool:
@@ -574,14 +605,14 @@ class SelectionTUI:
             except curses.error:
                 pass  # Line too long, skip description
         elif dep_warnings:
-            # Show dependency warnings in red
+            # Show dependency warnings in bold red (make them obvious)
             warning_text = " ⚠ " + ", ".join(dep_warnings)
             available = width - pos - 2
             if len(warning_text) > available:
                 warning_text = warning_text[: available - 1] + "…"
             try:
                 self.stdscr.addstr(
-                    y, pos, warning_text, self.colors["red"] | self.colors["dim"] | rev
+                    y, pos, warning_text, self.colors["red"] | self.colors["bold"] | rev
                 )
             except curses.error:
                 pass

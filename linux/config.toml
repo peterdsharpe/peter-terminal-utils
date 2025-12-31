@@ -1,0 +1,23 @@
+# Peter's Linux Setup Configuration
+# This file configures user defaults and installation presets.
+
+[user]
+git_name = "Peter Sharpe"
+git_email = "peterdsharpe@gmail.com"
+
+[presets.desktop]
+description = "Desktop - Full installation with GUI components"
+
+[presets.headless]
+description = "Headless - Server/CLI only, no GUI components"
+disabled_sections = ["GNOME Settings", "Fonts", "Final Steps"]
+flags = ["headless"]
+
+[presets.desktop_no_sudo]
+description = "Desktop (no sudo) - Desktop without root-requiring scripts"
+flags = ["no_sudo"]
+
+[presets.headless_no_sudo]
+description = "Headless (no sudo) - Headless without root-requiring scripts"
+disabled_sections = ["GNOME Settings", "Fonts", "Final Steps"]
+flags = ["no_sudo", "headless"]

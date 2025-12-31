@@ -5,7 +5,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-LINUX_DIR=$(get_linux_dir)
+LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
 
 ### Symlink .zshrc from dotfiles
 setup_zshrc() {

@@ -52,6 +52,14 @@ print_info() {
 ###############################################################################
 ### Step/Run System - unified command execution with status tracking
 ###############################################################################
+#
+# Scripts using these helpers follow a BEST-EFFORT model:
+#   - Individual step failures are logged but do NOT abort the script
+#   - Use `step ... || exit 1` if a step is critical and must succeed
+#   - The orchestrator (setup) continues to subsequent scripts even if one fails
+#
+# This allows partial installations to complete what they can, which is useful
+# when some components require network access, sudo, or optional dependencies.
 
 # State for grouped commands
 STEP_FAILED=false
@@ -209,6 +217,16 @@ step_end() {
 ### Helper Functions
 ###############################################################################
 
+### Skip script entirely if running in headless mode
+### Usage: skip_if_headless "Script Name"
+skip_if_headless() {
+    local name="$1"
+    if [[ "$HEADLESS" == "Y" ]]; then
+        print_skip "$name (headless mode)"
+        exit 0
+    fi
+}
+
 ### Install a command if not already present
 ### Optional 4th param "sudo" skips if HAS_SUDO=false
 ensure_command() {
@@ -362,6 +380,8 @@ get_release_arch() {
 #   - tool_name: Tool name for arch lookup and tarball naming
 #   - binary_name: Name of binary inside archive (defaults to tool_name)
 #   - strip_components: tar --strip-components value (default: 1)
+#       Use 0 for flat archives where the binary is at the archive root
+#       Use 1 for archives with a single top-level directory (most common)
 install_github_binary() {
     local repo="$1"
     local tool="$2"
@@ -374,7 +394,10 @@ install_github_binary() {
     arch_suffix=$(get_release_arch "$tool") || return 1
 
     tmpdir=$(mktemp -d)
-    trap "rm -rf '$tmpdir'" EXIT TERM INT  # Cleanup on any exit
+
+    # Cleanup function - called by trap or explicitly on success
+    _cleanup_tmpdir() { rm -rf "$tmpdir"; }
+    trap _cleanup_tmpdir EXIT TERM INT
 
     # Common URL patterns - try different naming conventions
     local base_url="https://github.com/$repo/releases/download"
@@ -450,8 +473,10 @@ install_github_binary() {
     fi
 
     install -m 755 "$found_binary" "$HOME/.local/bin/$binary"
-    trap - EXIT TERM INT  # Clear trap before successful return
-    rm -rf "$tmpdir"
+
+    # Cleanup and clear trap on success
+    _cleanup_tmpdir
+    trap - EXIT TERM INT
 }
 
 ###############################################################################
@@ -494,10 +519,12 @@ log_cmd() {
 ###############################################################################
 
 # Get the linux directory (two levels up from any install script)
-# Usage: LINUX_DIR=$(get_linux_dir)
-# Note: BASH_SOURCE[1] is the caller of this function
+# Usage: LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
+#   - caller_script: Path to the calling script (use ${BASH_SOURCE[0]} at call site)
+#     Falls back to BASH_SOURCE[1] if not provided, but explicit is safer.
 get_linux_dir() {
-    cd "$(dirname "${BASH_SOURCE[1]}")/../.." && pwd
+    local caller_script="${1:-${BASH_SOURCE[1]}}"
+    cd "$(dirname "$caller_script")/../.." && pwd
 }
 
 ###############################################################################
@@ -529,6 +556,18 @@ script_is_parallel() {
 ###############################################################################
 ### Standalone Script Support
 ###############################################################################
+
+# Read a value from config.toml using grep/sed (no external dependencies)
+# Usage: value=$(read_config_value "section.key")
+_read_config_value() {
+    local key="$1"
+    local config_file
+    # Config is in the linux directory (same level as _common.sh)
+    config_file="$(dirname "${BASH_SOURCE[0]}")/config.toml"
+    [ -f "$config_file" ] || return 1
+    # Simple TOML parser: find key = "value" and extract value
+    grep -E "^${key}\s*=" "$config_file" 2>/dev/null | sed -E 's/^[^=]+=[[:space:]]*"([^"]+)".*/\1/' | head -1
+}
 
 # When running standalone (not orchestrated), prompt for missing config
 standalone_init() {
@@ -565,12 +604,17 @@ standalone_init() {
         fi
     fi
     
+    # Read defaults from config.toml
+    local default_git_name default_git_email
+    default_git_name=$(_read_config_value "git_name") || default_git_name="Your Name"
+    default_git_email=$(_read_config_value "git_email") || default_git_email="you@example.com"
+    
     if [[ -z "${GIT_NAME:-}" ]]; then
-        GIT_NAME=$(prompt_input "Git user name" "Peter Sharpe")
+        GIT_NAME=$(prompt_input "Git user name" "$default_git_name")
     fi
     
     if [[ -z "${GIT_EMAIL:-}" ]]; then
-        GIT_EMAIL=$(prompt_input "Git email" "peterdsharpe@gmail.com")
+        GIT_EMAIL=$(prompt_input "Git email" "$default_git_email")
     fi
     
     # Export for any child processes

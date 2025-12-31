@@ -6,13 +6,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-LINUX_DIR=$(get_linux_dir)
+LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
 
-# Only run if not headless
-if [[ "$HEADLESS" == "Y" ]]; then
-    print_skip "Dash to Panel (headless mode)"
-    exit 0
-fi
+skip_if_headless "Dash to Panel"
 
 # Only run if gnome-extensions is available
 if ! command -v gnome-extensions &> /dev/null; then

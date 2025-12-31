@@ -6,11 +6,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-# Only run if not headless
-if [[ "$HEADLESS" == "Y" ]]; then
-    print_skip "GNOME Terminal configuration (headless mode)"
-    exit 0
-fi
+skip_if_headless "GNOME Terminal configuration"
 
 # Set GNOME Terminal font (only if GNOME Terminal is installed)
 if gsettings list-schemas | grep -q "org.gnome.Terminal" 2>/dev/null; then

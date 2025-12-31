@@ -12,11 +12,7 @@ standalone_init
 # Sandboxed apps (Flatpak/Snap) will show a harmless "cannot be preloaded" error
 # because they can't access the host's /usr/local/lib64 - see linux/docs/libinput-config.md
 
-# Skip in headless mode (no pointing devices to configure)
-if [[ "$HEADLESS" == "Y" ]]; then
-    print_skip "libinput-config (headless mode)"
-    exit 0
-fi
+skip_if_headless "libinput-config"
 
 # Requires sudo for system-wide installation
 if [[ "${HAS_SUDO:-false}" == false ]]; then

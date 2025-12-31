@@ -6,11 +6,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-# Only run if not headless
-if [[ "$HEADLESS" == "Y" ]]; then
-    print_skip "Just Perfection (headless mode)"
-    exit 0
-fi
+skip_if_headless "Just Perfection"
 
 # Only run if gnome-extensions is available
 if ! command -v gnome-extensions &> /dev/null; then

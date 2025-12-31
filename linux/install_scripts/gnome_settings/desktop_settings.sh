@@ -6,11 +6,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-# Only run if not headless
-if [[ "$HEADLESS" == "Y" ]]; then
-    print_skip "GNOME desktop settings (headless mode)"
-    exit 0
-fi
+skip_if_headless "GNOME desktop settings"
 
 # Individual settings - single commands
 step "Disabling touchpad tap-and-drag" gsettings set org.gnome.desktop.peripherals.touchpad tap-and-drag false
@@ -53,7 +49,7 @@ if command -v nautilus &> /dev/null; then
     step_end
 fi
 
-LINUX_DIR=$(get_linux_dir)
+LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
 
 # Create nemo-desktop autostart entry
 setup_nemo_autostart() {
