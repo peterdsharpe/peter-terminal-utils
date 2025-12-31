@@ -44,6 +44,12 @@ step_end
 # Configure scroll factor
 step "Setting scroll-factor=$SCROLL_FACTOR" bash -c "echo 'scroll-factor=$SCROLL_FACTOR' | sudo tee /etc/libinput.conf"
 
+# Verify installation succeeded before modifying ld.so.preload
+if [[ ! -f "$LIBINPUT_CONFIG_SO" ]]; then
+    print_error "Build failed: $LIBINPUT_CONFIG_SO not found"
+    exit 1
+fi
+
 # Ensure ld.so.preload entry exists (idempotent)
 if ! grep -q "$LIBINPUT_CONFIG_SO" /etc/ld.so.preload 2>/dev/null; then
     step "Adding to /etc/ld.so.preload" bash -c "echo '$LIBINPUT_CONFIG_SO' | sudo tee -a /etc/ld.so.preload"
