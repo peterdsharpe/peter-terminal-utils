@@ -44,4 +44,3 @@ if gnome-extensions list | grep -q "$EXTENSION_UUID" 2>&1; then
         step_end
     fi
 fi
-
