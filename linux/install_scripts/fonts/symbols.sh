@@ -3,6 +3,7 @@
 # @description: Fallback font for missing glyphs and icons
 # @depends: core_packages.sh
 # @parallel: true
+# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

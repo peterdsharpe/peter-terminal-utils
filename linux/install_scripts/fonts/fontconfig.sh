@@ -2,6 +2,7 @@
 # @name: Fontconfig
 # @description: Font fallback config for Nerd Font symbols
 # @parallel: false
+# @locks: fonts
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

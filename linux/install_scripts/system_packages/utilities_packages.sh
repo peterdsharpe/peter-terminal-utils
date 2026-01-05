@@ -3,6 +3,7 @@
 # @description: CLI utilities, monitoring, file sync, document processing
 # @requires: sudo
 # @parallel: false
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
