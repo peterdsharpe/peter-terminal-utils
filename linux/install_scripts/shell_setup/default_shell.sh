@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Default Shell
 # @description: Change default shell to zsh
+# @depends: shell_packages.sh
 # @requires: sudo
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
