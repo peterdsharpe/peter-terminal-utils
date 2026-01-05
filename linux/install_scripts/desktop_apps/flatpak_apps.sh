@@ -60,6 +60,11 @@ install_flatpak_app "com.valvesoftware.Steam" "Steam"
 
 ### Set Firefox as default browser
 if command -v xdg-settings &>/dev/null; then
-    # Flatpak Firefox desktop file name
+    # Ensure Flatpak exports are in XDG_DATA_DIRS so xdg-settings can find the desktop file
+    flatpak_exports="$HOME/.local/share/flatpak/exports/share"
+    if [[ -d "$flatpak_exports" && ! "$XDG_DATA_DIRS" =~ "$flatpak_exports" ]]; then
+        export XDG_DATA_DIRS="${flatpak_exports}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    fi
+    
     step "Setting Firefox as default browser" xdg-settings set default-web-browser org.mozilla.firefox.desktop
 fi
