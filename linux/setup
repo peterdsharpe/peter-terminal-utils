@@ -75,8 +75,15 @@ def strip_ansi(text: str) -> str:
     return text.translate(CONTROL_CHARS)
 
 
+WRAP_INDICATOR = "↩"
+WRAP_INDENT = "  "  # 2 spaces for continuation lines
+
+
 def wrap_line(line: str, width: int) -> list[str]:
-    """Hard-wrap a line to the given width.
+    """Hard-wrap a line to the given width with visual continuation indicators.
+
+    Wrapped lines end with a continuation indicator (↩), and continuation lines
+    are indented with 2 spaces to visually distinguish them from new lines.
 
     Args:
         line: The line to wrap.
@@ -87,11 +94,26 @@ def wrap_line(line: str, width: int) -> list[str]:
     """
     if not line or width <= 0:
         return [line]
+    if len(line) <= width:
+        return [line]
+
     result = []
-    while len(line) > width:
-        result.append(line[:width])
-        line = line[width:]
-    result.append(line)
+    indent_len = len(WRAP_INDENT)
+
+    # First segment: width - 1 chars + wrap indicator
+    first_content_width = width - 1
+    result.append(line[:first_content_width] + WRAP_INDICATOR)
+    line = line[first_content_width:]
+
+    # Continuation segments: indent + content + optional wrap indicator
+    continuation_width = width - indent_len - 1  # space for indent and indicator
+
+    while len(line) > width - indent_len:
+        result.append(WRAP_INDENT + line[:continuation_width] + WRAP_INDICATOR)
+        line = line[continuation_width:]
+
+    # Final segment: indent + remaining (no indicator)
+    result.append(WRAP_INDENT + line)
     return result
 
 
@@ -995,9 +1017,6 @@ class SelectionTUI:
             name = item.name if isinstance(item, Section) else item.display_name
             if query in name.lower():
                 self.filtered_indices.append(i)
-                # Also enable if it's a script (search = select)
-                if isinstance(item, Script):
-                    item.enabled = True
         # Move cursor to first match
         if self.filtered_indices:
             self.cursor = self.filtered_indices[0]
