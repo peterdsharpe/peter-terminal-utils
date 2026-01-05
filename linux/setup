@@ -61,7 +61,9 @@ class ScriptState(Enum):
 
 
 # States that count as "completed" for progress tracking
-COMPLETED_STATES = frozenset({ScriptState.SUCCESS, ScriptState.FAILED, ScriptState.SKIPPED})
+COMPLETED_STATES = frozenset(
+    {ScriptState.SUCCESS, ScriptState.FAILED, ScriptState.SKIPPED}
+)
 
 # Regex to match ANSI escape sequences
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
@@ -576,9 +578,11 @@ class Manifest:
 
     def get_flat_items(self) -> list[Section | Script]:
         """Return flat list of sections and scripts for navigation."""
-        return list(chain.from_iterable(
-            (section, *section.scripts) for section in self.sections
-        ))
+        return list(
+            chain.from_iterable(
+                (section, *section.scripts) for section in self.sections
+            )
+        )
 
     def get_script_order(self) -> dict[str, int]:
         """Return dict mapping script names to their order index in the manifest."""
@@ -1359,7 +1363,9 @@ class BaseTUI:
         top_line = BOX_TL + BOX_H * (box_width - 2) + BOX_TR
         header = f" {title} "
         header_start = (box_width - len(header)) // 2
-        top_line = top_line[:header_start] + header + top_line[header_start + len(header) :]
+        top_line = (
+            top_line[:header_start] + header + top_line[header_start + len(header) :]
+        )
         self.safe_addstr(start_y, start_x, top_line, border_attr)
 
         # Bottom border with scroll hint
@@ -1368,7 +1374,11 @@ class BaseTUI:
             offset, visible_end, total = scroll_info
             scroll_hint = f" {offset + 1}-{visible_end}/{total} "
             hint_start = (box_width - len(scroll_hint)) // 2
-            bot_line = bot_line[:hint_start] + scroll_hint + bot_line[hint_start + len(scroll_hint) :]
+            bot_line = (
+                bot_line[:hint_start]
+                + scroll_hint
+                + bot_line[hint_start + len(scroll_hint) :]
+            )
         self.safe_addstr(start_y + box_height - 1, start_x, bot_line, border_attr)
 
         # Side borders
@@ -1414,18 +1424,31 @@ class BaseTUI:
             # Draw box borders with title and scroll info
             visible_end = min(scroll.offset + content_height, len(wrapped_lines))
             self.draw_overlay_box(
-                start_x, start_y, box_width, box_height,
-                title, (scroll.offset, visible_end, len(wrapped_lines))
+                start_x,
+                start_y,
+                box_width,
+                box_height,
+                title,
+                (scroll.offset, visible_end, len(wrapped_lines)),
             )
 
             # Content lines
             for i in range(content_height):
                 line_idx = scroll.offset + i
                 line = wrapped_lines[line_idx] if line_idx < len(wrapped_lines) else ""
-                self.safe_addstr(start_y + 1 + i, start_x + 2, line.ljust(content_width))
+                self.safe_addstr(
+                    start_y + 1 + i, start_x + 2, line.ljust(content_width)
+                )
 
             # Scrollbar
-            draw_scrollbar(self.stdscr, scrollbar_x, content_start_y, content_height, scroll, self.colors["cyan"])
+            draw_scrollbar(
+                self.stdscr,
+                scrollbar_x,
+                content_start_y,
+                content_height,
+                scroll,
+                self.colors["cyan"],
+            )
 
             # Footer hint
             hint_y = start_y + box_height - 2
@@ -1445,15 +1468,25 @@ class BaseTUI:
                         continue
                     # Click outside closes
                     if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
-                        if not (start_x <= mx < start_x + box_width and start_y <= my < start_y + box_height):
+                        if not (
+                            start_x <= mx < start_x + box_width
+                            and start_y <= my < start_y + box_height
+                        ):
                             break
                         # Scrollbar click - click-to-position then initialize drag from new position
-                        if mx == scrollbar_x and content_start_y <= my < content_start_y + content_height:
-                            scroll.set_from_scrollbar_click(my, content_start_y, content_height)
+                        if (
+                            mx == scrollbar_x
+                            and content_start_y <= my < content_start_y + content_height
+                        ):
+                            scroll.set_from_scrollbar_click(
+                                my, content_start_y, content_height
+                            )
                             if bstate & curses.BUTTON1_PRESSED:
                                 drag.active = True
                                 drag.start_y = my
-                                drag.start_offset = scroll.offset  # Capture AFTER click-to-position
+                                drag.start_offset = (
+                                    scroll.offset
+                                )  # Capture AFTER click-to-position
                     # Drag handling
                     if bstate & curses.BUTTON1_RELEASED:
                         drag.active = False
@@ -1462,7 +1495,9 @@ class BaseTUI:
                         if content_height > 0 and scroll.total > scroll.visible:
                             scroll_range = scroll.total - scroll.visible
                             offset_delta = int(delta_y * scroll_range / content_height)
-                            scroll.offset = max(0, min(scroll_range, drag.start_offset + offset_delta))
+                            scroll.offset = max(
+                                0, min(scroll_range, drag.start_offset + offset_delta)
+                            )
                 except curses.error:
                     pass
                 continue
@@ -1692,7 +1727,9 @@ class SelectionTUI(BaseTUI):
             available = width - pos - 2
             if len(warning_text) > available:
                 warning_text = warning_text[: available - 1] + "…"
-            self.safe_addstr(y, pos, warning_text, self.colors["red"] | self.colors["bold"] | rev)
+            self.safe_addstr(
+                y, pos, warning_text, self.colors["red"] | self.colors["bold"] | rev
+            )
 
     def draw_footer(self, height: int, width: int) -> None:
         """Draw the footer with key bindings."""
@@ -2564,7 +2601,9 @@ class ExecutionTUI(BaseTUI):
         phase_offset = script_index * 0.15  # Wave offset per script
         return int((base_time + phase_offset) / 0.1)
 
-    def _state_to_pattern(self, state: ScriptState, is_left: bool, frame_idx: int) -> int:
+    def _state_to_pattern(
+        self, state: ScriptState, is_left: bool, frame_idx: int
+    ) -> int:
         """Convert a script state to a braille column pattern.
 
         Args:
@@ -2625,7 +2664,9 @@ class ExecutionTUI(BaseTUI):
                 if status.state == ScriptState.RUNNING:
                     # Wave effect: each running script has phase offset
                     frame_idx = self._get_animation_frame(idx)
-                    char = self._FILL_FRAMES_FULL[frame_idx % len(self._FILL_FRAMES_FULL)]
+                    char = self._FILL_FRAMES_FULL[
+                        frame_idx % len(self._FILL_FRAMES_FULL)
+                    ]
                 elif status.state == ScriptState.SUCCESS:
                     char = "⣿"
                 elif status.state == ScriptState.FAILED:
@@ -2647,7 +2688,9 @@ class ExecutionTUI(BaseTUI):
 
                 # Wave animation with per-script phase offset
                 left_frame = self._get_animation_frame(left_idx)
-                right_frame = self._get_animation_frame(left_idx + 1) if len(batch) > 1 else 0
+                right_frame = (
+                    self._get_animation_frame(left_idx + 1) if len(batch) > 1 else 0
+                )
                 left_pattern = self._state_to_pattern(left_state, True, left_frame)
                 right_pattern = self._state_to_pattern(right_state, False, right_frame)
                 combined = chr(0x2800 | left_pattern | right_pattern)
@@ -2672,7 +2715,8 @@ class ExecutionTUI(BaseTUI):
                 # Wave animation - use index of first running script in group
                 base_idx = batch_idx * scripts_per_char
                 running_offset = next(
-                    (j for j, s in enumerate(batch) if s.state == ScriptState.RUNNING), 0
+                    (j for j, s in enumerate(batch) if s.state == ScriptState.RUNNING),
+                    0,
                 )
                 frame_idx = self._get_animation_frame(base_idx + running_offset)
                 char = self._FILL_FRAMES_FULL[frame_idx % len(self._FILL_FRAMES_FULL)]
@@ -2991,18 +3035,31 @@ class ExecutionTUI(BaseTUI):
             # Draw box borders with title and scroll info
             visible_end = min(scroll.offset + content_height, len(wrapped_lines))
             self.draw_overlay_box(
-                start_x, start_y, box_width, box_height,
-                status.script.path, (scroll.offset, visible_end, len(wrapped_lines))
+                start_x,
+                start_y,
+                box_width,
+                box_height,
+                status.script.path,
+                (scroll.offset, visible_end, len(wrapped_lines)),
             )
 
             # Draw content lines
             for i in range(content_height):
                 line_idx = scroll.offset + i
                 line = wrapped_lines[line_idx] if line_idx < len(wrapped_lines) else ""
-                self.safe_addstr(start_y + 1 + i, start_x + 2, line.ljust(content_width))
+                self.safe_addstr(
+                    start_y + 1 + i, start_x + 2, line.ljust(content_width)
+                )
 
             # Draw scrollbar
-            draw_scrollbar(self.stdscr, scrollbar_x, content_start_y, content_height, scroll, self.colors["cyan"])
+            draw_scrollbar(
+                self.stdscr,
+                scrollbar_x,
+                content_start_y,
+                content_height,
+                scroll,
+                self.colors["cyan"],
+            )
 
             self.stdscr.refresh()
 
@@ -3263,13 +3320,17 @@ class ExecutionTUI(BaseTUI):
                     # Check if we're done
                     if not futures and not ready:
                         # No more work to do
-                        all_done = all(s.state != ScriptState.PENDING for s in self.statuses)
+                        all_done = all(
+                            s.state != ScriptState.PENDING for s in self.statuses
+                        )
                         if all_done:
                             break
 
                         # Deadlock: pending scripts exist but none can start.
                         # Causes: circular deps, missing deps, or misspelled deps.
-                        pending = [s for s in self.statuses if s.state == ScriptState.PENDING]
+                        pending = [
+                            s for s in self.statuses if s.state == ScriptState.PENDING
+                        ]
                         for status in pending:
                             unsatisfied = [
                                 dep
@@ -3378,7 +3439,9 @@ def run_interactive(
     headless = preset.is_headless if preset else False
 
     # Execution phase
-    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run=dry_run, headless=headless)
+    execution_tui = ExecutionTUI(
+        stdscr, manifest, scripts_dir, dry_run=dry_run, headless=headless
+    )
     success, fail = execution_tui.run()
 
     return 1 if fail > 0 else 0
