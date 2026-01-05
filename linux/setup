@@ -1447,13 +1447,13 @@ class BaseTUI:
                     if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
                         if not (start_x <= mx < start_x + box_width and start_y <= my < start_y + box_height):
                             break
-                        # Scrollbar click - initialize drag and click-to-position
+                        # Scrollbar click - click-to-position then initialize drag from new position
                         if mx == scrollbar_x and content_start_y <= my < content_start_y + content_height:
+                            scroll.set_from_scrollbar_click(my, content_start_y, content_height)
                             if bstate & curses.BUTTON1_PRESSED:
                                 drag.active = True
                                 drag.start_y = my
-                                drag.start_offset = scroll.offset
-                            scroll.set_from_scrollbar_click(my, content_start_y, content_height)
+                                drag.start_offset = scroll.offset  # Capture AFTER click-to-position
                     # Drag handling
                     if bstate & curses.BUTTON1_RELEASED:
                         drag.active = False
