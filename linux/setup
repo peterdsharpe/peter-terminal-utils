@@ -490,6 +490,51 @@ def check_sudo_available() -> bool:
         return False
 
 
+def prompt_sudo_if_needed(enabled_scripts: list[tuple[Section, Script]]) -> bool:
+    """Prompt for sudo credentials if any enabled scripts require sudo.
+
+    Args:
+        enabled_scripts: List of (section, script) tuples to be executed.
+
+    Returns:
+        True if sudo is available (or not needed), False if user declined/failed.
+    """
+    # Check if any scripts require sudo
+    needs_sudo = any(script.requires_sudo for _, script in enabled_scripts)
+    if not needs_sudo:
+        return True  # No sudo needed
+
+    # Already have sudo?
+    if check_sudo_available():
+        return True
+
+    # Prompt user
+    print("\n" + "─" * 60)
+    print(" Some selected scripts require sudo.")
+    print("─" * 60)
+
+    try:
+        response = input(" Authenticate with sudo? [Y/n] ").strip().lower()
+        if response and response[0] == "n":
+            print(" Continuing without sudo (some scripts will be skipped)")
+            return True  # User chose to continue without sudo
+
+        # Try to cache sudo credentials
+        result = subprocess.run(["sudo", "-v"], timeout=60)
+        if result.returncode == 0:
+            print(" ✓ Sudo credentials cached")
+            return True
+        else:
+            print(" ✗ Sudo authentication failed")
+            return True  # Continue anyway, scripts will skip
+    except (KeyboardInterrupt, EOFError):
+        print("\n Cancelled")
+        return False
+    except Exception as e:
+        print(f" Error: {e}")
+        return True  # Continue anyway
+
+
 def prepare_script_env(dry_run: bool, headless: bool) -> dict[str, str]:
     """Prepare environment variables for script execution.
 
@@ -2016,6 +2061,12 @@ def run_interactive(
     if not enabled:
         return 0
 
+    # Prompt for sudo if needed (exit curses temporarily)
+    curses.endwin()
+    if not prompt_sudo_if_needed(enabled):
+        return 0  # User cancelled
+    stdscr.refresh()  # Restore curses screen
+
     # Determine if headless mode based on selected preset
     headless = is_headless_preset(selection_tui.current_preset)
 
@@ -2034,6 +2085,10 @@ def run_non_interactive(
     if not enabled:
         print("No scripts selected.")
         return 0
+
+    # Prompt for sudo if needed
+    if not prompt_sudo_if_needed(enabled):
+        return 0  # User cancelled
 
     print(f"\n{'=' * 60}")
     print(f" Installing {len(enabled)} components...")
