@@ -29,9 +29,9 @@ if ! command -v flatpak &>/dev/null; then
     fi
 fi
 
-### Add Flathub repository if not present
-if ! flatpak remotes | grep -q flathub; then
-    step "Adding Flathub repository" flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+### Add Flathub repository if not present (user-level to match --user installs)
+if ! flatpak remotes --user | grep -q flathub; then
+    step "Adding Flathub repository" flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 fi
 
 ### Install applications
