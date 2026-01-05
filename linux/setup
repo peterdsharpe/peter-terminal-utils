@@ -24,6 +24,8 @@ import re
 import select
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,21 +86,20 @@ def strip_ansi(text: str) -> str:
 
 
 WRAP_INDICATOR = "↩"
-WRAP_INDENT = "  "  # 2 spaces for continuation lines
 
 
-def wrap_line(line: str, width: int) -> list[str]:
+def wrap_line(line: str, width: int, indent: int = 2) -> list[str]:
     """Hard-wrap a line to the given width with visual continuation indicators.
 
     Wrapped lines end with a continuation indicator (↩), and continuation lines
-    are indented with 2 spaces to visually distinguish them from new lines.
+    are indented by the specified amount.
 
-    For very small widths (≤3), falls back to basic wrapping without indicators
-    to avoid infinite loops.
+    For very small widths, falls back to basic wrapping without indicators.
 
     Args:
         line: The line to wrap.
         width: Maximum width per wrapped segment.
+        indent: Number of spaces to indent continuation lines. Defaults to 2.
 
     Returns:
         List of wrapped line segments. Empty or short lines return as single-element list.
@@ -108,10 +109,10 @@ def wrap_line(line: str, width: int) -> list[str]:
     if len(line) <= width:
         return [line]
 
-    indent_len = len(WRAP_INDENT)
+    wrap_indent = " " * indent
 
     # Fall back to basic wrapping for very small widths where indicators don't fit
-    if width <= indent_len + 1:
+    if width <= indent + 1:
         result = []
         while len(line) > width:
             result.append(line[:width])
@@ -127,18 +128,18 @@ def wrap_line(line: str, width: int) -> list[str]:
     line = line[first_content_width:]
 
     # Continuation segments: indent + content + optional wrap indicator
-    continuation_width = width - indent_len - 1  # space for indent and indicator
+    continuation_width = width - indent - 1  # space for indent and indicator
 
-    while len(line) > width - indent_len:
-        result.append(WRAP_INDENT + line[:continuation_width] + WRAP_INDICATOR)
+    while len(line) > width - indent:
+        result.append(wrap_indent + line[:continuation_width] + WRAP_INDICATOR)
         line = line[continuation_width:]
 
     # Final segment: indent + remaining (no indicator)
-    result.append(WRAP_INDENT + line)
+    result.append(wrap_indent + line)
     return result
 
 
-def wrap_lines(lines: list[str], width: int) -> list[str]:
+def wrap_lines(lines: list[str], width: int, indent: int = 2) -> list[str]:
     """Wrap multiple lines to a given width, expanding tabs.
 
     Each input line is processed: tabs expanded to 4 spaces, trailing whitespace
@@ -147,6 +148,7 @@ def wrap_lines(lines: list[str], width: int) -> list[str]:
     Args:
         lines: List of lines to wrap.
         width: Maximum width per wrapped segment.
+        indent: Number of spaces to indent continuation lines. Defaults to 2.
 
     Returns:
         Flattened list of wrapped line segments.
@@ -154,7 +156,7 @@ def wrap_lines(lines: list[str], width: int) -> list[str]:
     result = []
     for line in lines:
         cleaned = line.expandtabs(4).rstrip()
-        result.extend(wrap_line(cleaned, width))
+        result.extend(wrap_line(cleaned, width, indent))
     return result
 
 
@@ -213,6 +215,138 @@ class ScrollState:
         elif idx >= self.offset + self.visible:
             self.offset = idx - self.visible + 1
         self.clamp()
+
+    def set_from_scrollbar_click(self, click_y: int, y_start: int, height: int) -> None:
+        """Set scroll offset based on a click position in the scrollbar track.
+
+        Maps the click position to a scroll offset proportionally.
+
+        Args:
+            click_y: The y-coordinate of the click.
+            y_start: The starting y-coordinate of the scrollbar.
+            height: The height of the scrollbar area.
+        """
+        if height <= 1 or self.total <= self.visible:
+            return
+        relative_y = click_y - y_start
+        max_offset = max(1, self.total - self.visible)
+        self.offset = int(relative_y * max_offset / (height - 1))
+        self.clamp()
+
+
+@dataclass
+class DragState:
+    """Track mouse drag state for scrollbar interaction.
+
+    Used to implement click-and-drag scrolling on scrollbar thumbs.
+    """
+
+    active: bool = False
+    panel: str = ""  # "left", "right", or "main"
+    start_offset: int = 0
+    start_y: int = 0
+
+
+###############################################################################
+### Braille Spinner
+###############################################################################
+
+# Braille spinner frames - the same pattern uv uses for a smooth spinning effect
+BRAILLE_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+class BrailleSpinner:
+    """A braille-based spinner for loading animations.
+
+    Provides smooth spinning animation using braille pattern characters,
+    similar to the style used by uv during package installation.
+
+    The spinner can operate in two modes:
+    - Manual: Call `tick()` to advance the frame (for curses integration)
+    - Timed: Call `frame()` to get frame based on elapsed time (for threading)
+    """
+
+    def __init__(self, interval: float = 0.08):
+        """Initialize spinner.
+
+        Args:
+            interval: Seconds between frame changes in timed mode.
+        """
+        self.frames = BRAILLE_FRAMES
+        self.interval = interval
+        self._index = 0
+        self._start_time = time.monotonic()
+
+    def tick(self) -> str:
+        """Advance to next frame and return it. For manual animation loops."""
+        frame = self.frames[self._index]
+        self._index = (self._index + 1) % len(self.frames)
+        return frame
+
+    def frame(self) -> str:
+        """Get current frame based on elapsed time. For timed animation."""
+        elapsed = time.monotonic() - self._start_time
+        idx = int(elapsed / self.interval) % len(self.frames)
+        return self.frames[idx]
+
+    def reset(self) -> None:
+        """Reset spinner to initial state."""
+        self._index = 0
+        self._start_time = time.monotonic()
+
+
+class ThreadedSpinner:
+    """A threaded spinner for non-curses console output.
+
+    Displays a braille spinner on the current line while a task runs.
+    Uses carriage return to update the spinner in place.
+    """
+
+    def __init__(self, message: str = ""):
+        """Initialize the threaded spinner.
+
+        Args:
+            message: Text to display before the spinner.
+        """
+        self.message = message
+        self.spinner = BrailleSpinner()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _spin(self) -> None:
+        """Spinner thread target. Continuously updates the spinner character."""
+        while not self._stop_event.is_set():
+            frame = self.spinner.frame()
+            # Use carriage return to overwrite the line
+            sys.stdout.write(f"\r{frame} {self.message}")
+            sys.stdout.flush()
+            time.sleep(0.08)
+
+    def start(self) -> None:
+        """Start the spinner animation in a background thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def stop(self, final_char: str = "", clear: bool = False) -> None:
+        """Stop the spinner and optionally display a final status.
+
+        Args:
+            final_char: Character to display in place of spinner (e.g., "✓" or "✗").
+            clear: If True, clear the entire line instead of showing final_char.
+        """
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+
+        if clear:
+            # Clear the line
+            sys.stdout.write(f"\r{' ' * (len(self.message) + 4)}\r")
+        elif final_char:
+            # Replace spinner with final character
+            sys.stdout.write(f"\r{final_char} {self.message}")
+        sys.stdout.flush()
 
 
 ###############################################################################
@@ -620,22 +754,11 @@ class PresetDef:
 def _load_presets_from_config() -> dict[str, PresetDef]:
     """Load presets from config.toml and map to numeric keys.
 
-    Maps preset names to keys 1-5 in order:
-    desktop=1, headless=2, desktop_no_sudo=3, headless_no_sudo=4, empty=5
+    Presets are assigned keys 1, 2, 3... in the order they appear in config.toml.
     """
-    preset_order = [
-        "desktop",
-        "headless",
-        "desktop_no_sudo",
-        "headless_no_sudo",
-        "empty",
-    ]
     presets: dict[str, PresetDef] = {}
 
-    for i, name in enumerate(preset_order, start=1):
-        if name not in _CONFIG.get("presets", {}):
-            continue
-        cfg = _CONFIG["presets"][name]
+    for i, (name, cfg) in enumerate(_CONFIG.get("presets", {}).items(), start=1):
         presets[str(i)] = PresetDef(
             description=cfg.get("description", name),
             disabled_sections=tuple(cfg.get("disabled_sections", [])),
@@ -729,6 +852,15 @@ def init_colors() -> dict[ColorName, int]:
     }
 
 
+def enable_mouse() -> None:
+    """Enable mouse support with click, drag, and scroll events.
+
+    Should be called after curses initialization. Enables all mouse events
+    including button clicks, releases, and position reporting for drag support.
+    """
+    curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+
+
 def draw_scrollbar(
     stdscr: curses.window,
     x: int,
@@ -792,6 +924,8 @@ class SelectionTUI:
         self.search_query = ""
         self.filtered_indices: list[int] | None = None  # None = no filter
         self.last_key = -1  # For detecting 'gg' sequence
+        # Mouse drag state for scrollbar
+        self.drag_state = DragState()
 
     def get_dependency_warnings(self, script: Script) -> list[str]:
         """Get list of dependency warnings for a script.
@@ -836,7 +970,7 @@ class SelectionTUI:
 
     def draw(self) -> None:
         """Draw the complete selection screen."""
-        self.stdscr.clear()
+        self.stdscr.erase()
         height, width = self.stdscr.getmaxyx()
 
         # Draw header
@@ -1057,10 +1191,154 @@ class SelectionTUI:
                     self.colors["red"] | self.colors["bold"],
                 )
 
+    def _handle_mouse(self, items: list[Section | Script]) -> Literal["execute", "quit"] | None:
+        """Handle mouse events for tree selection, scrollbar, and footer clicks.
+
+        Args:
+            items: Flat list of sections and scripts for index calculations.
+
+        Returns:
+            'execute', 'quit', or None to continue.
+        """
+        try:
+            _, mx, my, _, bstate = curses.getmouse()
+        except curses.error:
+            return None
+
+        height, width = self.stdscr.getmaxyx()
+        visible_height = self.get_visible_height()
+        tree_start_y = 3
+        tree_end_y = tree_start_y + visible_height
+        footer_y = height - 4
+        scrollbar_x = width - 1
+
+        # Handle scroll wheel (BUTTON4 = scroll up, BUTTON5 = scroll down)
+        if bstate & curses.BUTTON4_PRESSED:
+            if tree_start_y <= my < tree_end_y:
+                if self.cursor > 0:
+                    self.cursor -= 1
+            return None
+        if bstate & curses.BUTTON5_PRESSED:
+            if tree_start_y <= my < tree_end_y:
+                if self.cursor < len(items) - 1:
+                    self.cursor += 1
+            return None
+
+        # Handle button release (end drag)
+        if bstate & curses.BUTTON1_RELEASED:
+            self.drag_state.active = False
+            return None
+
+        # Handle scrollbar drag motion
+        if self.drag_state.active and bstate & curses.REPORT_MOUSE_POSITION:
+            if self.drag_state.panel == "main":
+                delta_y = my - self.drag_state.start_y
+                max_offset = max(1, self.scroll.total - self.scroll.visible)
+                # Scale delta by content/scrollbar ratio
+                if visible_height > 1:
+                    content_delta = int(delta_y * max_offset / (visible_height - 1))
+                    self.scroll.offset = max(
+                        0, min(max_offset, self.drag_state.start_offset + content_delta)
+                    )
+            return None
+
+        # Handle clicks (BUTTON1_CLICKED or BUTTON1_PRESSED)
+        is_click = bool(bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED))
+        is_double_click = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
+
+        if not is_click and not is_double_click:
+            return None
+
+        # Scrollbar click/drag initiation (rightmost column, in tree area)
+        if mx == scrollbar_x and tree_start_y <= my < tree_end_y:
+            if bstate & curses.BUTTON1_PRESSED:
+                # Start drag
+                self.drag_state.active = True
+                self.drag_state.panel = "main"
+                self.drag_state.start_offset = self.scroll.offset
+                self.drag_state.start_y = my
+            # Click-to-position (always apply on click)
+            self.scroll.set_from_scrollbar_click(my, tree_start_y, visible_height)
+            # Also move cursor to match scroll position roughly
+            self.cursor = min(len(items) - 1, self.scroll.offset)
+            return None
+
+        # Tree area click (not scrollbar)
+        if tree_start_y <= my < tree_end_y and mx < scrollbar_x:
+            item_idx = self.scroll.offset + (my - tree_start_y)
+            if 0 <= item_idx < len(items):
+                self.cursor = item_idx
+                # Toggle on double-click or click in checkbox region (first 12 chars)
+                if is_double_click or mx <= 12:
+                    item = items[item_idx]
+                    if isinstance(item, Section):
+                        item.toggle()
+                    else:
+                        item.enabled = not item.enabled
+            return None
+
+        # Footer area clicks
+        if my >= footer_y:
+            # Skip if in search mode (different footer)
+            if self.search_mode:
+                return None
+
+            footer_row = my - footer_y
+
+            # Row 1 (footer_y + 1): Key bindings line with [x] Install, [q] Quit, etc.
+            if footer_row == 1 and not self.filtered_indices:
+                # Parse the keys1 line to find clickable regions
+                # " [j/k] Up/Down   [Space] Toggle   [o] View   [/] Search   [x] Install   [q] Quit "
+                line_x = mx - 2  # Offset from start of line content
+                if line_x >= 0:
+                    if "[o]" in " [o] View" and 35 <= line_x < 45:
+                        self.show_script_content()
+                    elif "[/]" in " [/] Search" and 45 <= line_x < 58:
+                        self.search_mode = True
+                        self.search_query = ""
+                    elif "[x]" in " [x] Install" and 58 <= line_x < 72:
+                        return "execute"
+                    elif "[q]" in " [q] Quit" and 72 <= line_x < 82:
+                        return "quit"
+
+            # Row 2 (footer_y + 2): Preset keys [1], [2], etc.
+            elif footer_row == 2 and not self.filtered_indices:
+                # Look for [1], [2], [3], [4], [5] patterns in click position
+                # The presets line starts at x=2
+                line_x = mx - 2
+                if line_x >= 0:
+                    # Find which preset was clicked by scanning the rendered text
+                    preset_keys = "   ".join(
+                        f"[{k}] {p.description.split(' - ')[0]}"
+                        for k, p in PRESETS.items()
+                    )
+                    keys2 = f" {preset_keys}   [?] Help "
+                    # Check for preset number clicks [1], [2], etc.
+                    for preset_key in PRESETS:
+                        pattern = f"[{preset_key}]"
+                        idx = keys2.find(pattern)
+                        if idx != -1 and idx <= line_x < idx + len(pattern) + 15:
+                            self.current_preset = preset_key
+                            apply_preset(self.manifest, preset_key)
+                            self.filtered_indices = None
+                            self.search_query = ""
+                            return None
+                    # Check for [?] Help
+                    help_idx = keys2.find("[?]")
+                    if help_idx != -1 and help_idx <= line_x < help_idx + 10:
+                        self.show_help()
+                        return None
+
+        return None
+
     def handle_input(self) -> Literal["execute", "quit"] | None:
-        """Handle keyboard input. Returns 'execute' or 'quit' or None."""
+        """Handle keyboard and mouse input. Returns 'execute' or 'quit' or None."""
         key = self.stdscr.getch()
         items = self.manifest.get_flat_items()
+
+        # Handle mouse events
+        if key == curses.KEY_MOUSE:
+            return self._handle_mouse(items)
 
         # Search mode input handling
         if self.search_mode:
@@ -1175,7 +1453,10 @@ class SelectionTUI:
             self.cursor = self.filtered_indices[0]
 
     def show_help(self) -> None:
-        """Show help overlay."""
+        """Show help overlay with mouse support.
+
+        Clicking outside the help box closes it.
+        """
         height, width = self.stdscr.getmaxyx()
 
         help_text = [
@@ -1187,6 +1468,7 @@ class SelectionTUI:
             "║  gg          Jump to top                 ║",
             "║  G           Jump to bottom              ║",
             "║  Space/Enter Toggle selection            ║",
+            "║  Click       Select / toggle item        ║",
             "║  o           View script content         ║",
             "║  /           Search scripts              ║",
             "║  Esc         Clear search filter         ║",
@@ -1199,7 +1481,7 @@ class SelectionTUI:
             "║  [x]=enabled [~]=partial [ ]=disabled    ║",
             "╚══════════════════════════════════════════╝",
             "",
-            "         Press any key to continue         ",
+            "    Press any key or click outside to close",
         ]
 
         # Center the help box
@@ -1214,13 +1496,34 @@ class SelectionTUI:
             )
 
         self.stdscr.refresh()
-        self.stdscr.getch()  # Wait for any key
+
+        # Wait for any key or mouse click outside
+        while True:
+            key = self.stdscr.getch()
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+                    # Close on any click outside the box
+                    if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
+                        if not (
+                            start_x <= mx < start_x + box_width
+                            and start_y <= my < start_y + box_height
+                        ):
+                            break
+                        # Also close on click inside (simpler UX)
+                        break
+                except curses.error:
+                    pass
+            else:
+                # Any other key closes the help
+                break
 
     def show_script_content(self) -> None:
-        """Show the full script content in a scrollable overlay.
+        """Show the full script content in a scrollable overlay with mouse support.
 
         Only works when the cursor is on a Script (not a Section).
         Displays the shell script file in a box with scroll support.
+        Supports: scrollbar clicks, scroll wheel, click outside to close.
         """
         items = self.manifest.get_flat_items()
         if self.cursor >= len(items):
@@ -1257,6 +1560,11 @@ class SelectionTUI:
         # Scroll state for the overlay (uses wrapped line count)
         scroll = ScrollState(offset=0, total=len(wrapped_lines), visible=content_height)
         last_key = -1  # For detecting 'gg' sequence
+        drag_state = DragState()  # Local drag state for this overlay
+
+        # Scrollbar position
+        scrollbar_x = start_x + box_width - 2
+        content_start_y = start_y + 1
 
         while True:
             # Draw box background
@@ -1332,18 +1640,17 @@ class SelectionTUI:
                         pass
 
             # Draw scrollbar
-            scrollbar_x = start_x + box_width - 2
             draw_scrollbar(
                 self.stdscr,
                 x=scrollbar_x,
-                y_start=start_y + 1,
+                y_start=content_start_y,
                 height=content_height,
                 scroll=scroll,
                 color=self.colors["cyan"],
             )
 
             # Footer hint
-            hint = " [j/k] Scroll   [gg/G] Top/Bottom   [q/Esc] Close "
+            hint = " [j/k] Scroll   [gg/G] Top/Bottom   [q/Esc/Click] Close "
             hint_y = start_y + box_height - 2
             hint_x = start_x + (box_width - len(hint)) // 2
             try:
@@ -1355,6 +1662,68 @@ class SelectionTUI:
 
             # Handle input
             key = self.stdscr.getch()
+
+            # Handle mouse events
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+
+                    # Handle scroll wheel (BUTTON4 = up, BUTTON5 = down)
+                    if bstate & curses.BUTTON4_PRESSED:
+                        scroll.scroll_up()
+                        continue
+                    if bstate & curses.BUTTON5_PRESSED:
+                        scroll.scroll_down()
+                        continue
+
+                    # Handle drag release
+                    if bstate & curses.BUTTON1_RELEASED:
+                        drag_state.active = False
+                        continue
+
+                    # Handle scrollbar drag motion
+                    if drag_state.active and bstate & curses.REPORT_MOUSE_POSITION:
+                        delta_y = my - drag_state.start_y
+                        max_offset = max(1, scroll.total - scroll.visible)
+                        if content_height > 1:
+                            content_delta = int(
+                                delta_y * max_offset / (content_height - 1)
+                            )
+                            scroll.offset = max(
+                                0, min(max_offset, drag_state.start_offset + content_delta)
+                            )
+                        continue
+
+                    is_click = bool(
+                        bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED)
+                    )
+
+                    # Click outside box - close
+                    if is_click:
+                        if not (
+                            start_x <= mx < start_x + box_width
+                            and start_y <= my < start_y + box_height
+                        ):
+                            break
+
+                        # Scrollbar click
+                        if (
+                            mx == scrollbar_x
+                            and content_start_y <= my < content_start_y + content_height
+                        ):
+                            if bstate & curses.BUTTON1_PRESSED:
+                                drag_state.active = True
+                                drag_state.panel = "overlay"
+                                drag_state.start_offset = scroll.offset
+                                drag_state.start_y = my
+                            scroll.set_from_scrollbar_click(
+                                my, content_start_y, content_height
+                            )
+                            continue
+
+                except curses.error:
+                    pass
+                continue
 
             # Vim-style gg (go to top)
             if key == ord("g"):
@@ -1382,6 +1751,7 @@ class SelectionTUI:
     def run(self) -> bool:
         """Run the selection TUI. Returns True if user wants to execute, False to quit."""
         curses.curs_set(0)  # Hide cursor
+        enable_mouse()
 
         while True:
             self.draw()
@@ -1440,6 +1810,10 @@ class ExecutionTUI:
         self.cancelled = False
         self._last_key = -1  # For detecting 'gg' sequence
         self.focus_panel = "left"  # "left" (script list) or "right" (output)
+        # Mouse drag state for scrollbars
+        self.drag_state = DragState()
+        # Braille spinner for running scripts
+        self.spinner = BrailleSpinner()
 
     def _set_running_idx(self, idx: int) -> None:
         """Update running index, and viewing index if following."""
@@ -1448,13 +1822,147 @@ class ExecutionTUI:
             self.viewing_idx = idx
             self.right_scroll.offset = 0  # Reset scroll when switching scripts
 
+    def _handle_mouse_during_execution(self) -> None:
+        """Handle mouse events during execution for panel navigation and scrolling.
+
+        Supports:
+        - Clicking left panel to select script and focus left
+        - Clicking right panel to focus right
+        - Scrollbar click-to-position and drag on both panels
+        - Scroll wheel in both panels
+        """
+        try:
+            _, mx, my, _, bstate = curses.getmouse()
+        except curses.error:
+            return
+
+        height, width = self.stdscr.getmaxyx()
+        list_width = min(40, width // 2)
+        start_row = 2
+        visible_height = height - 5
+        footer_y = height - 3
+
+        left_scrollbar_x = list_width - 1
+        right_scrollbar_x = width - 1
+
+        # Handle scroll wheel (BUTTON4 = scroll up, BUTTON5 = scroll down)
+        if bstate & curses.BUTTON4_PRESSED:
+            if start_row <= my < start_row + visible_height:
+                if mx < list_width:
+                    # Scroll left panel (script list)
+                    if self.viewing_idx > 0:
+                        self.viewing_idx -= 1
+                        self.right_scroll.offset = 0
+                        self.following = self.viewing_idx == self.running_idx
+                else:
+                    # Scroll right panel (output)
+                    self.right_scroll.scroll_up()
+                    self.following = False
+            return
+        if bstate & curses.BUTTON5_PRESSED:
+            if start_row <= my < start_row + visible_height:
+                if mx < list_width:
+                    # Scroll left panel (script list)
+                    if self.viewing_idx < len(self.statuses) - 1:
+                        self.viewing_idx += 1
+                        self.right_scroll.offset = 0
+                        self.following = self.viewing_idx == self.running_idx
+                else:
+                    # Scroll right panel (output)
+                    self.right_scroll.scroll_down()
+                    self.following = False
+            return
+
+        # Handle button release (end drag)
+        if bstate & curses.BUTTON1_RELEASED:
+            self.drag_state.active = False
+            return
+
+        # Handle scrollbar drag motion
+        if self.drag_state.active and bstate & curses.REPORT_MOUSE_POSITION:
+            delta_y = my - self.drag_state.start_y
+            if self.drag_state.panel == "left":
+                max_offset = max(1, self.left_scroll.total - self.left_scroll.visible)
+                if visible_height > 1:
+                    content_delta = int(delta_y * max_offset / (visible_height - 1))
+                    self.left_scroll.offset = max(
+                        0, min(max_offset, self.drag_state.start_offset + content_delta)
+                    )
+            elif self.drag_state.panel == "right":
+                max_offset = max(1, self.right_scroll.total - self.right_scroll.visible)
+                if visible_height > 1:
+                    content_delta = int(delta_y * max_offset / (visible_height - 1))
+                    self.right_scroll.offset = max(
+                        0, min(max_offset, self.drag_state.start_offset + content_delta)
+                    )
+                    self.following = False
+            return
+
+        # Handle clicks
+        is_click = bool(bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED))
+        if not is_click:
+            return
+
+        # Only handle clicks in content area (not footer)
+        if my >= footer_y:
+            return
+
+        # Left scrollbar click
+        if mx == left_scrollbar_x and start_row <= my < start_row + visible_height:
+            if bstate & curses.BUTTON1_PRESSED:
+                self.drag_state.active = True
+                self.drag_state.panel = "left"
+                self.drag_state.start_offset = self.left_scroll.offset
+                self.drag_state.start_y = my
+            self.left_scroll.set_from_scrollbar_click(my, start_row, visible_height)
+            # Update viewing_idx to match scroll position
+            self.viewing_idx = min(
+                len(self.statuses) - 1, self.left_scroll.offset
+            )
+            self.focus_panel = "left"
+            self.following = False
+            return
+
+        # Right scrollbar click
+        if mx == right_scrollbar_x and start_row <= my < start_row + visible_height:
+            if bstate & curses.BUTTON1_PRESSED:
+                self.drag_state.active = True
+                self.drag_state.panel = "right"
+                self.drag_state.start_offset = self.right_scroll.offset
+                self.drag_state.start_y = my
+            self.right_scroll.set_from_scrollbar_click(my, start_row, visible_height)
+            self.focus_panel = "right"
+            self.following = False
+            return
+
+        # Left panel content click (select script)
+        if mx < left_scrollbar_x and start_row <= my < start_row + visible_height:
+            item_idx = self.left_scroll.offset + (my - start_row)
+            if 0 <= item_idx < len(self.statuses):
+                self.viewing_idx = item_idx
+                self.right_scroll.offset = 0
+                self.focus_panel = "left"
+                # Resume following if we clicked on the running script
+                self.following = item_idx == self.running_idx
+            return
+
+        # Right panel content click (focus right panel)
+        if list_width < mx < right_scrollbar_x and start_row <= my < start_row + visible_height:
+            self.focus_panel = "right"
+            return
+
     def _handle_input_during_execution(self, key: int) -> None:
-        """Handle keyboard input during script execution for log navigation.
+        """Handle keyboard and mouse input during script execution for log navigation.
 
         Allows users to browse logs of already-completed scripts while
         installation continues. Supports switching focus between left (script
         list) and right (output) panels for independent scrolling.
         """
+        # Handle mouse events
+        if key == curses.KEY_MOUSE:
+            self._handle_mouse_during_execution()
+            return
+
         # Vim-style gg (go to top) - detect 'g' followed by 'g'
         if key == ord("g"):
             if self._last_key == ord("g"):
@@ -1549,7 +2057,7 @@ class ExecutionTUI:
 
     def draw(self) -> None:
         """Draw the execution screen."""
-        self.stdscr.clear()
+        self.stdscr.erase()
         height, width = self.stdscr.getmaxyx()
 
         # Draw header
@@ -1676,7 +2184,8 @@ class ExecutionTUI:
             indicator = "○"
             color = self.colors["dim"]
         elif status.status == "running":
-            indicator = "▶"
+            # Use braille spinner for running scripts
+            indicator = self.spinner.frame()
             color = self.colors["cyan"]
         elif status.status == "success":
             indicator = "✓"
@@ -1711,8 +2220,17 @@ class ExecutionTUI:
             raw_lines = []
 
         # Strip ANSI codes and wrap lines to panel width
+        # Command lines (starting with "$ ") get continuation aligned after the prefix
         cleaned_lines = [strip_ansi(line) for line in raw_lines]
-        wrapped_lines = wrap_lines(cleaned_lines, panel_width)
+        wrapped_lines = []
+        for line in cleaned_lines:
+            line = line.expandtabs(4).rstrip()
+            # Detect command prefix like "  $ " and align continuation after it
+            if match := re.match(r"^(\s*\$\s)", line):
+                indent = len(match.group(1))
+            else:
+                indent = 2
+            wrapped_lines.extend(wrap_line(line, panel_width, indent))
 
         # Update scroll state using wrapped line count
         self.right_scroll.total = len(wrapped_lines)
@@ -1847,9 +2365,8 @@ class ExecutionTUI:
                     key = self.stdscr.getch()
                     if key != -1:
                         self._handle_input_during_execution(key)
-                        self.draw()
 
-                    ready, _, _ = select.select([master_fd], [], [], 0.05)
+                    ready, _, _ = select.select([master_fd], [], [], 0.08)
                     if ready:
                         try:
                             data = os.read(master_fd, 4096)
@@ -1858,9 +2375,12 @@ class ExecutionTUI:
                                 for line in text.split("\n"):
                                     if line:
                                         status.output_lines.append(line)
-                                self.draw()
                         except OSError:
                             break
+
+                    # Always redraw to animate spinner (select timeout ~80ms = spinner frame rate)
+                    self.draw()
+
                     if retcode is not None:
                         # Drain remaining output
                         while True:
@@ -1946,6 +2466,7 @@ class ExecutionTUI:
         """
         curses.curs_set(0)
         self.stdscr.keypad(True)  # Enable arrow key recognition
+        enable_mouse()
 
         success_count = 0
         fail_count = 0
@@ -1979,17 +2500,25 @@ class ExecutionTUI:
                             executor.submit(self._run_script_silent, s): s
                             for s in group
                         }
-                        for future in concurrent.futures.as_completed(futures):
-                            status = futures[future]
-                            self._set_running_idx(self.statuses.index(status))
-                            try:
-                                if future.result():
-                                    success_count += 1
-                                else:
+                        # Poll with timeout to keep spinner animated
+                        pending = set(futures.keys())
+                        while pending:
+                            # Wait for any future with short timeout for spinner animation
+                            done, pending = concurrent.futures.wait(
+                                pending, timeout=0.08, return_when=concurrent.futures.FIRST_COMPLETED
+                            )
+                            for future in done:
+                                status = futures[future]
+                                self._set_running_idx(self.statuses.index(status))
+                                try:
+                                    if future.result():
+                                        success_count += 1
+                                    else:
+                                        fail_count += 1
+                                except Exception:
+                                    status.status = "failed"
                                     fail_count += 1
-                            except Exception:
-                                status.status = "failed"
-                                fail_count += 1
+                            # Redraw on every iteration to animate spinners
                             self._poll_input()
                             self.draw()
                 else:
@@ -2103,26 +2632,32 @@ def run_non_interactive(
 
     for section, script in enabled:
         script_path = scripts_dir / script.path
-        print(f"▶ {script.display_name}...", end=" ", flush=True)
 
         if not script_path.exists() or not os.access(script_path, os.X_OK):
-            print("✗ (not found or not executable)")
+            print(f"✗ {script.display_name} (not found or not executable)")
             fail += 1
             continue
+
+        # Start spinner while script runs
+        spinner = ThreadedSpinner(f"{script.display_name}...")
+        spinner.start()
 
         try:
             result = run_script_simple(script_path, scripts_dir, env)
             if result.returncode == 0:
-                print("✓")
+                spinner.stop("✓")
+                print()  # Newline after spinner line
                 success += 1
             else:
-                print("✗")
+                spinner.stop("✗")
+                print()  # Newline after spinner line
                 if result.stderr:
                     for line in result.stderr.strip().split("\n")[:5]:
                         print(f"    {line}")
                 fail += 1
         except Exception as e:
-            print(f"✗ ({e})")
+            spinner.stop("✗")
+            print(f" ({e})")
             fail += 1
 
     print(f"\n{'=' * 60}")
