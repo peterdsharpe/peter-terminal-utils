@@ -3378,7 +3378,7 @@ def run_interactive(
     headless = preset.is_headless if preset else False
 
     # Execution phase
-    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run, headless)
+    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run=dry_run, headless=headless)
     success, fail = execution_tui.run()
 
     return 1 if fail > 0 else 0
