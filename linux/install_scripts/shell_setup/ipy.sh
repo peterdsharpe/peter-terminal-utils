@@ -1,6 +1,6 @@
 #!/bin/bash
-# @name: IPy
-# @description: Interactive Python with NumPy, Matplotlib, etc.
+# @name: IPython Environment
+# @description: ipy command with NumPy, Matplotlib, and scientific libraries
 # @depends: uv.sh, local_bin.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

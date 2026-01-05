@@ -1,6 +1,6 @@
 #!/bin/bash
-# @name: Cursor
-# @description: Cursor AI code editor CLI
+# @name: Cursor CLI
+# @description: Command-line tools for Cursor AI code editor
 # @depends: core_packages.sh
 # @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

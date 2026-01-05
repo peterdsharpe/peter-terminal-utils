@@ -1,6 +1,6 @@
 #!/bin/bash
-# @name: Git Config
-# @description: Aliases, git-lfs, merge/rebase settings
+# @name: Git Settings
+# @description: Aliases, git-lfs, merge/rebase configuration
 # @depends: core_packages.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

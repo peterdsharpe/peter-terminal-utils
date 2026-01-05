@@ -1,6 +1,6 @@
 #!/bin/bash
-# @name: Git User
-# @description: Set git user.name and user.email
+# @name: Git User Identity
+# @description: Set git user.name and user.email globally
 # @depends: core_packages.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
