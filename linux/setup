@@ -27,6 +27,14 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, Self
+
+# Type aliases for literal values
+SectionState = Literal["all", "none", "partial"]
+ScriptStatusValue = Literal["pending", "running", "success", "failed", "skipped"]
+ColorName = Literal[
+    "green", "yellow", "cyan", "red", "blue", "header", "dim", "bold", "reverse"
+]
 
 # Regex to match ANSI escape sequences
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
@@ -264,7 +272,7 @@ class Section:
     scripts: list[Script] = field(default_factory=list)
 
     @property
-    def state(self) -> str:
+    def state(self) -> SectionState:
         """Returns 'all', 'none', or 'partial' based on enabled scripts."""
         enabled_count = sum(1 for s in self.scripts if s.enabled)
         if enabled_count == len(self.scripts):
@@ -292,6 +300,7 @@ class Manifest:
     """The complete manifest of sections and scripts."""
 
     sections: list[Section] = field(default_factory=list)
+    dep_graph: "DependencyGraph | None" = field(default=None, repr=False)
 
     def get_enabled_scripts(self) -> list[tuple[Section, Script]]:
         """Return list of (section, script) tuples for enabled scripts."""
@@ -327,6 +336,61 @@ class Manifest:
                 if script.name == name:
                     return script
         return None
+
+
+@dataclass
+class DependencyGraph:
+    """DAG for computing transitive script dependencies with order validation.
+
+    All transitive dependencies are pre-computed at construction time since
+    the graph is immutable after creation.
+    """
+
+    adj: dict[str, list[str]] = field(default_factory=dict)
+    transitive: dict[str, set[str]] = field(default_factory=dict)
+    script_order: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_manifest(cls, manifest: Manifest) -> Self:
+        """Build dependency graph from a parsed manifest."""
+        graph = cls()
+        idx = 0
+        for section in manifest.sections:
+            for script in section.scripts:
+                graph.adj[script.name] = script.dependencies
+                graph.script_order[script.name] = idx
+                idx += 1
+
+        # Pre-compute all transitive dependencies
+        for name in graph.adj:
+            graph.transitive[name] = graph._compute_transitive(name)
+
+        return graph
+
+    def _compute_transitive(self, name: str) -> set[str]:
+        """Compute all transitive dependencies for a script via DFS."""
+        result: set[str] = set()
+        visiting: set[str] = set()
+
+        def dfs(current: str) -> None:
+            if current in visiting:
+                return  # Cycle - skip
+            visiting.add(current)
+            for dep in self.adj.get(current, []):
+                result.add(dep)
+                dfs(dep)
+            visiting.remove(current)
+
+        dfs(name)
+        return result
+
+    def get_transitive_deps(self, name: str) -> set[str]:
+        """Get all dependencies (direct + transitive) for a script."""
+        return self.transitive.get(name, set())
+
+    def get_order(self, name: str) -> int:
+        """Get manifest order index for a script (0-indexed position)."""
+        return self.script_order.get(name, 0)
 
 
 ###############################################################################
@@ -399,6 +463,9 @@ def parse_manifest(manifest_path: Path, scripts_dir: Path | None = None) -> Mani
                 current_section.scripts.append(
                     Script(name=script_name, path=script_path, metadata=metadata)
                 )
+
+    # Build dependency graph after all scripts are loaded
+    manifest.dep_graph = DependencyGraph.from_manifest(manifest)
 
     return manifest
 
@@ -591,7 +658,7 @@ def make_title_bar(title: str, width: int) -> str:
     return "═" * padding + title + "═" * (width - padding - len(title) - 2)
 
 
-def init_colors() -> dict[str, int]:
+def init_colors() -> dict[ColorName, int]:
     """Initialize curses color pairs and return a mapping."""
     curses.start_color()
     curses.use_default_colors()
@@ -680,32 +747,41 @@ class SelectionTUI:
         self.search_query = ""
         self.filtered_indices: list[int] | None = None  # None = no filter
         self.last_key = -1  # For detecting 'gg' sequence
-        # Cache script order for dependency checking
-        self._script_order = manifest.get_script_order()
 
     def get_dependency_warnings(self, script: Script) -> list[str]:
         """Get list of dependency warnings for a script.
 
-        Checks for:
+        Checks all transitive dependencies for:
+        - Dependencies that are unknown (typo in @depends)
         - Dependencies that are disabled
-        - Dependencies that run after this script (wrong order)
+        - Dependencies that run after this script (wrong manifest order)
         """
         warnings: list[str] = []
-        if not script.dependencies:
+        dep_graph = self.manifest.dep_graph
+        if dep_graph is None:
             return warnings
 
-        script_idx = self._script_order.get(script.name, 0)
+        all_deps = dep_graph.get_transitive_deps(script.name)
+        if not all_deps:
+            return warnings
 
-        for dep_name in script.dependencies:
+        script_idx = dep_graph.get_order(script.name)
+        direct_deps = set(script.dependencies)
+
+        for dep_name in all_deps:
             dep_script = self.manifest.get_script_by_name(dep_name)
+            suffix = "" if dep_name in direct_deps else " (transitive)"
+
             if dep_script is None:
-                warnings.append(f"unknown dep: {dep_name}")
+                warnings.append(f"unknown: {dep_name}{suffix}")
             elif not dep_script.enabled:
-                warnings.append(f"{dep_script.display_name} disabled")
+                warnings.append(f"{dep_script.display_name} disabled{suffix}")
             else:
-                dep_idx = self._script_order.get(dep_name, 0)
+                # Check order - dependency must run BEFORE this script
+                dep_idx = dep_graph.get_order(dep_name)
                 if dep_idx >= script_idx:
-                    warnings.append(f"{dep_script.display_name} runs later")
+                    warnings.append(f"{dep_script.display_name} runs later{suffix}")
+
         return warnings
 
     def get_visible_height(self) -> int:
@@ -906,9 +982,16 @@ class SelectionTUI:
             keys2 = f" {preset_keys}   [?] Help "
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
 
-        # Status line showing selected/total scripts
-        enabled_count = len(self.manifest.get_enabled_scripts())
+        # Status line showing selected/total scripts and warning count
+        enabled_scripts = self.manifest.get_enabled_scripts()
+        enabled_count = len(enabled_scripts)
         total_count = sum(len(s.scripts) for s in self.manifest.sections)
+
+        # Count scripts with dependency warnings
+        warning_count = sum(
+            1 for _, script in enabled_scripts if self.get_dependency_warnings(script)
+        )
+
         status = f" {enabled_count}/{total_count} scripts selected "
         self.stdscr.addstr(
             footer_y + 3,
@@ -917,7 +1000,19 @@ class SelectionTUI:
             self.colors["green"] | self.colors["bold"],
         )
 
-    def handle_input(self) -> str | None:
+        # Show warning count if any
+        if warning_count > 0:
+            warning_text = f" ⚠ {warning_count} with possible dependency issues "
+            warning_x = 2 + len(status)
+            if warning_x + len(warning_text) < width - 2:
+                self.stdscr.addstr(
+                    footer_y + 3,
+                    warning_x,
+                    warning_text,
+                    self.colors["red"] | self.colors["bold"],
+                )
+
+    def handle_input(self) -> Literal["execute", "quit"] | None:
         """Handle keyboard input. Returns 'execute' or 'quit' or None."""
         key = self.stdscr.getch()
         items = self.manifest.get_flat_items()
@@ -1263,7 +1358,7 @@ class ScriptStatus:
 
     section: Section
     script: Script
-    status: str = "pending"  # pending, running, success, failed, skipped
+    status: ScriptStatusValue = "pending"
     output_lines: list[str] = field(default_factory=list)
     exit_code: int | None = None
 
