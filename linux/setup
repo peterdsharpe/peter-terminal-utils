@@ -1788,7 +1788,6 @@ class ExecutionTUI:
         scripts_dir: Path,
         dry_run: bool = False,
         headless: bool = False,
-        logger: "InstallLogger | None" = None,
     ):
         self.stdscr = stdscr
         self.manifest = manifest
@@ -1796,7 +1795,6 @@ class ExecutionTUI:
         self.dry_run = dry_run
         self.headless = headless
         self.colors = init_colors()
-        self.logger = logger
 
         # Build status list from enabled scripts
         self.statuses: list[ScriptStatus] = []
@@ -2428,16 +2426,8 @@ class ExecutionTUI:
     def run_script(self, status: ScriptStatus) -> bool:
         """Run a single script with live output capture. Returns True on success."""
         status.status = "running"
-        if self.logger:
-            self.logger.write_script_start(status.section.name, status.script.display_name)
         self.draw()
-        result = self._execute_script(status, silent=False)
-        if self.logger:
-            self.logger.write_output(status.output_lines)
-            self.logger.write_script_result(
-                status.script.display_name, status.status, status.exit_code
-            )
-        return result
+        return self._execute_script(status, silent=False)
 
     def _group_by_parallelism(self) -> list[list[ScriptStatus]]:
         """Group consecutive scripts by whether they can run in parallel.
@@ -2557,10 +2547,6 @@ class ExecutionTUI:
                 if status.status in ("pending", "running"):
                     status.status = "skipped"
 
-        # Write log footer
-        if self.logger:
-            self.logger.write_footer(success_count, fail_count, self.cancelled)
-
         # Final draw and allow browsing until 'q' is pressed
         self.draw()
 
@@ -2577,15 +2563,7 @@ class ExecutionTUI:
 
     def _run_script_silent(self, status: ScriptStatus) -> bool:
         """Run a script without display updates (for parallel execution)."""
-        if self.logger:
-            self.logger.write_script_start(status.section.name, status.script.display_name)
-        result = self._execute_script(status, silent=True)
-        if self.logger:
-            self.logger.write_output(status.output_lines)
-            self.logger.write_script_result(
-                status.script.display_name, status.status, status.exit_code
-            )
-        return result
+        return self._execute_script(status, silent=True)
 
 
 ###############################################################################
@@ -2621,15 +2599,8 @@ def run_interactive(
     # Determine if headless mode based on selected preset
     headless = is_headless_preset(selection_tui.current_preset)
 
-    # Set up logging
-    logger = InstallLogger(get_logs_dir())
-    logger.save_selection(manifest)
-    logger.write_header(manifest, dry_run, headless)
-
     # Execution phase
-    execution_tui = ExecutionTUI(
-        stdscr, manifest, scripts_dir, dry_run, headless, logger
-    )
+    execution_tui = ExecutionTUI(stdscr, manifest, scripts_dir, dry_run, headless)
     success, fail = execution_tui.run()
 
     return 1 if fail > 0 else 0
@@ -2648,16 +2619,10 @@ def run_non_interactive(
     if not prompt_sudo_if_needed(enabled):
         return 0  # User cancelled
 
-    # Set up logging
-    logger = InstallLogger(get_logs_dir())
-    logger.save_selection(manifest)
-    logger.write_header(manifest, dry_run, headless)
-
     print(f"\n{'=' * 60}")
     print(f" Installing {len(enabled)} components...")
     if headless:
         print(" (Headless mode - skipping GUI packages)")
-    print(f" Log: {logger.log_path}")
     print(f"{'=' * 60}\n")
 
     env = prepare_script_env(dry_run, headless)
@@ -2667,12 +2632,9 @@ def run_non_interactive(
 
     for section, script in enabled:
         script_path = scripts_dir / script.path
-        logger.write_script_start(section.name, script.display_name)
 
         if not script_path.exists() or not os.access(script_path, os.X_OK):
             print(f"✗ {script.display_name} (not found or not executable)")
-            logger.write_output(["Script not found or not executable"])
-            logger.write_script_result(script.display_name, "failed", 1)
             fail += 1
             continue
 
@@ -2682,17 +2644,9 @@ def run_non_interactive(
 
         try:
             result = run_script_simple(script_path, scripts_dir, env)
-            output_lines = []
-            if result.stdout:
-                output_lines.extend(result.stdout.strip().split("\n"))
-            if result.stderr:
-                output_lines.extend(result.stderr.strip().split("\n"))
-            logger.write_output(output_lines)
-
             if result.returncode == 0:
                 spinner.stop("✓")
                 print()  # Newline after spinner line
-                logger.write_script_result(script.display_name, "success", 0)
                 success += 1
             else:
                 spinner.stop("✗")
@@ -2700,22 +2654,14 @@ def run_non_interactive(
                 if result.stderr:
                     for line in result.stderr.strip().split("\n")[:5]:
                         print(f"    {line}")
-                logger.write_script_result(
-                    script.display_name, "failed", result.returncode
-                )
                 fail += 1
         except Exception as e:
             spinner.stop("✗")
             print(f" ({e})")
-            logger.write_output([f"Exception: {e}"])
-            logger.write_script_result(script.display_name, "failed", 1)
             fail += 1
-
-    logger.write_footer(success, fail, cancelled=False)
 
     print(f"\n{'=' * 60}")
     print(f" Complete: {success} succeeded, {fail} failed")
-    print(f" Log saved: {logger.log_path}")
     print(f"{'=' * 60}\n")
 
     return 1 if fail > 0 else 0
@@ -2774,115 +2720,6 @@ def import_selections(manifest: Manifest, input_path: Path) -> None:
 
     enabled_count = len(manifest.get_enabled_scripts())
     print(f"Imported selections: {enabled_count} scripts enabled")
-
-
-###############################################################################
-### Install Logging
-###############################################################################
-
-
-def get_logs_dir() -> Path:
-    """Get the logs directory, creating it if needed."""
-    logs_dir = get_script_dir() / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    return logs_dir
-
-
-def get_log_timestamp() -> str:
-    """Generate a timestamp string for log filenames."""
-    from datetime import datetime
-
-    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-
-@dataclass
-class InstallLogger:
-    """Handles logging of install sessions to files.
-
-    Creates timestamped log files for both the selection JSON and full output log.
-    """
-
-    logs_dir: Path
-    timestamp: str = field(default_factory=get_log_timestamp)
-    _log_file: Path = field(init=False)
-    _selection_file: Path = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._log_file = self.logs_dir / f"{self.timestamp}_install.log"
-        self._selection_file = self.logs_dir / f"{self.timestamp}_selection.json"
-
-    @property
-    def log_path(self) -> Path:
-        return self._log_file
-
-    @property
-    def selection_path(self) -> Path:
-        return self._selection_file
-
-    def save_selection(self, manifest: Manifest) -> None:
-        """Save the current selection to a JSON file."""
-        scripts = [script.path for _, script in manifest.get_enabled_scripts()]
-        data = {
-            "version": 1,
-            "timestamp": self.timestamp,
-            "description": "peter-terminal-utils install session",
-            "scripts": scripts,
-        }
-        with open(self._selection_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-    def write_header(self, manifest: Manifest, dry_run: bool, headless: bool) -> None:
-        """Write the log file header with session info."""
-        from datetime import datetime
-
-        enabled = manifest.get_enabled_scripts()
-        with open(self._log_file, "w") as f:
-            f.write(f"{'=' * 70}\n")
-            f.write("Peter's Linux Setup - Install Log\n")
-            f.write(f"{'=' * 70}\n")
-            f.write(f"Started: {datetime.now().isoformat()}\n")
-            f.write(f"Dry run: {dry_run}\n")
-            f.write(f"Headless: {headless}\n")
-            f.write(f"Scripts: {len(enabled)}\n")
-            f.write(f"{'=' * 70}\n\n")
-
-    def write_script_start(self, section_name: str, script_name: str) -> None:
-        """Log the start of a script execution."""
-        with open(self._log_file, "a") as f:
-            f.write(f"\n{'─' * 70}\n")
-            f.write(f"▶ {section_name} / {script_name}\n")
-            f.write(f"{'─' * 70}\n")
-
-    def write_output(self, lines: list[str]) -> None:
-        """Append output lines to the log."""
-        with open(self._log_file, "a") as f:
-            for line in lines:
-                # Strip ANSI codes for clean log output
-                f.write(strip_ansi(line) + "\n")
-
-    def write_script_result(
-        self, script_name: str, status: str, exit_code: int | None
-    ) -> None:
-        """Log the result of a script execution."""
-        with open(self._log_file, "a") as f:
-            if status == "success":
-                f.write(f"\n✓ {script_name} completed successfully\n")
-            elif status == "failed":
-                f.write(f"\n✗ {script_name} failed (exit code: {exit_code})\n")
-            elif status == "skipped":
-                f.write(f"\n○ {script_name} skipped\n")
-
-    def write_footer(self, success: int, fail: int, cancelled: bool) -> None:
-        """Write the log file footer with summary."""
-        from datetime import datetime
-
-        with open(self._log_file, "a") as f:
-            f.write(f"\n{'=' * 70}\n")
-            if cancelled:
-                f.write("Installation cancelled\n")
-            f.write(f"Completed: {datetime.now().isoformat()}\n")
-            f.write(f"Results: {success} succeeded, {fail} failed\n")
-            f.write(f"{'=' * 70}\n")
 
 
 ###############################################################################
