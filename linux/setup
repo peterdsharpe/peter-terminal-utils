@@ -85,6 +85,9 @@ def wrap_line(line: str, width: int) -> list[str]:
     Wrapped lines end with a continuation indicator (↩), and continuation lines
     are indented with 2 spaces to visually distinguish them from new lines.
 
+    For very small widths (≤3), falls back to basic wrapping without indicators
+    to avoid infinite loops.
+
     Args:
         line: The line to wrap.
         width: Maximum width per wrapped segment.
@@ -97,8 +100,18 @@ def wrap_line(line: str, width: int) -> list[str]:
     if len(line) <= width:
         return [line]
 
-    result = []
     indent_len = len(WRAP_INDENT)
+
+    # Fall back to basic wrapping for very small widths where indicators don't fit
+    if width <= indent_len + 1:
+        result = []
+        while len(line) > width:
+            result.append(line[:width])
+            line = line[width:]
+        result.append(line)
+        return result
+
+    result = []
 
     # First segment: width - 1 chars + wrap indicator
     first_content_width = width - 1
