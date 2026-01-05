@@ -75,6 +75,46 @@ def strip_ansi(text: str) -> str:
     return text.translate(CONTROL_CHARS)
 
 
+def wrap_line(line: str, width: int) -> list[str]:
+    """Hard-wrap a line to the given width.
+
+    Args:
+        line: The line to wrap.
+        width: Maximum width per wrapped segment.
+
+    Returns:
+        List of wrapped line segments. Empty or short lines return as single-element list.
+    """
+    if not line or width <= 0:
+        return [line]
+    result = []
+    while len(line) > width:
+        result.append(line[:width])
+        line = line[width:]
+    result.append(line)
+    return result
+
+
+def wrap_lines(lines: list[str], width: int) -> list[str]:
+    """Wrap multiple lines to a given width, expanding tabs.
+
+    Each input line is processed: tabs expanded to 4 spaces, trailing whitespace
+    stripped, then hard-wrapped to fit within width.
+
+    Args:
+        lines: List of lines to wrap.
+        width: Maximum width per wrapped segment.
+
+    Returns:
+        Flattened list of wrapped line segments.
+    """
+    result = []
+    for line in lines:
+        cleaned = line.expandtabs(4).rstrip()
+        result.extend(wrap_line(cleaned, width))
+    return result
+
+
 ###############################################################################
 ### Scroll State
 ###############################################################################
@@ -591,9 +631,10 @@ def draw_scrollbar(
 class SelectionTUI:
     """Interactive TUI for selecting scripts to install."""
 
-    def __init__(self, stdscr: curses.window, manifest: Manifest):
+    def __init__(self, stdscr: curses.window, manifest: Manifest, scripts_dir: Path):
         self.stdscr = stdscr
         self.manifest = manifest
+        self.scripts_dir = scripts_dir
         self.colors = init_colors()
         self.cursor = 0  # Index in flat items list
         self.scroll = ScrollState()  # Scroll state for the tree view
@@ -820,7 +861,7 @@ class SelectionTUI:
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
         else:
             # Key bindings - line 1
-            keys1 = " [j/↓] Down   [k/↑] Up   [Space] Toggle   [/] Search   [x] Install   [q] Quit "
+            keys1 = " [j/k] Up/Down   [Space] Toggle   [o] View   [/] Search   [x] Install   [q] Quit "
             self.stdscr.addstr(footer_y + 1, 2, keys1[: width - 4], self.colors["cyan"])
 
             # Key bindings - line 2
@@ -940,6 +981,10 @@ class SelectionTUI:
         elif key == ord("?"):
             self.show_help()
 
+        # View script content
+        elif key == ord("o"):
+            self.show_script_content()
+
         return None
 
     def _apply_search_filter(self, items: list[Section | Script]) -> None:
@@ -970,6 +1015,7 @@ class SelectionTUI:
             "║  gg          Jump to top                 ║",
             "║  G           Jump to bottom              ║",
             "║  Space/Enter Toggle selection            ║",
+            "║  o           View script content         ║",
             "║  /           Search scripts              ║",
             "║  Esc         Clear search filter         ║",
             "║  1-5         Apply preset                ║",
@@ -997,6 +1043,169 @@ class SelectionTUI:
 
         self.stdscr.refresh()
         self.stdscr.getch()  # Wait for any key
+
+    def show_script_content(self) -> None:
+        """Show the full script content in a scrollable overlay.
+
+        Only works when the cursor is on a Script (not a Section).
+        Displays the shell script file in a box with scroll support.
+        """
+        items = self.manifest.get_flat_items()
+        if self.cursor >= len(items):
+            return
+
+        item = items[self.cursor]
+        if not isinstance(item, Script):
+            return  # Only show for scripts, not sections
+
+        # Read script file
+        script_path = self.scripts_dir / item.path
+        try:
+            with open(script_path) as f:
+                content = f.read()
+        except (OSError, IOError) as e:
+            content = f"Error reading script: {e}"
+
+        lines = content.split("\n")
+
+        # Overlay dimensions
+        height, width = self.stdscr.getmaxyx()
+        box_width = min(width - 4, 100)  # Max 100 chars wide, 2 char margin each side
+        box_height = height - 4  # 2 char margin top/bottom
+        start_x = (width - box_width) // 2
+        start_y = 2
+
+        # Content area (inside box borders)
+        content_width = box_width - 4  # 2 chars for border + 1 char padding each side
+        content_height = box_height - 4  # Header + separator + footer + border
+
+        # Wrap lines to content width
+        wrapped_lines = wrap_lines(lines, content_width)
+
+        # Scroll state for the overlay (uses wrapped line count)
+        scroll = ScrollState(offset=0, total=len(wrapped_lines), visible=content_height)
+        last_key = -1  # For detecting 'gg' sequence
+
+        while True:
+            # Draw box background
+            for y in range(box_height):
+                try:
+                    self.stdscr.addstr(
+                        start_y + y, start_x, " " * box_width, self.colors["reverse"]
+                    )
+                except curses.error:
+                    pass
+
+            # Draw box border
+            # Top border
+            header = f" {item.path} "
+            top_line = "╔" + "═" * (box_width - 2) + "╗"
+            # Insert header into top border
+            header_start = (box_width - len(header)) // 2
+            top_line = (
+                top_line[:header_start] + header + top_line[header_start + len(header) :]
+            )
+            try:
+                self.stdscr.addstr(
+                    start_y, start_x, top_line, self.colors["cyan"] | self.colors["bold"]
+                )
+            except curses.error:
+                pass
+
+            # Bottom border with scroll hint
+            scroll_hint = f" {scroll.offset + 1}-{min(scroll.offset + content_height, len(wrapped_lines))}/{len(wrapped_lines)} "
+            bot_line = "╚" + "═" * (box_width - 2) + "╝"
+            hint_start = (box_width - len(scroll_hint)) // 2
+            bot_line = (
+                bot_line[:hint_start]
+                + scroll_hint
+                + bot_line[hint_start + len(scroll_hint) :]
+            )
+            try:
+                self.stdscr.addstr(
+                    start_y + box_height - 1,
+                    start_x,
+                    bot_line,
+                    self.colors["cyan"] | self.colors["bold"],
+                )
+            except curses.error:
+                pass
+
+            # Side borders
+            for y in range(1, box_height - 1):
+                try:
+                    self.stdscr.addstr(
+                        start_y + y, start_x, "║", self.colors["cyan"] | self.colors["bold"]
+                    )
+                    self.stdscr.addstr(
+                        start_y + y,
+                        start_x + box_width - 1,
+                        "║",
+                        self.colors["cyan"] | self.colors["bold"],
+                    )
+                except curses.error:
+                    pass
+
+            # Draw content lines
+            for i in range(content_height):
+                line_idx = scroll.offset + i
+                y = start_y + 1 + i
+                x = start_x + 2
+
+                if line_idx < len(wrapped_lines):
+                    line = wrapped_lines[line_idx]
+                    try:
+                        self.stdscr.addstr(y, x, line.ljust(content_width))
+                    except curses.error:
+                        pass
+
+            # Draw scrollbar
+            scrollbar_x = start_x + box_width - 2
+            draw_scrollbar(
+                self.stdscr,
+                x=scrollbar_x,
+                y_start=start_y + 1,
+                height=content_height,
+                scroll=scroll,
+                color=self.colors["cyan"],
+            )
+
+            # Footer hint
+            hint = " [j/k] Scroll   [gg/G] Top/Bottom   [q/Esc] Close "
+            hint_y = start_y + box_height - 2
+            hint_x = start_x + (box_width - len(hint)) // 2
+            try:
+                self.stdscr.addstr(hint_y, hint_x, hint, self.colors["dim"])
+            except curses.error:
+                pass
+
+            self.stdscr.refresh()
+
+            # Handle input
+            key = self.stdscr.getch()
+
+            # Vim-style gg (go to top)
+            if key == ord("g"):
+                if last_key == ord("g"):
+                    scroll.go_top()
+                    last_key = -1
+                else:
+                    last_key = key
+                continue
+            last_key = -1
+
+            if key in (27, ord("q")):  # Escape or 'q' to close
+                break
+            elif key in (ord("j"), ord("s"), curses.KEY_DOWN):
+                scroll.scroll_down()
+            elif key in (ord("k"), ord("w"), curses.KEY_UP):
+                scroll.scroll_up()
+            elif key == curses.KEY_NPAGE:  # Page Down
+                scroll.page_down()
+            elif key == curses.KEY_PPAGE:  # Page Up
+                scroll.page_up()
+            elif key == ord("G"):  # Go to bottom
+                scroll.go_bottom()
 
     def run(self) -> bool:
         """Run the selection TUI. Returns True if user wants to execute, False to quit."""
@@ -1325,12 +1534,16 @@ class ExecutionTUI:
         # Get viewed script's output
         if 0 <= self.viewing_idx < len(self.statuses):
             viewed = self.statuses[self.viewing_idx]
-            lines = viewed.output_lines
+            raw_lines = viewed.output_lines
         else:
-            lines = []
+            raw_lines = []
 
-        # Update scroll state
-        self.right_scroll.total = len(lines)
+        # Strip ANSI codes and wrap lines to panel width
+        cleaned_lines = [strip_ansi(line) for line in raw_lines]
+        wrapped_lines = wrap_lines(cleaned_lines, panel_width)
+
+        # Update scroll state using wrapped line count
+        self.right_scroll.total = len(wrapped_lines)
         self.right_scroll.visible = panel_height
 
         # Auto-scroll to bottom only when following the running script
@@ -1351,10 +1564,8 @@ class ExecutionTUI:
             except curses.error:
                 pass
 
-            if line_idx < len(lines):
-                line = lines[line_idx]
-                # Strip ANSI escape codes and truncate
-                line = strip_ansi(line).rstrip()[:panel_width]
+            if line_idx < len(wrapped_lines):
+                line = wrapped_lines[line_idx]
                 try:
                     self.stdscr.addstr(y, panel_x, line, self.colors["dim"])
                 except curses.error:
@@ -1669,7 +1880,7 @@ def run_interactive(
 ) -> int:
     """Run the interactive TUI. Returns exit code."""
     # Selection phase
-    selection_tui = SelectionTUI(stdscr, manifest)
+    selection_tui = SelectionTUI(stdscr, manifest, scripts_dir)
     if not selection_tui.run():
         return 0  # User quit
 
