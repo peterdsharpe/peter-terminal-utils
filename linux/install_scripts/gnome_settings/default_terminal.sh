@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Default terminal configuration"
+skip_if_not_gnome "Default terminal configuration"
 
 # Check if Ptyxis is installed
 if ! command -v ptyxis &> /dev/null; then

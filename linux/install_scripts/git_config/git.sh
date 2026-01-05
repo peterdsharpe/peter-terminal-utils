@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Git Config
-# @description: Aliases, delta pager, git-lfs, merge/rebase settings
-# @depends: git_user.sh
+# @description: Aliases, git-lfs, merge/rebase settings
+# @depends: core_packages.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
@@ -19,11 +19,6 @@ run git config --global alias.br branch
 run git config --global alias.lg "log --oneline --graph --decorate"
 run git config --global alias.amend "commit --amend --no-edit"
 run git config --global alias.last "log -1 HEAD --stat"
-# Delta integration for better diffs
-run git config --global core.pager delta
-run git config --global interactive.diffFilter 'delta --color-only'
-run git config --global delta.navigate true
-run git config --global delta.side-by-side true
 # Better merge/rebase defaults
 run git config --global merge.conflictstyle diff3
 run git config --global rebase.autoStash true

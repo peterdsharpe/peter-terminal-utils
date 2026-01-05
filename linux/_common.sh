@@ -334,6 +334,129 @@ is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
 is_wsl2() { is_wsl && grep -qi "wsl2" /proc/version 2>/dev/null; }
 
 ###############################################################################
+### Desktop Environment Detection
+###############################################################################
+
+detect_desktop() {
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*) echo "gnome" ;;
+        *KDE*|*Plasma*) echo "kde" ;;
+        *XFCE*) echo "xfce" ;;
+        *Cinnamon*) echo "cinnamon" ;;
+        *MATE*) echo "mate" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+DESKTOP_ENV=$(detect_desktop)
+
+is_gnome() { [[ "$DESKTOP_ENV" == "gnome" ]]; }
+is_kde() { [[ "$DESKTOP_ENV" == "kde" ]]; }
+is_cinnamon() { [[ "$DESKTOP_ENV" == "cinnamon" ]]; }
+
+### Skip script if not running GNOME desktop
+### Usage: skip_if_not_gnome "Script Name"
+skip_if_not_gnome() {
+    local name="$1"
+    if ! is_gnome; then
+        print_skip "$name (requires GNOME desktop)"
+        exit 0
+    fi
+}
+
+###############################################################################
+### Package Manager Detection
+###############################################################################
+
+detect_pkg_manager() {
+    if command -v apt-get &>/dev/null; then echo "apt"
+    elif command -v dnf &>/dev/null; then echo "dnf"
+    elif command -v pacman &>/dev/null; then echo "pacman"
+    elif command -v zypper &>/dev/null; then echo "zypper"
+    else echo "unknown"
+    fi
+}
+
+PKG_MANAGER=$(detect_pkg_manager)
+
+### Install packages using the detected package manager
+### Usage: pkg_install package1 package2 ...
+pkg_install() {
+    case "$PKG_MANAGER" in
+        apt) sudo apt-get install -yq "$@" ;;
+        dnf) sudo dnf install -y "$@" ;;
+        pacman) sudo pacman -S --noconfirm "$@" ;;
+        zypper) sudo zypper install -y "$@" ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
+    esac
+}
+
+### Update package manager cache
+### Usage: pkg_update
+pkg_update() {
+    case "$PKG_MANAGER" in
+        apt) sudo apt-get update -qq ;;
+        dnf) sudo dnf check-update || true ;;  # Returns 100 if updates available
+        pacman) sudo pacman -Sy ;;
+        zypper) sudo zypper refresh ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
+    esac
+}
+
+### Upgrade all packages
+### Usage: pkg_upgrade
+pkg_upgrade() {
+    case "$PKG_MANAGER" in
+        apt) sudo apt-get upgrade -yq ;;
+        dnf) sudo dnf upgrade -y ;;
+        pacman) sudo pacman -Su --noconfirm ;;
+        zypper) sudo zypper update -y ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
+    esac
+}
+
+### Map package names across distros
+### Usage: pkg_name "apt_name" -> returns distro-appropriate name
+### Some packages have different names on different distros
+pkg_name() {
+    local apt_name="$1"
+    case "$PKG_MANAGER" in
+        apt) echo "$apt_name" ;;
+        dnf)
+            case "$apt_name" in
+                build-essential) echo "gcc gcc-c++ make" ;;
+                ncdu) echo "ncdu" ;;
+                nvtop) echo "nvtop" ;;
+                net-tools) echo "net-tools" ;;
+                openssh-server) echo "openssh-server" ;;
+                p7zip-full) echo "p7zip p7zip-plugins" ;;
+                gnome-shell-extension-manager) echo "gnome-extensions-app" ;;
+                *) echo "$apt_name" ;;
+            esac ;;
+        pacman)
+            case "$apt_name" in
+                build-essential) echo "base-devel" ;;
+                ncdu) echo "ncdu" ;;
+                nvtop) echo "nvtop" ;;
+                net-tools) echo "net-tools" ;;
+                openssh-server) echo "openssh" ;;
+                p7zip-full) echo "p7zip" ;;
+                gnome-shell-extension-manager) echo "extension-manager" ;;
+                gnome-tweaks) echo "gnome-tweaks" ;;
+                vlc) echo "vlc" ;;
+                *) echo "$apt_name" ;;
+            esac ;;
+        zypper)
+            case "$apt_name" in
+                build-essential) echo "gcc gcc-c++ make" ;;
+                p7zip-full) echo "p7zip" ;;
+                *) echo "$apt_name" ;;
+            esac ;;
+        *) echo "$apt_name" ;;
+    esac
+}
+
+###############################################################################
 ### GitHub Release Architecture Mapping
 ###############################################################################
 
@@ -359,6 +482,12 @@ get_release_arch() {
             case "$ARCH" in
                 x86_64) echo "Linux_x86_64" ;;
                 arm64)  echo "Linux_arm64" ;;
+            esac ;;
+        # shellcheck uses linux.arch format
+        shellcheck)
+            case "$ARCH" in
+                x86_64) echo "linux.x86_64" ;;
+                arm64)  echo "linux.aarch64" ;;
             esac ;;
         *)
             echo "Unknown tool for arch mapping: $tool" >&2
@@ -412,6 +541,8 @@ install_github_binary() {
         "$base_url/${version}/${tool}_${arch_suffix}.tar.gz"
         # btop style: btop-x86_64-linux-musl.tbz
         "$base_url/v${version}/${tool}-${arch_suffix}.tbz"
+        # shellcheck style: shellcheck-v0.10.0.linux.x86_64.tar.xz
+        "$base_url/v${version}/${tool}-v${version}.${arch_suffix}.tar.xz"
     )
 
     archive_url=""
@@ -441,6 +572,9 @@ install_github_binary() {
             ;;
         *.tbz|*.tar.bz2)
             tar xjf "$archive_file" -C "$tmpdir" --strip-components="$strip" && extract_ok=true
+            ;;
+        *.tar.xz)
+            tar xJf "$archive_file" -C "$tmpdir" --strip-components="$strip" && extract_ok=true
             ;;
         *.zip)
             unzip -q "$archive_file" -d "$tmpdir" && extract_ok=true

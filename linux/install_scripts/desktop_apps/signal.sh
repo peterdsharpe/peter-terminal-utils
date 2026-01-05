@@ -1,18 +1,23 @@
 #!/bin/bash
 # @name: Signal Desktop
-# @description: Encrypted messaging app via official apt repository
-# @requires: sudo
+# @description: Encrypted messaging app via Flatpak (cross-distro)
+# @depends: flatpak_apps.sh
 # @headless: skip
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-install_signal() {
-    # Official Signal apt repository - https://signal.org/download/linux/
-    curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor | sudo tee /usr/share/keyrings/signal-desktop-keyring.gpg > /dev/null || return 1
-    echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/signal-desktop-keyring.gpg] https://updates.signal.org/desktop/apt xenial main' | sudo tee /etc/apt/sources.list.d/signal-xenial.list > /dev/null || return 1
-    sudo apt-get update -qq || return 1
-    sudo apt-get install -yq signal-desktop
-}
+skip_if_headless "Signal Desktop"
 
-ensure_command "Signal Desktop" signal-desktop install_signal sudo
+# Check if already installed (flatpak or native)
+if command -v signal-desktop &>/dev/null || flatpak list --app 2>/dev/null | grep -q "org.signal.Signal"; then
+    print_skip "Signal Desktop already installed"
+    exit 0
+fi
+
+# Install via Flatpak (cross-distro)
+if command -v flatpak &>/dev/null; then
+    step "Installing Signal Desktop via Flatpak" flatpak install -y --user flathub org.signal.Signal
+else
+    print_skip "Signal Desktop (flatpak not available - install flatpak_apps.sh first)"
+fi

@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Desktop background"
+skip_if_not_gnome "Desktop background"
 
 LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
 WALLPAPER="$LINUX_DIR/../assets/Thank You (3840x2160).png"

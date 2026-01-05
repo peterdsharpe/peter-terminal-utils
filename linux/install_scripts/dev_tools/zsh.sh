@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: zsh
 # @description: Powerful shell with advanced features and plugins
+# @depends: core_packages.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

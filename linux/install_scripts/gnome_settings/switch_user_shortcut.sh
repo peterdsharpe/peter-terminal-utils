@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Switch user shortcut"
+skip_if_not_gnome "Switch user shortcut"
 
 # Configuration
 BINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/switch-user/"

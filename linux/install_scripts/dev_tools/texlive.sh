@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: TeX Live
 # @description: Full TeX Live distribution (7+GB, ~30 min)
+# @depends: core_packages.sh
 # @requires: sudo
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "GNOME Terminal configuration"
+skip_if_not_gnome "GNOME Terminal configuration"
 
 # Set GNOME Terminal font (only if GNOME Terminal is installed)
 if gsettings list-schemas | grep -q "org.gnome.Terminal" 2>/dev/null; then

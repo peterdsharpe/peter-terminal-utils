@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Libinput Config
 # @description: Custom scroll speed via LD_PRELOAD
+# @depends: core_packages.sh
 # @requires: sudo
 # @headless: skip
 # @parallel: false
@@ -13,6 +14,7 @@ standalone_init
 # because they can't access the host's /usr/local/lib64 - see linux/docs/libinput-config.md
 
 skip_if_headless "libinput-config"
+skip_if_not_gnome "libinput-config"
 
 # Requires sudo for system-wide installation
 if [[ "${HAS_SUDO:-false}" == false ]]; then
@@ -33,7 +35,12 @@ fi
 
 # Build dependencies + clone + build + install
 step_start "Installing libinput-config"
-run sudo apt-get install -y meson ninja-build libinput-dev
+case "$PKG_MANAGER" in
+    apt) run sudo apt-get install -y meson ninja-build libinput-dev ;;
+    dnf) run sudo dnf install -y meson ninja-build libinput-devel ;;
+    pacman) run sudo pacman -S --noconfirm meson ninja libinput ;;
+    *) print_error "Unsupported package manager for libinput-config dependencies"; exit 1 ;;
+esac
 tmpdir=$(mktemp -d)
 run git clone --depth 1 https://gitlab.com/warningnonpotablewater/libinput-config.git "$tmpdir/libinput-config"
 run meson setup "$tmpdir/libinput-config/build" "$tmpdir/libinput-config"

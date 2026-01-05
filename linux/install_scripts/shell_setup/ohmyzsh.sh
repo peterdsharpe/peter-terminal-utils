@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Oh My Zsh
 # @description: Zsh configuration framework with plugins and themes
+# @depends: shell_packages.sh, core_packages.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: IPy
 # @description: Interactive Python with NumPy, Matplotlib, etc.
-# @depends: uv.sh
+# @depends: uv.sh, local_bin.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

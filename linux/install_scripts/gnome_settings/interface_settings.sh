@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Interface settings"
+skip_if_not_gnome "Interface settings"
 
 ### Appearance
 step "Setting dark theme" gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'

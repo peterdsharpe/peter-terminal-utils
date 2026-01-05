@@ -1,12 +1,14 @@
 #!/bin/bash
 # @name: Just Perfection
 # @description: GNOME extension to disable animations and popup delays
+# @depends: core_packages.sh
 # @headless: skip
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Just Perfection"
+skip_if_not_gnome "Just Perfection"
 
 # Only run if gnome-extensions is available
 if ! command -v gnome-extensions &> /dev/null; then

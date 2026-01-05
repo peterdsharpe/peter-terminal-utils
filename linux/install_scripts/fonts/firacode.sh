@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Fira Code Nerd Font
 # @description: Programming font with ligatures and icons
+# @depends: core_packages.sh
 # @parallel: true
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

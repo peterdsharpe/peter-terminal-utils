@@ -1,7 +1,6 @@
 #!/bin/bash
 # @name: Flatpak Apps
 # @description: Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero via Flatpak
-# @requires: sudo
 # @headless: skip
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -23,6 +22,11 @@ install_flatpak() {
 if ! command -v flatpak &>/dev/null; then
     if [[ "$HAS_SUDO" == true ]]; then
         step "Installing Flatpak" install_flatpak
+        # Verify installation succeeded before continuing
+        if ! command -v flatpak &>/dev/null; then
+            print_error "Flatpak installation failed"
+            exit 1
+        fi
     else
         print_skip "Flatpak (requires sudo to install)"
         exit 0

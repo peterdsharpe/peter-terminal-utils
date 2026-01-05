@@ -7,6 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "File manager configuration"
+skip_if_not_gnome "File manager configuration"
 
 ### Set Nemo as default file manager
 step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory application/x-gnome-saved-search
