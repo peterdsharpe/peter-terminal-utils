@@ -817,13 +817,65 @@ def apply_preset(manifest: Manifest, preset_key: str) -> None:
 ###############################################################################
 
 
+###############################################################################
+### Box Drawing Characters
+###############################################################################
+
+# Rounded corner box-drawing (btop-style)
+BOX_TL = "╭"  # Top-left
+BOX_TR = "╮"  # Top-right
+BOX_BL = "╰"  # Bottom-left
+BOX_BR = "╯"  # Bottom-right
+BOX_H = "─"  # Horizontal
+BOX_V = "│"  # Vertical
+BOX_DH = "═"  # Double horizontal (for headers)
+
+# Tab-style connectors
+TAB_DOWN = "┐"  # Tab end going down
+TAB_UP = "┘"  # Tab end going up
+TAB_START = "┌"  # Tab start
+
+
 def make_title_bar(title: str, width: int) -> str:
     """Create a centered title bar with ═ borders.
 
     Example: "══════ My Title ══════" (padded to width).
     """
     padding = (width - len(title) - 2) // 2
-    return "═" * padding + title + "═" * (width - padding - len(title) - 2)
+    return BOX_DH * padding + title + BOX_DH * (width - padding - len(title) - 2)
+
+
+def make_panel_header(label: str, width: int, right_label: str = "") -> str:
+    """Create a btop-style tab header line with rounded corners.
+
+    Example: "╭─┐ Scripts ┌────────────────────────╮"
+
+    Args:
+        label: Main label text to display in tab.
+        width: Total width of the header line.
+        right_label: Optional right-aligned label (e.g., elapsed time).
+
+    Returns:
+        Formatted header string with tab styling.
+    """
+    # Build tab: ╭─┐ Label ┌
+    tab = f"{BOX_TL}{BOX_H}{TAB_DOWN} {label} {TAB_START}"
+    tab_len = len(tab)
+
+    # Build right section if provided: ┐ RightLabel ┌
+    if right_label:
+        right_section = f"{TAB_DOWN} {right_label} {TAB_START}"
+        right_len = len(right_section)
+    else:
+        right_section = ""
+        right_len = 0
+
+    # Calculate fill between tab and right section (or right corner)
+    fill_len = width - tab_len - right_len - 1  # -1 for right corner
+    if fill_len < 0:
+        fill_len = 0
+
+    return tab + BOX_H * fill_len + right_section + BOX_TR
 
 
 def init_colors() -> dict[ColorName, int]:
@@ -868,6 +920,7 @@ def draw_scrollbar(
     height: int,
     scroll: ScrollState,
     color: int,
+    focused: bool = True,
 ) -> None:
     """Draw a vertical scrollbar showing position in content.
 
@@ -877,7 +930,8 @@ def draw_scrollbar(
         y_start: First row of the scrollbar.
         height: Height of the scrollbar area.
         scroll: Current scroll state.
-        color: Color attribute for the scrollbar (use for focus indication).
+        color: Color attribute for the scrollbar.
+        focused: Whether the parent panel is focused (affects thumb style).
     """
     if height < 2 or scroll.total <= scroll.visible:
         # No scrollbar needed if everything fits
@@ -890,12 +944,16 @@ def draw_scrollbar(
     max_offset = max(1, scroll.total - scroll.visible)
     thumb_pos = int((height - thumb_size) * scroll.offset / max_offset)
 
+    # Use different characters based on focus state
+    thumb_char = "█" if focused else "▓"
+    track_char = "░"
+
     for i in range(height):
         y = y_start + i
         if thumb_pos <= i < thumb_pos + thumb_size:
-            char = "█"  # Thumb
+            char = thumb_char
         else:
-            char = "░"  # Track
+            char = track_char
         try:
             stdscr.addstr(y, x, char, color)
         except curses.error:
@@ -986,17 +1044,18 @@ class SelectionTUI:
 
     def draw_header(self, width: int) -> None:
         """Draw the header section."""
-        title = " Peter Sharpe's Linux Setup "
+        title = " 🐧 Peter Sharpe's Linux Setup "
         header_line = make_title_bar(title, width)
         self.stdscr.attron(self.colors["header"] | self.colors["bold"])
         self.stdscr.addstr(0, 0, header_line[:width])
         self.stdscr.attroff(self.colors["header"] | self.colors["bold"])
 
-        # Subtitle
-        subtitle = f"Preset: [{self.current_preset}] {PRESETS[self.current_preset].description}"
-        self.stdscr.addstr(1, 2, subtitle[: width - 4], self.colors["cyan"])
+        # Subtitle with preset indicator
+        preset_desc = PRESETS[self.current_preset].description
+        subtitle = f"  ▸ Preset [{self.current_preset}]: {preset_desc}"
+        self.stdscr.addstr(1, 0, subtitle[: width - 2], self.colors["cyan"])
 
-        # Separator
+        # Elegant separator
         self.stdscr.addstr(2, 0, "─" * width, self.colors["dim"])
 
     def draw_tree(self, height: int, width: int) -> None:
@@ -1043,19 +1102,22 @@ class SelectionTUI:
     def draw_section(
         self, y: int, width: int, section: Section, is_selected: bool
     ) -> None:
-        """Draw a section header."""
+        """Draw a section header with folder icon."""
         state = section.state
         if state == "all":
             checkbox = "[x]"
+            icon = "📂"
             color = self.colors["green"]
         elif state == "partial":
             checkbox = "[~]"
+            icon = "📂"
             color = self.colors["yellow"]
         else:
             checkbox = "[ ]"
+            icon = "📁"
             color = self.colors["dim"]
 
-        line = f"  {checkbox} {section.name}"
+        line = f" {checkbox} {icon} {section.name}"
 
         # Combine with reverse if selected
         rev = self.colors["reverse"] if is_selected else 0
@@ -1474,26 +1536,26 @@ class SelectionTUI:
         height, width = self.stdscr.getmaxyx()
 
         help_text = [
-            "╔══════════════════════════════════════════╗",
-            "║            Keyboard Shortcuts            ║",
-            "╠══════════════════════════════════════════╣",
-            "║  j, k, ↑↓    Move cursor up/down         ║",
-            "║  PgUp/PgDn   Page up/down                ║",
-            "║  gg          Jump to top                 ║",
-            "║  G           Jump to bottom              ║",
-            "║  Space/Enter Toggle selection            ║",
-            "║  Click       Select / toggle item        ║",
-            "║  o           View script content         ║",
-            "║  /           Search scripts              ║",
-            "║  Esc         Clear search filter         ║",
-            "║  1-5         Apply preset                ║",
-            "║  x           Start installation          ║",
-            "║  q           Quit                        ║",
-            "║  ?           Show this help              ║",
-            "╠══════════════════════════════════════════╣",
-            "║  Sections toggle all children            ║",
-            "║  [x]=enabled [~]=partial [ ]=disabled    ║",
-            "╚══════════════════════════════════════════╝",
+            "╭──────────────────────────────────────────╮",
+            "│          ⌨  Keyboard Shortcuts           │",
+            "├──────────────────────────────────────────┤",
+            "│  j, k, ↑↓    Move cursor up/down         │",
+            "│  PgUp/PgDn   Page up/down                │",
+            "│  gg          Jump to top                 │",
+            "│  G           Jump to bottom              │",
+            "│  Space/Enter Toggle selection            │",
+            "│  Click       Select / toggle item        │",
+            "│  o           View script content         │",
+            "│  /           Search scripts              │",
+            "│  Esc         Clear search filter         │",
+            "│  1-5         Apply preset                │",
+            "│  x           Start installation          │",
+            "│  q           Quit                        │",
+            "│  ?           Show this help              │",
+            "├──────────────────────────────────────────┤",
+            "│  Sections toggle all children            │",
+            "│  [x]=enabled [~]=partial [ ]=disabled    │",
+            "╰──────────────────────────────────────────╯",
             "",
             "    Press any key or click outside to close",
         ]
@@ -1581,19 +1643,17 @@ class SelectionTUI:
         content_start_y = start_y + 1
 
         while True:
-            # Draw box background
+            # Draw box background (clear area with spaces, no reverse attribute)
             for y in range(box_height):
                 try:
-                    self.stdscr.addstr(
-                        start_y + y, start_x, " " * box_width, self.colors["reverse"]
-                    )
+                    self.stdscr.addstr(start_y + y, start_x, " " * box_width)
                 except curses.error:
                     pass
 
-            # Draw box border
-            # Top border
+            # Draw box border with rounded corners
+            # Top border with centered header
             header = f" {item.path} "
-            top_line = "╔" + "═" * (box_width - 2) + "╗"
+            top_line = BOX_TL + BOX_H * (box_width - 2) + BOX_TR
             # Insert header into top border
             header_start = (box_width - len(header)) // 2
             top_line = (
@@ -1606,9 +1666,9 @@ class SelectionTUI:
             except curses.error:
                 pass
 
-            # Bottom border with scroll hint
+            # Bottom border with scroll hint (rounded corners)
             scroll_hint = f" {scroll.offset + 1}-{min(scroll.offset + content_height, len(wrapped_lines))}/{len(wrapped_lines)} "
-            bot_line = "╚" + "═" * (box_width - 2) + "╝"
+            bot_line = BOX_BL + BOX_H * (box_width - 2) + BOX_BR
             hint_start = (box_width - len(scroll_hint)) // 2
             bot_line = (
                 bot_line[:hint_start]
@@ -1625,22 +1685,22 @@ class SelectionTUI:
             except curses.error:
                 pass
 
-            # Side borders
+            # Side borders (single line to match rounded corners)
             for y in range(1, box_height - 1):
                 try:
                     self.stdscr.addstr(
-                        start_y + y, start_x, "║", self.colors["cyan"] | self.colors["bold"]
+                        start_y + y, start_x, BOX_V, self.colors["cyan"] | self.colors["bold"]
                     )
                     self.stdscr.addstr(
                         start_y + y,
                         start_x + box_width - 1,
-                        "║",
+                        BOX_V,
                         self.colors["cyan"] | self.colors["bold"],
                     )
                 except curses.error:
                     pass
 
-            # Draw content lines
+            # Draw content lines (always draw to clear reverse background)
             for i in range(content_height):
                 line_idx = scroll.offset + i
                 y = start_y + 1 + i
@@ -1648,10 +1708,12 @@ class SelectionTUI:
 
                 if line_idx < len(wrapped_lines):
                     line = wrapped_lines[line_idx]
-                    try:
-                        self.stdscr.addstr(y, x, line.ljust(content_width))
-                    except curses.error:
-                        pass
+                else:
+                    line = ""  # Empty line for content beyond scroll range
+                try:
+                    self.stdscr.addstr(y, x, line.ljust(content_width))
+                except curses.error:
+                    pass
 
             # Draw scrollbar
             draw_scrollbar(
@@ -1828,6 +1890,8 @@ class ExecutionTUI:
         self.drag_state = DragState()
         # Braille spinner for running scripts
         self.spinner = BrailleSpinner()
+        # Track start time for elapsed time display
+        self.start_time = time.monotonic()
 
     def _set_running_idx(self, idx: int) -> None:
         """Update running index, and viewing index if following."""
@@ -2089,43 +2153,93 @@ class ExecutionTUI:
 
         self.stdscr.refresh()
 
+    def _format_elapsed(self) -> str:
+        """Format elapsed time as HH:MM:SS or MM:SS."""
+        elapsed = int(time.monotonic() - self.start_time)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _build_sparkline(self) -> str:
+        """Build a mini braille sparkline showing script results.
+
+        Uses braille characters to show success/failure pattern at a glance.
+        """
+        # Map status to braille height (0-4 dots high)
+        chars = []
+        for status in self.statuses:
+            if status.status == "success":
+                chars.append("⣿")  # Full - success
+            elif status.status == "failed":
+                chars.append("⣀")  # Low - failure (will be colored red)
+            elif status.status == "running":
+                chars.append("⣷")  # Animated partial
+            elif status.status == "skipped":
+                chars.append("⣤")  # Medium - skipped
+            else:  # pending
+                chars.append("⣀")  # Low dots - pending
+        return "".join(chars[-20:])  # Show last 20 scripts max
+
     def draw_header(self, width: int) -> None:
-        """Draw the header with progress bar."""
+        """Draw the header with btop-style tab, elapsed time, and sparkline."""
         completed = sum(
             1 for s in self.statuses if s.status in ("success", "failed", "skipped")
         )
         total = len(self.statuses)
 
+        # Determine title and color based on state
         if self.cancelled:
-            title = " Installation Cancelled "
+            title = "Installation Cancelled"
             title_color = self.colors["yellow"]
         elif completed == total:
             failed = sum(1 for s in self.statuses if s.status == "failed")
             if failed > 0:
-                title = f" Installation Complete - {failed} Failed "
+                title = f"Complete - {failed} Failed"
                 title_color = self.colors["red"]
             else:
-                title = " Installation Complete "
+                title = "✓ Complete"
                 title_color = self.colors["green"]
         else:
-            title = f" Installing... [{completed}/{total}] "
+            title = f"Installing {completed}/{total}"
             title_color = self.colors["cyan"]
 
         if self.dry_run:
-            title = f" [DRY RUN]{title}"
+            title = f"[DRY RUN] {title}"
 
-        header_line = make_title_bar(title, width)
+        # Build tab-style header with elapsed time
+        elapsed = self._format_elapsed()
+        header_line = make_panel_header(title, width, elapsed)
         self.stdscr.attron(title_color | self.colors["bold"])
-        self.stdscr.addstr(0, 0, header_line[:width])
+        try:
+            self.stdscr.addstr(0, 0, header_line[:width])
+        except curses.error:
+            pass
         self.stdscr.attroff(title_color | self.colors["bold"])
 
-        # Draw progress bar on line 1
-        bar_width = min(40, width - 20)
+        # Draw smooth gradient progress bar with sparkline on line 1
+        bar_width = min(35, width - 30)
         if total > 0 and bar_width > 5:
-            filled = int(bar_width * completed / total)
-            bar = "█" * filled + "░" * (bar_width - filled)
-            pct = int(100 * completed / total)
-            progress_str = f" [{bar}] {pct:3d}% "
+            # Calculate progress with 8x precision (8 fractional states per char)
+            progress = completed / total
+            filled_chars = int(bar_width * progress)
+            fraction = (bar_width * progress) - filled_chars
+
+            # Fractional block characters: ▏▎▍▌▋▊▉█ (1/8 to 8/8)
+            fractional_blocks = " ▏▎▍▌▋▊▉█"
+            partial_idx = int(fraction * 8)
+            partial_char = fractional_blocks[partial_idx] if filled_chars < bar_width else ""
+
+            bar = "█" * filled_chars + partial_char
+            bar = bar.ljust(bar_width, "░")
+
+            pct = int(100 * progress)
+
+            # Build sparkline
+            sparkline = self._build_sparkline()
+
+            progress_str = f"   {bar} {pct:3d}%  {sparkline}"
             try:
                 self.stdscr.addstr(1, 2, progress_str[: width - 4], self.colors["cyan"])
             except curses.error:
@@ -2142,12 +2256,13 @@ class ExecutionTUI:
         self.left_scroll.visible = visible_height
         self.left_scroll.ensure_visible(self.viewing_idx)
 
-        # Draw separator (reserve 1 column for scrollbar)
+        # Draw separator with focus-aware styling
         scrollbar_x = list_width - 1
         separator_x = list_width
+        sep_color = self.colors["cyan"] if self.focus_panel == "left" else self.colors["dim"]
         for y in range(start_row, height - 3):
             try:
-                self.stdscr.addch(y, separator_x, "│", self.colors["dim"])
+                self.stdscr.addch(y, separator_x, "│", sep_color)
             except curses.error:
                 pass
 
@@ -2163,10 +2278,9 @@ class ExecutionTUI:
             # Reserve 1 column for scrollbar
             self.draw_status_line(y, list_width - 2, status, is_viewing, is_running)
 
-        # Draw scrollbar with color based on focus
-        scrollbar_color = (
-            self.colors["cyan"] if self.focus_panel == "left" else self.colors["dim"]
-        )
+        # Draw scrollbar with focus-aware styling
+        left_focused = self.focus_panel == "left"
+        scrollbar_color = self.colors["cyan"] if left_focused else self.colors["dim"]
         draw_scrollbar(
             self.stdscr,
             x=scrollbar_x,
@@ -2174,6 +2288,7 @@ class ExecutionTUI:
             height=visible_height,
             scroll=self.left_scroll,
             color=scrollbar_color,
+            focused=left_focused,
         )
 
     def draw_status_line(
@@ -2275,10 +2390,9 @@ class ExecutionTUI:
                 except curses.error:
                     pass
 
-        # Draw scrollbar with color based on focus
-        scrollbar_color = (
-            self.colors["cyan"] if self.focus_panel == "right" else self.colors["dim"]
-        )
+        # Draw scrollbar with focus-aware styling
+        right_focused = self.focus_panel == "right"
+        scrollbar_color = self.colors["cyan"] if right_focused else self.colors["dim"]
         draw_scrollbar(
             self.stdscr,
             x=scrollbar_x,
@@ -2286,6 +2400,7 @@ class ExecutionTUI:
             height=panel_height,
             scroll=self.right_scroll,
             color=scrollbar_color,
+            focused=right_focused,
         )
 
     def draw_footer(self, height: int, width: int) -> None:
