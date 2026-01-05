@@ -1056,71 +1056,37 @@ EXECUTION_FOOTER_NOTES = [
 ]
 
 
-def build_help_box(
+def build_help_content(
     title: str,
     shortcuts: list[HelpEntry],
     footer_notes: list[str] | None = None,
 ) -> list[str]:
-    """Generate a rounded-corner help box from shortcut definitions.
+    """Generate help content lines for display in an overlay (no box borders).
 
     Args:
-        title: Title to display in the header row.
+        title: Title to display at the top.
         shortcuts: List of HelpEntry tuples (keys, description).
         footer_notes: Optional list of footer note lines.
 
     Returns:
-        List of strings forming a complete help box with borders.
+        List of plain text lines (title, shortcuts, notes) without borders.
     """
-    # Calculate required width based on content
     key_width = max(len(s.keys) for s in shortcuts)
-    desc_width = max(len(s.description) for s in shortcuts)
-    if footer_notes:
-        note_width = max(len(n) for n in footer_notes)
-        content_width = max(key_width + desc_width + 4, note_width)
-    else:
-        content_width = key_width + desc_width + 4
-
-    # Ensure title fits
-    content_width = max(content_width, len(title) + 4)
-
-    # Box width includes borders and padding
-    box_width = content_width + 4  # 2 for borders, 2 for padding
-
     lines: list[str] = []
 
-    # Top border
-    lines.append(BOX_TL + BOX_H * (box_width - 2) + BOX_TR)
-
-    # Title line (centered, padded to box_width - 2 for borders)
-    title_padded = title.center(box_width - 2)
-    lines.append(f"{BOX_V}{title_padded}{BOX_V}")
-
-    # Separator after title
-    lines.append("├" + BOX_H * (box_width - 2) + "┤")
+    # Title (centered over content)
+    lines.append(title)
+    lines.append("")
 
     # Shortcut lines
     for entry in shortcuts:
-        key_part = entry.keys.ljust(key_width)
-        desc_part = entry.description.ljust(desc_width)
-        content = f"  {key_part}  {desc_part}  "
-        # Pad to box width
-        content = content.ljust(box_width - 2)
-        lines.append(f"{BOX_V}{content}{BOX_V}")
+        lines.append(f"  {entry.keys.ljust(key_width)}   {entry.description}")
 
     # Footer notes if provided
     if footer_notes:
-        lines.append("├" + BOX_H * (box_width - 2) + "┤")
+        lines.append("")
         for note in footer_notes:
-            # Center note and pad to box_width - 2 (leaving room for borders)
-            content = note.center(box_width - 4).ljust(box_width - 2)
-            lines.append(f"{BOX_V}{content}{BOX_V}")
-
-    # Bottom border
-    lines.append(BOX_BL + BOX_H * (box_width - 2) + BOX_BR)
-
-    # Dismiss hint
-    lines.append("")
-    lines.append("Press any key or click outside to close".center(box_width))
+            lines.append(note)
 
     return lines
 
@@ -1506,49 +1472,9 @@ class BaseTUI:
                 break
 
     def show_help_overlay(self, shortcuts: list[HelpEntry], notes: list[str]) -> None:
-        """Show a help overlay with keyboard shortcuts.
-
-        Displays a centered box that closes on any key or mouse click.
-
-        Args:
-            shortcuts: List of HelpEntry(keys, description) tuples.
-            notes: Footer notes to display.
-        """
-        height, width = self.stdscr.getmaxyx()
-        help_lines = build_help_box("⌨  Keyboard Shortcuts", shortcuts, notes)
-
-        # Add "press any key" hint at the bottom
-        box_width = len(help_lines[0]) if help_lines else 0
-        hint = " Press any key or click to close "
-        if box_width > len(hint) + 4:
-            # Replace the bottom border line with one containing the hint
-            bot_line = help_lines[-1]
-            hint_start = (box_width - len(hint)) // 2
-            help_lines[-1] = bot_line[:hint_start] + hint + bot_line[hint_start + len(hint):]
-
-        # Center the help box
-        box_height = len(help_lines)
-        start_y = (height - box_height) // 2
-        start_x = (width - box_width) // 2
-
-        # Draw the help box
-        for i, line in enumerate(help_lines):
-            self.safe_addstr(start_y + i, start_x, line, self.colors["cyan"] | self.colors["bold"])
-
-        self.stdscr.refresh()
-
-        # Wait for any key or mouse click
-        while True:
-            key = self.stdscr.getch()
-            if key == -1:  # Timeout
-                continue
-            if key == curses.KEY_MOUSE:
-                # Any mouse event closes
-                try:
-                    curses.getmouse()  # Consume the event
-                except curses.error:
-                    pass
-            break  # Any key or mouse event closes
+        """Show help using the standard overlay display."""
+        help_lines = build_help_content("⌨  Keyboard Shortcuts", shortcuts, notes)
+        self.show_overlay(help_lines, "Help")
 
 
 ###############################################################################
