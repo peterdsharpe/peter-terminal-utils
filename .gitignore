@@ -11,3 +11,7 @@ __pycache__/
 ~*.*
 .venv/
 credentials.json
+
+
+# Install logs
+linux/logs/

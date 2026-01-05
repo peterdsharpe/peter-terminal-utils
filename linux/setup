@@ -1307,25 +1307,39 @@ class SelectionTUI:
                 # The presets line starts at x=2
                 line_x = mx - 2
                 if line_x >= 0:
-                    # Find which preset was clicked by scanning the rendered text
-                    preset_keys = "   ".join(
+                    # Build list of preset segments with their positions
+                    # Format: "[1] Desktop   [2] Headless   ..."
+                    segments = [
                         f"[{k}] {p.description.split(' - ')[0]}"
                         for k, p in PRESETS.items()
-                    )
-                    keys2 = f" {preset_keys}   [?] Help "
-                    # Check for preset number clicks [1], [2], etc.
-                    for preset_key in PRESETS:
+                    ]
+                    keys2 = " " + "   ".join(segments) + "   [?] Help "
+
+                    # Calculate exact click regions for each preset
+                    preset_keys = list(PRESETS.keys())
+                    for i, preset_key in enumerate(preset_keys):
                         pattern = f"[{preset_key}]"
-                        idx = keys2.find(pattern)
-                        if idx != -1 and idx <= line_x < idx + len(pattern) + 15:
+                        start = keys2.find(pattern)
+                        if start == -1:
+                            continue
+                        # End is either the start of the next preset or [?] Help
+                        if i + 1 < len(preset_keys):
+                            next_pattern = f"[{preset_keys[i + 1]}]"
+                            end = keys2.find(next_pattern)
+                        else:
+                            end = keys2.find("[?]")
+                        if end == -1:
+                            end = len(keys2)
+                        if start <= line_x < end:
                             self.current_preset = preset_key
                             apply_preset(self.manifest, preset_key)
                             self.filtered_indices = None
                             self.search_query = ""
                             return None
+
                     # Check for [?] Help
                     help_idx = keys2.find("[?]")
-                    if help_idx != -1 and help_idx <= line_x < help_idx + 10:
+                    if help_idx != -1 and help_idx <= line_x < len(keys2):
                         self.show_help()
                         return None
 
