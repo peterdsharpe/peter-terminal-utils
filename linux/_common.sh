@@ -112,6 +112,8 @@ _print_error() {
             echo -e "  ${YELLOW}Suggestion:${NC} Check your network connection and try again" ;;
         *"apt"*"lock"*|*"dpkg"*"lock"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Another package manager may be running. Try: sudo rm /var/lib/dpkg/lock* /var/lib/apt/lists/lock" ;;
+        *"dpkg was interrupted"*|*"dpkg --configure -a"*)
+            echo -e "  ${YELLOW}Suggestion:${NC} Previous package operation was interrupted. Fix with: sudo dpkg --configure -a" ;;
         *"ENOSPC"*|*"No space left"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Disk is full. Free up space and try again" ;;
         *"rate limit"*|*"API rate"*)
@@ -379,6 +381,22 @@ detect_pkg_manager() {
 
 PKG_MANAGER=$(detect_pkg_manager)
 
+### Check if dpkg is in a consistent state (apt-based distros only)
+### Returns 0 if OK, 1 if needs repair
+### Usage: pkg_check_health || { echo "Fix with: sudo dpkg --configure -a"; exit 1; }
+pkg_check_health() {
+    if [[ "$PKG_MANAGER" != "apt" ]]; then
+        return 0  # Only applies to apt-based distros
+    fi
+    # Check if dpkg has pending configurations
+    if sudo dpkg --audit 2>&1 | grep -q .; then
+        echo -e "${RED}✗${NC} Package database is inconsistent" >&2
+        echo -e "  ${YELLOW}Fix with:${NC} sudo dpkg --configure -a" >&2
+        return 1
+    fi
+    return 0
+}
+
 ### Install packages using the detected package manager
 ### Usage: pkg_install package1 package2 ...
 pkg_install() {
@@ -483,7 +501,7 @@ get_release_arch() {
                 x86_64) echo "Linux_x86_64" ;;
                 arm64)  echo "Linux_arm64" ;;
             esac ;;
-        # shellcheck uses linux.arch format
+        # ShellCheck (the linter) uses linux.arch format
         shellcheck)
             case "$ARCH" in
                 x86_64) echo "linux.x86_64" ;;

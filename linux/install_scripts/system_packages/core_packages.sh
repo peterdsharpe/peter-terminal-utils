@@ -8,6 +8,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 install_core_packages() {
+    # Pre-flight check: ensure package manager is in healthy state
+    if ! pkg_check_health; then
+        return 1
+    fi
+
     local packages=(
         # Version control (many scripts depend on these)
         git git-lfs
