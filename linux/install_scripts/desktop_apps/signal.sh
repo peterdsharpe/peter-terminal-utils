@@ -16,4 +16,3 @@ install_signal() {
 }
 
 ensure_command "Signal Desktop" signal-desktop install_signal sudo
-

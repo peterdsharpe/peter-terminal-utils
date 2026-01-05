@@ -17,4 +17,3 @@ ensure_command "Docker" docker install_docker sudo
 if [[ "$HAS_SUDO" == true ]] && ! groups | grep -q docker; then
     print_warning "Log out and back in to use docker without sudo"
 fi
-

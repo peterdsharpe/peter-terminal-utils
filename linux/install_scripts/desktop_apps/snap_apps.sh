@@ -38,4 +38,3 @@ install_snap_apps() {
 }
 
 require_sudo "Snap applications" install_snap_apps
-

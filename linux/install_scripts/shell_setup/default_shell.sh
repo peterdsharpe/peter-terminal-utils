@@ -15,4 +15,3 @@ if [ "$SHELL" != "$(which zsh)" ]; then
 else
     print_skip "Shell is already zsh"
 fi
-

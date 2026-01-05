@@ -69,4 +69,3 @@ add_local_to_bashrc_path() {
 if [[ "$HAS_SUDO" == false ]] && [ -d "$HOME/local/bin" ]; then
     step "Adding ~/local/bin to .bashrc PATH" add_local_to_bashrc_path
 fi
-
