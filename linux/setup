@@ -300,6 +300,9 @@ class ThreadedSpinner:
 
     Displays a braille spinner on the current line while a task runs.
     Uses carriage return to update the spinner in place.
+
+    When stdout is not a TTY (e.g., in Docker containers or piped output),
+    the animation is disabled and only static messages are shown.
     """
 
     def __init__(self, message: str = ""):
@@ -312,6 +315,7 @@ class ThreadedSpinner:
         self.spinner = BrailleSpinner()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._is_tty = sys.stdout.isatty()
 
     def _spin(self) -> None:
         """Spinner thread target. Continuously updates the spinner character."""
@@ -324,6 +328,12 @@ class ThreadedSpinner:
 
     def start(self) -> None:
         """Start the spinner animation in a background thread."""
+        if not self._is_tty:
+            # Non-TTY: just print the message once without animation
+            sys.stdout.write(f"  {self.message}")
+            sys.stdout.flush()
+            return
+
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
@@ -334,18 +344,31 @@ class ThreadedSpinner:
         Args:
             final_char: Character to display in place of spinner (e.g., "✓" or "✗").
             clear: If True, clear the entire line instead of showing final_char.
+
+        Note:
+            This method handles the newline internally. Callers should not add
+            additional newlines after calling stop() with a final_char.
         """
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=0.5)
             self._thread = None
 
+        if not self._is_tty:
+            # Non-TTY: append the result on the same line
+            if not clear and final_char:
+                sys.stdout.write(f" {final_char}\n")
+            elif not clear:
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
         if clear:
             # Clear the line
             sys.stdout.write(f"\r{' ' * (len(self.message) + 4)}\r")
         elif final_char:
-            # Replace spinner with final character
-            sys.stdout.write(f"\r{final_char} {self.message}")
+            # Replace spinner with final character and add newline
+            sys.stdout.write(f"\r{final_char} {self.message}\n")
         sys.stdout.flush()
 
 
@@ -396,6 +419,26 @@ class Script:
             return []
         # Parse comma-separated list, strip .sh extension if present
         return [d.strip().removesuffix(".sh") for d in depends_str.split(",")]
+
+    @property
+    def locks(self) -> set[str]:
+        """Resource locks this script requires exclusively (from @locks metadata).
+
+        Scripts with the same lock cannot run simultaneously.
+        Common locks: 'pkg' (package manager), 'cargo', 'fonts'.
+        """
+        locks_str = self.metadata.get("locks", "")
+        return {lock.strip() for lock in locks_str.split(",") if lock.strip()}
+
+    @property
+    def resource_type(self) -> str:
+        """Resource type affecting concurrency (from @resource metadata).
+
+        - 'network': I/O bound, allows high concurrency
+        - 'cpu': Compute bound, limited to CPU count
+        - 'mixed' (default): Moderate concurrency
+        """
+        return self.metadata.get("resource", "mixed")
 
 
 @dataclass
@@ -1966,6 +2009,80 @@ class ScriptStatus:
     exit_code: int | None = None
 
 
+@dataclass
+class ParallelScheduler:
+    """Scheduler for dependency-aware parallel script execution.
+
+    Manages:
+    - Dependency tracking: scripts start when dependencies complete
+    - Lock management: scripts with same locks don't run simultaneously
+    - Worker limits: respects max concurrent workers
+    """
+
+    statuses: list["ScriptStatus"]
+    max_workers: int
+    completed_paths: set[str] = field(default_factory=set)
+    held_locks: set[str] = field(default_factory=set)
+
+    def deps_satisfied(self, status: ScriptStatus) -> bool:
+        """Check if all dependencies have completed (success or failure)."""
+        for dep in status.script.dependencies:
+            # Dependencies are script names without .sh; completed_paths are full paths
+            # Check if any completed path ends with the dependency name
+            if not any(p.endswith(f"/{dep}.sh") or p == f"{dep}.sh" for p in self.completed_paths):
+                return False
+        return True
+
+    def has_lock_conflict(self, status: ScriptStatus) -> bool:
+        """Check if any required locks are currently held."""
+        return bool(status.script.locks & self.held_locks)
+
+    def get_ready_scripts(self, running_count: int) -> list[ScriptStatus]:
+        """Find scripts that can start now.
+
+        Returns scripts that:
+        - Are still pending
+        - Have all dependencies satisfied
+        - Don't conflict with currently held locks
+        - Fit within worker limit
+
+        Non-parallel scripts only run when nothing else is running.
+        """
+        ready: list[ScriptStatus] = []
+        for status in self.statuses:
+            if status.status != "pending":
+                continue
+
+            if not status.script.is_parallel:
+                # Non-parallel scripts run alone
+                if running_count == 0 and not ready:
+                    if self.deps_satisfied(status):
+                        ready.append(status)
+                        break  # Only one non-parallel at a time
+            else:
+                if not self.deps_satisfied(status):
+                    continue
+                if self.has_lock_conflict(status):
+                    continue
+                ready.append(status)
+                if running_count + len(ready) >= self.max_workers:
+                    break
+
+        return ready
+
+    def acquire_locks(self, status: ScriptStatus) -> None:
+        """Acquire all locks for a script."""
+        self.held_locks |= status.script.locks
+
+    def release_locks(self, status: ScriptStatus) -> None:
+        """Release all locks held by a script."""
+        self.held_locks -= status.script.locks
+
+    def mark_complete(self, status: ScriptStatus) -> None:
+        """Mark a script as completed for dependency tracking."""
+        self.completed_paths.add(status.script.path)
+
+
 class ExecutionTUI:
     """TUI for showing installation progress with live output."""
 
@@ -2345,11 +2462,19 @@ class ExecutionTUI:
     # Fill animation frames for running script (shows "filling up" effect)
     _FILL_FRAMES_FULL = ["⣀", "⣠", "⣤", "⣴", "⣶", "⣷", "⣿"]
     _FILL_FRAMES_LEFT = [0x40, 0x44, 0x46, 0x47]   # Left column fill progression
-    _FILL_FRAMES_RIGHT = [0x80, 0x90, 0xB0, 0xB8]  # Right column fill progression
+    _FILL_FRAMES_RIGHT = [0x80, 0xA0, 0xB0, 0xB8]  # Right column fill progression
 
-    def _get_animation_frame(self) -> int:
-        """Get current animation frame index based on elapsed time."""
-        return int((time.monotonic() - self.start_time) / 0.1)
+    def _get_animation_frame(self, script_index: int = 0) -> int:
+        """Get current animation frame index based on elapsed time.
+
+        Args:
+            script_index: Index of script for wave effect phase offset.
+                Each script's animation is offset by 0.15s per index,
+                creating a flowing wave across multiple running scripts.
+        """
+        base_time = time.monotonic() - self.start_time
+        phase_offset = script_index * 0.15  # Wave offset per script
+        return int((base_time + phase_offset) / 0.1)
 
     def _status_to_pattern(
         self, status: str, is_left: bool, frame_idx: int
@@ -2408,13 +2533,14 @@ class ExecutionTUI:
             List of (character, color_name) tuples for per-character rendering.
         """
         num_scripts = len(self.statuses)
-        frame_idx = self._get_animation_frame()
 
         # Mode 1: Direct 1:1 mapping (all scripts fit)
         if num_scripts <= max_width:
             segments: list[tuple[str, ColorName]] = []
-            for status in self.statuses:
+            for idx, status in enumerate(self.statuses):
                 if status.status == "running":
+                    # Wave effect: each running script has phase offset
+                    frame_idx = self._get_animation_frame(idx)
                     char = self._FILL_FRAMES_FULL[frame_idx % len(self._FILL_FRAMES_FULL)]
                 elif status.status == "success":
                     char = "⣿"
@@ -2438,8 +2564,11 @@ class ExecutionTUI:
                 else:
                     right_status = "pending"  # Placeholder for odd script
 
-                left_pattern = self._status_to_pattern(left_status, True, frame_idx)
-                right_pattern = self._status_to_pattern(right_status, False, frame_idx)
+                # Wave animation with per-script phase offset
+                left_frame = self._get_animation_frame(i)
+                right_frame = self._get_animation_frame(i + 1) if i + 1 < num_scripts else 0
+                left_pattern = self._status_to_pattern(left_status, True, left_frame)
+                right_pattern = self._status_to_pattern(right_status, False, right_frame)
                 combined = chr(0x2800 | left_pattern | right_pattern)
 
                 # Use worst status for color
@@ -2460,7 +2589,11 @@ class ExecutionTUI:
             ratio = completed / len(group)
 
             if "running" in group_statuses:
-                # Animated for groups containing running script
+                # Wave animation - use index of first running script in group
+                running_idx = next(
+                    (i + j for j, s in enumerate(group) if s.status == "running"), i
+                )
+                frame_idx = self._get_animation_frame(running_idx)
                 char = self._FILL_FRAMES_FULL[frame_idx % len(self._FILL_FRAMES_FULL)]
             elif ratio >= 1.0:
                 char = "⣿"
@@ -3126,38 +3259,11 @@ class ExecutionTUI:
         self.draw()
         return self._execute_script(status, silent=False)
 
-    def _group_by_parallelism(self) -> list[list[ScriptStatus]]:
-        """Group consecutive scripts by whether they can run in parallel.
-
-        Returns list of groups where each group is either:
-        - A single non-parallel script, or
-        - Multiple parallel-safe scripts that can run concurrently
-        """
-        groups: list[list[ScriptStatus]] = []
-        current_group: list[ScriptStatus] = []
-        current_is_parallel = False
-
-        for status in self.statuses:
-            is_parallel = status.script.is_parallel
-            if not current_group:
-                current_group = [status]
-                current_is_parallel = is_parallel
-            elif is_parallel and current_is_parallel:
-                # Continue parallel group
-                current_group.append(status)
-            else:
-                # Different parallelism - start new group
-                groups.append(current_group)
-                current_group = [status]
-                current_is_parallel = is_parallel
-
-        if current_group:
-            groups.append(current_group)
-
-        return groups
-
     def run(self) -> tuple[int, int]:
-        """Run all selected scripts, parallelizing where safe.
+        """Run all selected scripts with dependency-aware parallelism.
+
+        Uses continuous scheduling: scripts start as soon as their dependencies
+        are satisfied and required locks are available.
 
         Returns (success_count, fail_count).
         """
@@ -3168,74 +3274,84 @@ class ExecutionTUI:
         success_count = 0
         fail_count = 0
 
+        # Dynamic worker count based on CPU cores
+        max_workers = min((os.cpu_count() or 4) * 2, 16)
+        scheduler = ParallelScheduler(self.statuses, max_workers)
+
         try:
-            groups = self._group_by_parallelism()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures: dict[concurrent.futures.Future[bool], ScriptStatus] = {}
 
-            for group in groups:
-                if self.cancelled:
-                    for status in group:
-                        status.status = "skipped"
-                    continue
+                while True:
+                    if self.cancelled:
+                        # Mark all pending as skipped
+                        for status in self.statuses:
+                            if status.status == "pending":
+                                status.status = "skipped"
+                        break
 
-                # Check if this is a parallel group (multiple parallel-safe scripts)
-                is_parallel_group = len(group) > 1 and all(
-                    s.script.is_parallel for s in group
-                )
+                    # Find scripts ready to start
+                    ready = scheduler.get_ready_scripts(len(futures))
 
-                if is_parallel_group:
-                    # Run group in parallel
-                    for status in group:
-                        status.status = "running"
-                    self._set_running_idx(self.statuses.index(group[0]))
-                    self._poll_input()
-                    self.draw()
-
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=4
-                    ) as executor:
-                        futures = {
-                            executor.submit(self._run_script_silent, s): s
-                            for s in group
-                        }
-                        # Poll with timeout to keep spinner animated
-                        pending = set(futures.keys())
-                        while pending:
-                            # Wait for any future with short timeout for spinner animation
-                            done, pending = concurrent.futures.wait(
-                                pending, timeout=0.08, return_when=concurrent.futures.FIRST_COMPLETED
-                            )
-                            for future in done:
-                                status = futures[future]
-                                self._set_running_idx(self.statuses.index(status))
-                                try:
-                                    if future.result():
-                                        success_count += 1
-                                    else:
-                                        fail_count += 1
-                                except Exception:
-                                    status.status = "failed"
-                                    fail_count += 1
-                            # Redraw on every iteration to animate spinners
+                    for status in ready:
+                        if not status.script.is_parallel:
+                            # Non-parallel scripts run synchronously with live output
+                            status.status = "running"
+                            self._set_running_idx(self.statuses.index(status))
                             self._poll_input()
                             self.draw()
-                else:
-                    # Run sequentially
-                    for status in group:
-                        if self.cancelled:
-                            status.status = "skipped"
-                            continue
 
-                        self._set_running_idx(self.statuses.index(status))
-                        self._poll_input()
-                        self.draw()
+                            if self.run_script(status):
+                                success_count += 1
+                            else:
+                                fail_count += 1
 
-                        if self.run_script(status):
-                            success_count += 1
+                            scheduler.mark_complete(status)
+                            self._poll_input()
+                            self.draw()
                         else:
-                            fail_count += 1
+                            # Parallel scripts run in thread pool
+                            status.status = "running"
+                            scheduler.acquire_locks(status)
+                            future = executor.submit(self._run_script_silent, status)
+                            futures[future] = status
 
-                        self._poll_input()
-                        self.draw()
+                    # Update running index to first running script
+                    running_scripts = [s for s in self.statuses if s.status == "running"]
+                    if running_scripts:
+                        self._set_running_idx(self.statuses.index(running_scripts[0]))
+
+                    # Check if we're done
+                    if not futures and not ready:
+                        # No more work to do
+                        all_done = all(s.status != "pending" for s in self.statuses)
+                        if all_done:
+                            break
+
+                    # Wait for any completion (with timeout for animation)
+                    if futures:
+                        done, _ = concurrent.futures.wait(
+                            futures.keys(),
+                            timeout=0.08,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+
+                        for future in done:
+                            status = futures.pop(future)
+                            scheduler.release_locks(status)
+                            scheduler.mark_complete(status)
+                            try:
+                                if future.result():
+                                    success_count += 1
+                                else:
+                                    fail_count += 1
+                            except Exception:
+                                status.status = "failed"
+                                fail_count += 1
+
+                    # Redraw for animation
+                    self._poll_input()
+                    self.draw()
 
         except KeyboardInterrupt:
             self.cancelled = True
@@ -3348,18 +3464,16 @@ def run_non_interactive(
             result = run_script_simple(script_path, scripts_dir, env)
             if result.returncode == 0:
                 spinner.stop("✓")
-                print()  # Newline after spinner line
                 success += 1
             else:
                 spinner.stop("✗")
-                print()  # Newline after spinner line
                 if result.stderr:
                     for line in result.stderr.strip().split("\n")[:5]:
                         print(f"    {line}")
                 fail += 1
         except Exception as e:
             spinner.stop("✗")
-            print(f" ({e})")
+            print(f"    {e}")
             fail += 1
 
     print(f"\n{'=' * 60}")
