@@ -6,9 +6,9 @@ Builds a clean Ubuntu 24.04 container and runs the full setup script,
 capturing output and exit codes to verify all scripts complete successfully.
 
 Usage:
-    uv run run_docker_test.py           # Full test
-    uv run run_docker_test.py --dry-run # Preview without execution
-    uv run run_docker_test.py --no-cache # Rebuild image from scratch
+    sudo ./run_docker_test           # Full test (requires Docker socket access)
+    sudo ./run_docker_test --dry-run # Preview without execution
+    sudo ./run_docker_test --no-cache # Rebuild image from scratch
 """
 
 import argparse
@@ -97,7 +97,8 @@ def run_cmd(
             text=True,
             bufsize=1,  # Line buffered
         )
-        assert process.stdout is not None
+        if process.stdout is None:
+            raise RuntimeError("Failed to capture subprocess stdout")
         for line in process.stdout:
             print(line, end="")
         process.wait()
@@ -119,11 +120,34 @@ def run_cmd(
 
 
 def check_docker_available() -> bool:
-    """Verify Docker is installed and running."""
+    """Verify Docker is installed and accessible.
+
+    Returns True if Docker is ready. On failure, prints a diagnostic message
+    with suggestions (e.g., use sudo for permission issues).
+    """
     try:
         result = run_cmd(["docker", "info"], capture=True, check=False)
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
+
+        # Distinguish permission denied from other failures
+        stderr = result.stderr.lower()
+        if "permission denied" in stderr:
+            print_error("Docker socket permission denied.")
+            print(f"  {YELLOW}→{NC} Run with sudo: {BOLD}sudo ./run_docker_test{NC}")
+            print(f"  {YELLOW}→{NC} Or add yourself to docker group (grants root-equivalent access):")
+            print(f"      sudo usermod -aG docker $USER && newgrp docker")
+        elif "cannot connect" in stderr or "is the docker daemon running" in stderr:
+            print_error("Docker daemon is not running.")
+            print(f"  {YELLOW}→{NC} Start Docker: {BOLD}sudo systemctl start docker{NC}")
+        else:
+            print_error("Docker is not accessible.")
+            if result.stderr:
+                print(f"  {result.stderr.strip()}")
+        return False
     except FileNotFoundError:
+        print_error("Docker is not installed.")
+        print(f"  {YELLOW}→{NC} Install: https://docs.docker.com/engine/install/")
         return False
 
 
@@ -203,7 +227,6 @@ def run_container(*, dry_run: bool = False) -> int:
 
     try:
         result = run_cmd(cmd, stream=True, check=False)
-        elapsed = time.time() - start_time
         return result.returncode
     except KeyboardInterrupt:
         print_warning("\nInterrupted - cleaning up container...")
@@ -244,9 +267,8 @@ def main() -> int:
 
     print_header("Peter's Linux Setup - Docker Test Runner")
 
-    # Check Docker availability
+    # Check Docker availability (prints its own diagnostic on failure)
     if not check_docker_available():
-        print_error("Docker is not available. Please install Docker and ensure it's running.")
         return 1
 
     linux_dir = get_linux_dir()
