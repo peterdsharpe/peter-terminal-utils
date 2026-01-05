@@ -1890,8 +1890,9 @@ class ExecutionTUI:
         self.drag_state = DragState()
         # Braille spinner for running scripts
         self.spinner = BrailleSpinner()
-        # Track start time for elapsed time display
+        # Track start/end time for elapsed time display
         self.start_time = time.monotonic()
+        self.end_time: float | None = None  # Set when install completes
 
     def _set_running_idx(self, idx: int) -> None:
         """Update running index, and viewing index if following."""
@@ -2154,33 +2155,39 @@ class ExecutionTUI:
         self.stdscr.refresh()
 
     def _format_elapsed(self) -> str:
-        """Format elapsed time as HH:MM:SS or MM:SS."""
-        elapsed = int(time.monotonic() - self.start_time)
+        """Format elapsed time as HH:MM:SS or MM:SS.
+
+        Uses end_time if set (install complete), otherwise current time.
+        """
+        end = self.end_time if self.end_time is not None else time.monotonic()
+        elapsed = int(end - self.start_time)
         hours, remainder = divmod(elapsed, 3600)
         minutes, seconds = divmod(remainder, 60)
         if hours > 0:
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
 
-    def _build_sparkline(self) -> str:
+    def _build_sparkline(self) -> list[tuple[str, ColorName]]:
         """Build a mini braille sparkline showing script results.
 
-        Uses braille characters to show success/failure pattern at a glance.
+        Uses braille characters with colors to show success/failure at a glance.
+
+        Returns:
+            List of (character, color_name) tuples for per-character rendering.
         """
-        # Map status to braille height (0-4 dots high)
-        chars = []
+        segments: list[tuple[str, ColorName]] = []
         for status in self.statuses:
             if status.status == "success":
-                chars.append("⣿")  # Full - success
+                segments.append(("⣿", "green"))  # Full - success
             elif status.status == "failed":
-                chars.append("⣀")  # Low - failure (will be colored red)
+                segments.append(("⣠", "red"))  # Low with emphasis - failure
             elif status.status == "running":
-                chars.append("⣷")  # Animated partial
+                segments.append(("⣷", "cyan"))  # Animated partial
             elif status.status == "skipped":
-                chars.append("⣤")  # Medium - skipped
+                segments.append(("⣤", "yellow"))  # Medium - skipped
             else:  # pending
-                chars.append("⣀")  # Low dots - pending
-        return "".join(chars[-20:])  # Show last 20 scripts max
+                segments.append(("⣀", "dim"))  # Low dots - pending
+        return segments[-20:]  # Show last 20 scripts max
 
     def draw_header(self, width: int) -> None:
         """Draw the header with btop-style tab, elapsed time, and sparkline."""
@@ -2227,23 +2234,36 @@ class ExecutionTUI:
             fraction = (bar_width * progress) - filled_chars
 
             # Fractional block characters: ▏▎▍▌▋▊▉█ (1/8 to 8/8)
-            fractional_blocks = " ▏▎▍▌▋▊▉█"
+            fractional_blocks = "▏▎▍▌▋▊▉█"
             partial_idx = int(fraction * 8)
-            partial_char = fractional_blocks[partial_idx] if filled_chars < bar_width else ""
+            # Only show partial char if there's actual fractional progress and room remains
+            if partial_idx > 0 and filled_chars < bar_width:
+                partial_char = fractional_blocks[partial_idx - 1]
+            else:
+                partial_char = ""
 
             bar = "█" * filled_chars + partial_char
             bar = bar.ljust(bar_width, "░")
 
             pct = int(100 * progress)
 
-            # Build sparkline
-            sparkline = self._build_sparkline()
-
-            progress_str = f"   {bar} {pct:3d}%  {sparkline}"
+            # Draw progress bar and percentage
+            progress_str = f"   {bar} {pct:3d}%  "
             try:
                 self.stdscr.addstr(1, 2, progress_str[: width - 4], self.colors["cyan"])
             except curses.error:
                 pass
+
+            # Draw sparkline with per-character colors
+            sparkline_x = 2 + len(progress_str)
+            for char, color_name in self._build_sparkline():
+                if sparkline_x >= width - 2:
+                    break
+                try:
+                    self.stdscr.addstr(1, sparkline_x, char, self.colors[color_name])
+                except curses.error:
+                    pass
+                sparkline_x += 1
 
     def draw_script_list(self, height: int, list_width: int) -> None:
         """Draw the list of scripts with status indicators."""
@@ -2675,6 +2695,9 @@ class ExecutionTUI:
             for status in self.statuses:
                 if status.status in ("pending", "running"):
                     status.status = "skipped"
+
+        # Freeze elapsed time at completion
+        self.end_time = time.monotonic()
 
         # Final draw and allow browsing until 'q' is pressed
         self.draw()
