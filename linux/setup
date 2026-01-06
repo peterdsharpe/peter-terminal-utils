@@ -2585,7 +2585,8 @@ class ExecutionTUI(BaseTUI):
     _RIGHT_MIN = 0x80  # ⢀ (dot 8 only)
 
     # Fill animation frames for running script (shows "filling up" effect)
-    _FILL_FRAMES_FULL = ["⣀", "⣠", "⣤", "⣴", "⣶", "⣷", "⣿"]
+    # Fills bottom-to-top, left column first in each row
+    _FILL_FRAMES_FULL = ["⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣷", "⣿"]
     _FILL_FRAMES_LEFT = [0x40, 0x44, 0x46, 0x47]  # Left column fill progression
     _FILL_FRAMES_RIGHT = [0x80, 0xA0, 0xB0, 0xB8]  # Right column fill progression
 
