@@ -18,12 +18,50 @@ CURSOR_CONFIG_DEST="$HOME/.config/Cursor/User"
 ### Download and Install Cursor IDE
 ###############################################################################
 
-# Fetch latest version info from Cursor API
+# Cache for API response (avoid duplicate network calls)
+_CURSOR_API_CACHE=""
+
+# Fetch latest version info from Cursor API (cached)
 get_cursor_info() {
+    if [[ -n "$_CURSOR_API_CACHE" ]]; then
+        echo "$_CURSOR_API_CACHE"
+        return 0
+    fi
+    
     local platform="linux-x64"
     [[ "$ARCH" == "arm64" ]] && platform="linux-arm64"
     
-    curl -sL "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" 2>/dev/null
+    _CURSOR_API_CACHE=$(curl -sL "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" 2>/dev/null)
+    echo "$_CURSOR_API_CACHE"
+}
+
+# Get latest version from API
+get_latest_version() {
+    local info
+    info=$(get_cursor_info) || return 1
+    echo "$info" | jq -r '.version // empty'
+}
+
+# Get installed version (works for both deb and AppImage)
+get_installed_version() {
+    # Best source: cursor --version returns clean semver (e.g., "2.2.44")
+    if command -v cursor &>/dev/null; then
+        local cli_version
+        cli_version=$(cursor --version 2>/dev/null | head -1)
+        if [[ -n "$cli_version" && "$cli_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "$cli_version"
+            return 0
+        fi
+    fi
+    
+    # Fallback: AppImage version file
+    local appimage_version_file="$HOME/.local/share/cursor/.version"
+    if [[ -f "$appimage_version_file" ]]; then
+        cat "$appimage_version_file"
+        return 0
+    fi
+    
+    return 1
 }
 
 # Install via AppImage (cross-distro, user-level)
@@ -84,25 +122,6 @@ install_cursor_deb() {
     return $result
 }
 
-# Check if Cursor IDE is already installed
-cursor_installed() {
-    # Check for deb-installed cursor
-    if command -v cursor &>/dev/null; then
-        local cursor_path
-        cursor_path=$(command -v cursor)
-        # If it's not our wrapper script, it's probably deb-installed
-        if [[ "$cursor_path" != "$HOME/.local/bin/cursor" ]]; then
-            return 0
-        fi
-        # Check if our AppImage exists
-        if [[ -f "$HOME/.local/share/cursor/cursor.AppImage" ]]; then
-            return 0
-        fi
-    fi
-    # Check for AppImage directly
-    [[ -f "$HOME/.local/share/cursor/cursor.AppImage" ]]
-}
-
 # Smart install: use deb on apt-based distros with sudo, AppImage otherwise
 install_cursor_smart() {
     if [[ "$PKG_MANAGER" == "apt" ]] && [[ "${HAS_SUDO:-false}" == true ]]; then
@@ -112,12 +131,27 @@ install_cursor_smart() {
     fi
 }
 
-# Install Cursor IDE if not present
-if ! cursor_installed; then
-    step "Installing Cursor IDE" install_cursor_smart
-else
-    print_skip "Cursor IDE already installed"
-fi
+# Check versions and install/update if needed
+check_and_install_cursor() {
+    local installed_version latest_version
+    installed_version=$(get_installed_version)
+    latest_version=$(get_latest_version)
+    
+    if [[ -z "$latest_version" ]]; then
+        echo "Failed to fetch latest Cursor version from API" >&2
+        return 1
+    fi
+    
+    if [[ -z "$installed_version" ]]; then
+        step "Installing Cursor IDE ($latest_version)" install_cursor_smart
+    elif [[ "$installed_version" == "$latest_version" ]]; then
+        print_skip "Cursor IDE already at latest version ($installed_version)"
+    else
+        step "Updating Cursor IDE ($installed_version -> $latest_version)" install_cursor_smart
+    fi
+}
+
+check_and_install_cursor
 
 ###############################################################################
 ### Create Desktop Entry (for AppImage installs)

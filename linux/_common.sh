@@ -74,16 +74,41 @@ _EXEC_STDIN=""  # Optional: set before _exec to provide stdin from file
 ### Core helper: run command, capture output, store in globals
 ### Returns the command's exit code
 ### Optional: set _EXEC_STDIN to a file path before calling to provide stdin
+###
+### Modes:
+###   - Default: Capture output silently, show only on error (clean TUI)
+###   - STREAM_OUTPUT=true: Stream output live AND capture (for TUI live panel)
 _exec() {
     local tmp_out tmp_err
     tmp_out=$(mktemp)
     tmp_err=$(mktemp)
-    if [ -n "${_EXEC_STDIN:-}" ]; then
-        "$@" <"$_EXEC_STDIN" >"$tmp_out" 2>"$tmp_err"
+    
+    if [[ "${STREAM_OUTPUT:-false}" == true ]]; then
+        # Streaming mode: show output live while also capturing for error display
+        # Run command, tee stdout/stderr to temp files, display with indent
+        # Use a subshell to isolate pipefail setting
+        (
+            set -o pipefail
+            if [ -n "${_EXEC_STDIN:-}" ]; then
+                "$@" <"$_EXEC_STDIN" 2>&1 | tee "$tmp_out" | sed 's/^/    /'
+            else
+                "$@" 2>&1 | tee "$tmp_out" | sed 's/^/    /'
+            fi
+        )
+        _EXEC_EXIT=$?
+        # In streaming mode, stderr is merged into stdout (tee'd to tmp_out)
+        # Copy to tmp_err for consistency with error display code
+        cp "$tmp_out" "$tmp_err"
     else
-        "$@" >"$tmp_out" 2>"$tmp_err"
+        # Silent capture mode: only display on error
+        if [ -n "${_EXEC_STDIN:-}" ]; then
+            "$@" <"$_EXEC_STDIN" >"$tmp_out" 2>"$tmp_err"
+        else
+            "$@" >"$tmp_out" 2>"$tmp_err"
+        fi
+        _EXEC_EXIT=$?
     fi
-    _EXEC_EXIT=$?
+    
     _EXEC_OUT=$(cat "$tmp_out")
     _EXEC_ERR=$(cat "$tmp_err")
     rm -f "$tmp_out" "$tmp_err"

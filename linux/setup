@@ -876,12 +876,15 @@ def prompt_sudo_if_needed(enabled_scripts: list[tuple[Section, Script]]) -> bool
         return True  # Continue anyway
 
 
-def prepare_script_env(dry_run: bool, headless: bool) -> dict[str, str]:
+def prepare_script_env(
+    dry_run: bool, headless: bool, stream_output: bool = False
+) -> dict[str, str]:
     """Prepare environment variables for script execution.
 
     Args:
         dry_run: Whether to run in dry-run mode (preview changes only).
         headless: Whether to skip GUI components.
+        stream_output: Whether to stream command output live (for TUI display).
 
     Returns:
         Environment dictionary with all required variables set.
@@ -895,6 +898,7 @@ def prepare_script_env(dry_run: bool, headless: bool) -> dict[str, str]:
     env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
     env["GIT_NAME"] = env.get("GIT_NAME", DEFAULT_GIT_NAME)
     env["GIT_EMAIL"] = env.get("GIT_EMAIL", DEFAULT_GIT_EMAIL)
+    env["STREAM_OUTPUT"] = "true" if stream_output else "false"
     return env
 
 
@@ -3148,7 +3152,8 @@ class ExecutionTUI(BaseTUI):
             status.exit_code = 1
             return False
 
-        env = prepare_script_env(self.dry_run, self.headless)
+        # Enable streaming output for TUI display (live output in right panel)
+        env = prepare_script_env(self.dry_run, self.headless, stream_output=True)
         bash_cmd = build_script_command(self.scripts_dir, script_path)
 
         try:

@@ -22,6 +22,7 @@ skip_if_not_gnome "Favorite apps configuration"
 # Common locations checked:
 #   - /usr/share/applications/
 #   - /var/lib/flatpak/exports/share/applications/
+#   - /var/lib/snapd/desktop/applications/
 #   - ~/.local/share/applications/
 #   - ~/.local/share/flatpak/exports/share/applications/
 
@@ -36,8 +37,8 @@ FAVORITE_APPS=(
     "cursor.desktop"
     # Reference manager
     "org.zotero.Zotero.desktop"
-    # Communication (optional)
-    "org.signal.Signal.desktop"
+    # Communication
+    "signal-desktop_signal-desktop.desktop"
 )
 
 ###############################################################################
@@ -50,6 +51,7 @@ desktop_file_exists() {
     local search_paths=(
         "/usr/share/applications"
         "/var/lib/flatpak/exports/share/applications"
+        "/var/lib/snapd/desktop/applications"
         "$HOME/.local/share/applications"
         "$HOME/.local/share/flatpak/exports/share/applications"
     )

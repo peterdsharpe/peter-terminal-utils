@@ -53,9 +53,10 @@ All installed from GitHub releases for latest versions:
 - **Docker** (official install script)
 - **Cursor** IDE
 
-### Desktop Applications (via Flatpak)
+### Desktop Applications
 Cross-distro application installation:
-- Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero, Signal
+- **Flatpak**: Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero
+- **Snap**: Signal (for secure password storage)
 
 ### GNOME Customization (GNOME only)
 - Dark theme, keyboard repeat settings, touchpad configuration
