@@ -11,7 +11,7 @@ standalone_init
 #
 # This uses LD_PRELOAD to intercept libinput calls and apply a scroll factor.
 # Sandboxed apps (Flatpak/Snap) will show a harmless "cannot be preloaded" error
-# because they can't access the host's /usr/local/lib64 - see linux/docs/libinput-config.md
+# because they can't access the host library path - see linux/docs/libinput-config.md
 
 skip_if_headless "libinput-config"
 skip_if_not_gnome "libinput-config"
@@ -22,11 +22,27 @@ if [[ "${HAS_SUDO:-false}" == false ]]; then
     exit 0
 fi
 
+# Find libinput-config.so in known install locations (meson uses architecture-specific paths)
+find_libinput_config_so() {
+    local candidates=(
+        "/usr/local/lib/$(gcc -dumpmachine 2>/dev/null)/libinput-config.so"
+        "/usr/local/lib64/libinput-config.so"
+        "/usr/local/lib/libinput-config.so"
+    )
+    for path in "${candidates[@]}"; do
+        if [[ -f "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
 SCROLL_FACTOR="0.5"
-LIBINPUT_CONFIG_SO="/usr/local/lib64/libinput-config.so"
 
 # Check if already installed with correct config
-if [[ -f "$LIBINPUT_CONFIG_SO" ]] && \
+LIBINPUT_CONFIG_SO=$(find_libinput_config_so)
+if [[ -n "$LIBINPUT_CONFIG_SO" ]] && \
    grep -q "^scroll-factor=$SCROLL_FACTOR$" /etc/libinput.conf 2>/dev/null && \
    grep -q "$LIBINPUT_CONFIG_SO" /etc/ld.so.preload 2>/dev/null; then
     print_skip "libinput-config already configured"
@@ -52,9 +68,10 @@ step_end
 # Configure scroll factor
 step "Setting scroll-factor=$SCROLL_FACTOR" bash -c "echo 'scroll-factor=$SCROLL_FACTOR' | sudo tee /etc/libinput.conf"
 
-# Verify installation succeeded before modifying ld.so.preload
-if [[ ! -f "$LIBINPUT_CONFIG_SO" ]]; then
-    print_error "Build failed: $LIBINPUT_CONFIG_SO not found"
+# Find installed library (meson installs to architecture-specific paths)
+LIBINPUT_CONFIG_SO=$(find_libinput_config_so)
+if [[ -z "$LIBINPUT_CONFIG_SO" ]]; then
+    print_error "Build failed: libinput-config.so not found in expected locations"
     exit 1
 fi
 
