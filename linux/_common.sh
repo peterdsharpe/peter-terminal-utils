@@ -366,7 +366,7 @@ is_wsl2() { is_wsl && grep -qi "wsl2" /proc/version 2>/dev/null; }
 
 detect_desktop() {
     case "${XDG_CURRENT_DESKTOP:-}" in
-        *GNOME*) echo "gnome" ;;
+        *GNOME*|*Unity*) echo "gnome" ;;
         *KDE*|*Plasma*) echo "kde" ;;
         *XFCE*) echo "xfce" ;;
         *Cinnamon*) echo "cinnamon" ;;
