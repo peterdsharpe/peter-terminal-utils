@@ -19,13 +19,28 @@ fi
 JUST_PERFECTION_UUID="just-perfection-desktop@just-perfection"
 
 install_just_perfection() {
-    local shell_version download_path
-    shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || return 1
-    download_path=$(curl -s "https://extensions.gnome.org/extension-info/?uuid=$JUST_PERFECTION_UUID&shell_version=$shell_version" | jq -r '.download_url // empty') || return 1
-    [ -n "$download_path" ] || { echo "No download URL found for Just Perfection extension" >&2; return 1; }
-    curl -sL "https://extensions.gnome.org$download_path" -o /tmp/just-perfection.zip || return 1
-    gnome-extensions install --force /tmp/just-perfection.zip || return 1
-    rm /tmp/just-perfection.zip
+    local shell_version download_path api_response tmpzip
+    
+    shell_version=$(gnome-shell --version | grep -oP '\d+' | head -1) || {
+        echo "Could not determine GNOME Shell version" >&2
+        return 1
+    }
+    
+    api_response=$(curl -sf --connect-timeout 10 "https://extensions.gnome.org/extension-info/?uuid=$JUST_PERFECTION_UUID&shell_version=$shell_version") || {
+        echo "Failed to fetch extension info from extensions.gnome.org" >&2
+        return 1
+    }
+    
+    download_path=$(echo "$api_response" | jq -r '.download_url // empty')
+    [ -n "$download_path" ] || { echo "No download URL for Just Perfection (shell version $shell_version may be unsupported)" >&2; return 1; }
+    
+    tmpzip=$(mktemp --suffix=.zip) || return 1
+    if ! curl -sfL "https://extensions.gnome.org$download_path" -o "$tmpzip"; then
+        rm -f "$tmpzip"
+        return 1
+    fi
+    gnome-extensions install --force "$tmpzip" || { rm -f "$tmpzip"; return 1; }
+    rm -f "$tmpzip"
 }
 
 if ! gnome-extensions list | grep -q "$JUST_PERFECTION_UUID" 2>&1; then

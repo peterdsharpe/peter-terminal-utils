@@ -303,14 +303,17 @@ prompt_input() {
 ### Usage: version=$(github_latest_version "owner/repo") || return 1
 github_latest_version() {
     local repo="$1"
-    local redirect_url version
+    local redirect_url version curl_output
+    
     # Use HEAD request to get redirect URL - this doesn't hit API rate limits
-    redirect_url=$(curl -sI "https://github.com/${repo}/releases/latest" 2>&1 | grep -i '^location:' | tr -d '\r') || {
-        echo "Failed to fetch release redirect for $repo" >&2
+    # Capture both stdout and stderr for better diagnostics
+    curl_output=$(curl -sI --connect-timeout 10 "https://github.com/${repo}/releases/latest" 2>&1) || {
+        echo "Failed to connect to GitHub for $repo: $curl_output" >&2
         return 1
     }
+    redirect_url=$(echo "$curl_output" | grep -i '^location:' | tr -d '\r')
     if [ -z "$redirect_url" ]; then
-        echo "No redirect found for $repo releases" >&2
+        echo "No redirect found for $repo releases (check network or repo existence)" >&2
         return 1
     fi
     # Extract version from URL like: .../releases/tag/v1.2.3 or .../releases/tag/1.2.3
@@ -358,7 +361,16 @@ is_debian() { [[ "$DISTRO" == "debian" ]]; }
 is_fedora() { [[ "$DISTRO" == "fedora" ]]; }
 is_arch() { [[ "$DISTRO" == "arch" ]]; }
 is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
-is_wsl2() { is_wsl && grep -qi "wsl2" /proc/version 2>/dev/null; }
+# WSL2 detection: check for WSL_INTEROP (set by WSL2), or fall back to version string
+is_wsl2() {
+    is_wsl || return 1
+    # WSL_INTEROP is only set in WSL2
+    [[ -n "${WSL_INTEROP:-}" ]] && return 0
+    # Fallback: check /proc/version for wsl2 marker
+    grep -qi "wsl2" /proc/version 2>/dev/null && return 0
+    # Another fallback: WSL2 uses kernel >= 5.x with microsoft in version
+    grep -qP "Linux version [5-9]\.\d+.*[Mm]icrosoft" /proc/version 2>/dev/null
+}
 
 ###############################################################################
 ### Desktop Environment Detection
@@ -601,7 +613,8 @@ install_github_binary() {
 
     archive_url=""
     for pattern in "${patterns[@]}"; do
-        if curl -fsSL --head "$pattern" &>/dev/null; then
+        # Use short timeout for HEAD requests to fail fast on non-existent URLs
+        if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
             archive_url="$pattern"
             break
         fi

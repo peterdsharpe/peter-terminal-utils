@@ -23,9 +23,13 @@ if [ ! -f "$WALLPAPER_NIGHT" ]; then
     exit 1
 fi
 
-### Convert to file:// URIs (spaces must be percent-encoded)
-WALLPAPER_DAY_URI="file://$(realpath "$WALLPAPER_DAY" | sed 's/ /%20/g')"
-WALLPAPER_NIGHT_URI="file://$(realpath "$WALLPAPER_NIGHT" | sed 's/ /%20/g')"
+### Convert to file:// URIs using Python for proper percent-encoding
+### (handles spaces, #, %, and other special characters correctly)
+percent_encode_path() {
+    python3 -c "import sys; from urllib.parse import quote; print(quote(sys.argv[1], safe='/'))" "$1"
+}
+WALLPAPER_DAY_URI="file://$(percent_encode_path "$(realpath "$WALLPAPER_DAY")")"
+WALLPAPER_NIGHT_URI="file://$(percent_encode_path "$(realpath "$WALLPAPER_NIGHT")")"
 
 step "Setting desktop background" gsettings set org.gnome.desktop.background picture-uri "$WALLPAPER_DAY_URI"
 step "Setting dark mode background" gsettings set org.gnome.desktop.background picture-uri-dark "$WALLPAPER_NIGHT_URI"

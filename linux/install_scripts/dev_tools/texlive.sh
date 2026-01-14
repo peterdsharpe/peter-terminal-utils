@@ -9,22 +9,29 @@ standalone_init
 # See: https://www.tug.org/texlive/quickinstall.html
 
 install_texlive() {
-    local tmpdir year arch_dir texlive_bin
+    local tmpdir year arch_dir texlive_bin install_dir
     tmpdir=$(mktemp -d) || return 1
-    cd "$tmpdir" || return 1
     
-    # Download installer
-    curl -L -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || { cd /; rm -rf "$tmpdir"; return 1; }
-    zcat < install-tl-unx.tar.gz | tar xf - || { cd /; rm -rf "$tmpdir"; return 1; }
-    cd install-tl-2* || { cd /; rm -rf "$tmpdir"; return 1; }
-    
-    # Install non-interactively (full scheme by default)
-    print_warning "TeX Live installation may take 30+ minutes..."
-    sudo perl ./install-tl --no-interaction || { cd /; rm -rf "$tmpdir"; return 1; }
-    
-    # Cleanup
-    cd /
+    # Use subshell to isolate directory changes
+    (
+        cd "$tmpdir" || exit 1
+        
+        # Download installer
+        curl -fL -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || exit 1
+        zcat < install-tl-unx.tar.gz | tar xf - || exit 1
+        
+        # Find the extracted directory (handles varying naming conventions)
+        install_dir=$(find . -maxdepth 1 -type d -name 'install-tl-*' | head -1)
+        [ -n "$install_dir" ] && [ -d "$install_dir" ] || { echo "TexLive installer directory not found" >&2; exit 1; }
+        cd "$install_dir" || exit 1
+        
+        # Install non-interactively (full scheme by default)
+        print_warning "TeX Live installation may take 30+ minutes..."
+        sudo perl ./install-tl --no-interaction
+    )
+    local install_rc=$?
     rm -rf "$tmpdir"
+    [ $install_rc -ne 0 ] && return 1
     
     # Determine install path and add to shell profiles
     year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
