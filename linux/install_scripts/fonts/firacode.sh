@@ -18,6 +18,7 @@ install_firacode() {
 
 if ! fc-list | grep -i "FiraCode Nerd Font" > /dev/null; then
     step "Installing Fira Code Nerd Font" install_firacode
+    step "Rebuilding font cache" fc-cache -f
 else
     print_skip "Fira Code Nerd Font already installed"
 fi

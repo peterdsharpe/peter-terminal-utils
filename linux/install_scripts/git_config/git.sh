@@ -9,7 +9,9 @@ standalone_init
 step_start "Configuring git"
 run git config --global init.defaultBranch main
 run git config --global pull.rebase false
-run git config --global core.editor "nvim"
+if command -v nvim &>/dev/null; then
+    run git config --global core.editor "nvim"
+fi
 run git config --global push.autoSetupRemote true
 run git config --global fetch.prune true
 # Aliases

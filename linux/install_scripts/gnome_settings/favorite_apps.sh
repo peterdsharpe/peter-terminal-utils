@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 skip_if_headless "Favorite apps configuration"
-skip_if_not_gnome "Favorite apps configuration"
+skip_if_not_gnome_shell "Favorite apps configuration"
 
 ###############################################################################
 ### Define Pinned Apps (in order)

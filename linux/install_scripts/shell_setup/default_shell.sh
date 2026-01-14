@@ -8,10 +8,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 change_default_shell() {
-    step "Changing default shell to zsh" sudo chsh -s "$(which zsh)" "$USER"
+    step "Changing default shell to zsh" sudo chsh -s "$(command -v zsh)" "$USER"
 }
 
-if [ "$SHELL" != "$(which zsh)" ]; then
+if [ "$SHELL" != "$(command -v zsh)" ]; then
     require_sudo "Default shell change" change_default_shell
 else
     print_skip "Shell is already zsh"

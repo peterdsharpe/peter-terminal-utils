@@ -380,6 +380,7 @@ DESKTOP_ENV=$(detect_desktop)
 is_gnome() { [[ "$DESKTOP_ENV" == "gnome" ]]; }
 is_kde() { [[ "$DESKTOP_ENV" == "kde" ]]; }
 is_cinnamon() { [[ "$DESKTOP_ENV" == "cinnamon" ]]; }
+is_gnome_shell() { command -v gnome-shell &>/dev/null; }
 
 ### Skip script if not running GNOME desktop
 ### Usage: skip_if_not_gnome "Script Name"
@@ -387,6 +388,16 @@ skip_if_not_gnome() {
     local name="$1"
     if ! is_gnome; then
         print_skip "$name (requires GNOME desktop)"
+        exit 0
+    fi
+}
+
+### Skip script if not running GNOME Shell (stricter than skip_if_not_gnome)
+### Usage: skip_if_not_gnome_shell "Script Name"
+skip_if_not_gnome_shell() {
+    local name="$1"
+    if ! is_gnome_shell; then
+        print_skip "$name (requires GNOME Shell)"
         exit 0
     fi
 }
