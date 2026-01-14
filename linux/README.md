@@ -13,8 +13,8 @@ cd linux
 
 | Distro | Package Manager | Desktop | Status |
 |--------|-----------------|---------|--------|
-| Ubuntu 24.04+ | apt | GNOME | **Primary target** - fully tested |
 | Ubuntu 25.10 | apt | GNOME | **Primary target** - fully tested |
+| Ubuntu 24.04+ | apt | GNOME | Supported |
 | Debian 12+ | apt | GNOME | Supported |
 | Linux Mint | apt | Cinnamon | Supported (GNOME settings skipped) |
 | Fedora 39+ | dnf | GNOME | Supported |
