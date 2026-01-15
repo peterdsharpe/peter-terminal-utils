@@ -2,7 +2,6 @@
 # @name: PackageKit
 # @description: Disable PackageKit to reduce memory usage (GUI software centers still work on-demand)
 # @requires: sudo
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

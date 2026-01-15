@@ -3,7 +3,6 @@
 # @description: Modern replacement for ls with colors and icons
 # @repo: eza-community/eza
 # @depends: core_packages.sh
-# @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

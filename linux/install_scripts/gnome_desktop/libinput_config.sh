@@ -4,7 +4,6 @@
 # @depends: core_packages.sh
 # @requires: sudo
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 # Source: https://gitlab.com/warningnonpotablewater/libinput-config

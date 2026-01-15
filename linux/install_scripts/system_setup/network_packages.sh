@@ -2,7 +2,6 @@
 # @name: Network Packages
 # @description: Networking, VPN, and firewall tools
 # @requires: sudo
-# @parallel: false
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

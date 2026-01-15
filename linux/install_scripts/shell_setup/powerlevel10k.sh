@@ -2,7 +2,6 @@
 # @name: Powerlevel10k
 # @description: Fast and beautiful zsh theme with instant prompt
 # @depends: ohmyzsh.sh, core_packages.sh
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

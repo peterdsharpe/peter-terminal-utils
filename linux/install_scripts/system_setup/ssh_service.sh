@@ -3,7 +3,6 @@
 # @description: Enable sshd and allow through ufw firewall
 # @depends: network_packages.sh
 # @requires: sudo
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

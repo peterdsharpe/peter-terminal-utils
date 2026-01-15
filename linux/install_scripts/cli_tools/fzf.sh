@@ -3,7 +3,6 @@
 # @description: Command-line fuzzy finder for files, history, and more
 # @repo: junegunn/fzf
 # @depends: core_packages.sh
-# @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

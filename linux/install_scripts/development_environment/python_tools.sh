@@ -2,7 +2,6 @@
 # @name: Python Tools
 # @description: ruff, ty, jupyterlab, pre-commit, yt-dlp via uv
 # @depends: uv.sh
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

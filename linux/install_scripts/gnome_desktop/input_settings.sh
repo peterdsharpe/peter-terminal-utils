@@ -2,7 +2,6 @@
 # @name: Input Settings
 # @description: Touchpad and keyboard repeat configuration
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

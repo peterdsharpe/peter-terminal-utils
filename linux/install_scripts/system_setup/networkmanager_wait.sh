@@ -3,7 +3,6 @@
 # @description: Disable wait-online service to speed up desktop boot
 # @requires: sudo
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

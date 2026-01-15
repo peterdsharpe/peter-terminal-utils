@@ -3,7 +3,6 @@
 # @description: Remote desktop client via Snap with interface permissions
 # @requires: sudo
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

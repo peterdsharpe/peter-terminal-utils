@@ -3,7 +3,6 @@
 # @description: GNOME extension to disable animations and popup delays
 # @depends: core_packages.sh
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

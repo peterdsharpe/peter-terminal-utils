@@ -3,7 +3,7 @@
 # @description: Container runtime for building and running applications
 # @depends: core_packages.sh
 # @requires: sudo
-# @parallel: false
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

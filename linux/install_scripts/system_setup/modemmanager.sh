@@ -2,7 +2,6 @@
 # @name: ModemManager
 # @description: Disable ModemManager for systems without cellular modems
 # @requires: sudo
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

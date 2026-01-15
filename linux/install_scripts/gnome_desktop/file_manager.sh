@@ -3,7 +3,6 @@
 # @description: Nemo as default file manager, Nemo/Nautilus preferences, desktop icons
 # @depends: gnome_packages.sh
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

@@ -3,7 +3,6 @@
 # @description: Smarter cd command that learns your habits
 # @repo: ajeetdsouza/zoxide
 # @depends: core_packages.sh
-# @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

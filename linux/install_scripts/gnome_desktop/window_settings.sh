@@ -2,7 +2,6 @@
 # @name: Window Settings
 # @description: Mutter window management preferences
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

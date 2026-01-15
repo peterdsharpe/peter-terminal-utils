@@ -2,7 +2,6 @@
 # @name: Desktop Background
 # @description: Set desktop wallpaper to Thank You image
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

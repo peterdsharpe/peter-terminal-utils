@@ -2,7 +2,6 @@
 # @name: Flatpak Apps
 # @description: Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero, Tor Browser via Flatpak
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

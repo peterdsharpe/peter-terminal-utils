@@ -2,7 +2,6 @@
 # @name: Switch User Shortcut
 # @description: Super+U keyboard shortcut for fast user switching
 # @headless: skip
-# @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

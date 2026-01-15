@@ -2,7 +2,6 @@
 # @name: Shell Packages
 # @description: Shell and terminal environment (zsh, tmux, vim, neovim)
 # @requires: sudo
-# @parallel: false
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

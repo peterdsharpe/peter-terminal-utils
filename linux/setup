@@ -460,8 +460,8 @@ class Script:
 
     @property
     def is_parallel(self) -> bool:
-        """Whether script can run in parallel (from @parallel metadata)."""
-        return self.metadata.get("parallel", "").lower() == "true"
+        """Whether script can run in parallel (default: true, use @parallel: false to disable)."""
+        return self.metadata.get("parallel", "true").lower() != "false"
 
     @property
     def is_headless_skip(self) -> bool:

@@ -2,7 +2,6 @@
 # @name: Cursor CLI
 # @description: Command-line tools for Cursor AI code editor
 # @depends: core_packages.sh
-# @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

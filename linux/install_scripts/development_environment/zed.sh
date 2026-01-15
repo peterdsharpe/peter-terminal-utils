@@ -3,7 +3,6 @@
 # @description: High-performance code editor from the creators of Atom
 # @depends: core_packages.sh
 # @headless: skip
-# @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

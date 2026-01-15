@@ -3,7 +3,6 @@
 # @description: Full Cursor IDE with PeterProfile configuration
 # @depends: core_packages.sh
 # @headless: skip
-# @parallel: false
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
