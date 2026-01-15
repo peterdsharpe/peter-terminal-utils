@@ -8,6 +8,12 @@ standalone_init
 
 skip_if_headless "Flatpak applications"
 
+# WSL has DBus/systemd issues with Flatpak; use Windows versions of these apps
+if is_wsl; then
+    print_skip "Flatpak applications (use Windows versions in WSL)"
+    exit 0
+fi
+
 ### Ensure flatpak is installed
 install_flatpak() {
     case "$PKG_MANAGER" in

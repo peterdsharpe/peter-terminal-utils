@@ -9,6 +9,12 @@ standalone_init
 
 skip_if_headless "RustDesk"
 
+# WSL: use Windows RustDesk instead
+if is_wsl; then
+    print_skip "RustDesk (use Windows version in WSL)"
+    exit 0
+fi
+
 # Check if already installed
 if command -v rustdesk &>/dev/null; then
     print_skip "RustDesk already installed"

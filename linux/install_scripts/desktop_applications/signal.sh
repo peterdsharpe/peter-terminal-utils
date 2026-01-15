@@ -10,6 +10,12 @@ standalone_init
 
 skip_if_headless "Signal Desktop"
 
+# WSL: use Windows Signal instead
+if is_wsl; then
+    print_skip "Signal Desktop (use Windows version in WSL)"
+    exit 0
+fi
+
 # Check if snap is available first
 if ! command -v snap &>/dev/null; then
     print_skip "Signal Desktop (snapd not available)"

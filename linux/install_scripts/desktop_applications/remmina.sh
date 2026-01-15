@@ -9,6 +9,12 @@ standalone_init
 
 skip_if_headless "Remmina"
 
+# WSL: use Windows remote desktop tools instead
+if is_wsl; then
+    print_skip "Remmina (use Windows remote desktop tools in WSL)"
+    exit 0
+fi
+
 # Check if snap is available first
 if ! command -v snap &>/dev/null; then
     print_skip "Remmina (snapd not available)"
