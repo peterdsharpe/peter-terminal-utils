@@ -6,6 +6,6 @@ History/
 # Root-level extensions.json has absolute paths
 extensions.json
 
-# Profile-level machine-specific files
-profiles/*/extensions.json
-profiles/*/globalStorage/
+# Profile directories use random hashes per-machine - don't track them
+# Settings are stored in PeterProfile/ and symlinked at install time
+profiles/

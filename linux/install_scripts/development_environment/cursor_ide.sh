@@ -208,35 +208,68 @@ fi
 ### Configure Cursor with PeterProfile settings
 ###############################################################################
 
-# Check if config is already correctly symlinked
+# Profile name to configure (must match what's created in Cursor)
+PROFILE_NAME="PeterProfile"
+STORAGE_JSON="$CURSOR_CONFIG_DEST/globalStorage/storage.json"
+
+# Find profile ID from Cursor's storage.json
+# Returns empty string if profile doesn't exist
+get_profile_id() {
+    local profile_name="$1"
+    if [[ ! -f "$STORAGE_JSON" ]]; then
+        return 0
+    fi
+    jq -r --arg name "$profile_name" \
+        '.userDataProfiles[]? | select(.name == $name) | .location // empty' \
+        "$STORAGE_JSON" 2>/dev/null
+}
+
+# Check if profile settings are correctly symlinked
 cursor_config_correct() {
-    # Check if profiles directory is correctly symlinked
-    local profile_dest="$CURSOR_CONFIG_DEST/profiles"
-    local profile_src="$CURSOR_CONFIG_SRC/profiles"
+    local profile_id
+    profile_id=$(get_profile_id "$PROFILE_NAME")
     
-    if [[ ! -L "$profile_dest" ]]; then
+    if [[ -z "$profile_id" ]]; then
+        # Profile doesn't exist yet - can't be correct
         return 1
     fi
     
-    local current_target
-    current_target=$(readlink -f "$profile_dest")
-    local expected_target
-    expected_target=$(readlink -f "$profile_src")
+    local profile_dir="$CURSOR_CONFIG_DEST/profiles/$profile_id"
+    local src_dir="$CURSOR_CONFIG_SRC/$PROFILE_NAME"
     
-    [[ "$current_target" == "$expected_target" ]]
+    # Check that both settings.json and keybindings.json are symlinked correctly
+    for file in settings.json keybindings.json; do
+        local dest="$profile_dir/$file"
+        local src="$src_dir/$file"
+        
+        if [[ ! -L "$dest" ]]; then
+            return 1
+        fi
+        
+        local current_target expected_target
+        current_target=$(readlink -f "$dest")
+        expected_target=$(readlink -f "$src")
+        
+        if [[ "$current_target" != "$expected_target" ]]; then
+            return 1
+        fi
+    done
+    
+    return 0
 }
 
 setup_cursor_config() {
+    local src_dir="$CURSOR_CONFIG_SRC/$PROFILE_NAME"
+    
     # Check if source config exists
-    if [[ ! -d "$CURSOR_CONFIG_SRC" ]]; then
-        echo "Warning: Cursor config source not found at $CURSOR_CONFIG_SRC" >&2
+    if [[ ! -d "$src_dir" ]]; then
+        echo "Warning: Profile config not found at $src_dir" >&2
         return 1
     fi
     
     # Handle migration from old approach: if $CURSOR_CONFIG_DEST is itself a
     # symlink (e.g., pointing to dotfiles/cursor-config), we need to replace it
-    # with a real directory. Otherwise, creating symlinks inside it would write
-    # into the dotfiles directory and create circular references.
+    # with a real directory.
     if [[ -L "$CURSOR_CONFIG_DEST" ]]; then
         echo "Migrating from old config symlink approach..."
         local old_target
@@ -244,8 +277,7 @@ setup_cursor_config() {
         rm "$CURSOR_CONFIG_DEST"
         mkdir -p "$CURSOR_CONFIG_DEST"
         
-        # Copy over non-profile files from old location (globalStorage, etc.)
-        # These are machine-specific and shouldn't be symlinked
+        # Copy over non-profile files from old location
         for item in globalStorage workspaceStorage History extensions.json; do
             if [[ -e "$old_target/$item" ]]; then
                 cp -a "$old_target/$item" "$CURSOR_CONFIG_DEST/" 2>/dev/null || true
@@ -256,61 +288,114 @@ setup_cursor_config() {
     # Ensure Cursor User config directory exists
     mkdir -p "$CURSOR_CONFIG_DEST"
     
-    # Copy global settings files (optional, if they exist at root level)
-    # These are less common but we'll handle them if present
+    # Handle migration from old profiles/ symlink approach
+    # Old setup: ~/.config/Cursor/User/profiles → dotfiles/cursor-config/profiles
+    # New setup: individual file symlinks inside the profile directory
+    local profiles_dir="$CURSOR_CONFIG_DEST/profiles"
+    if [[ -L "$profiles_dir" ]]; then
+        echo "Migrating from old profiles symlink approach..."
+        local old_profiles_target
+        old_profiles_target=$(readlink -f "$profiles_dir" 2>/dev/null)
+        
+        # Remove the symlink so we can create a real directory
+        rm "$profiles_dir"
+        mkdir -p "$profiles_dir"
+        
+        # If the old target had content, copy it over (preserves profile directories)
+        if [[ -d "$old_profiles_target" ]]; then
+            # Copy profile directories (the hashed ones like 4404ae3a/)
+            for profile_subdir in "$old_profiles_target"/*/; do
+                if [[ -d "$profile_subdir" ]]; then
+                    local subdir_name
+                    subdir_name=$(basename "$profile_subdir")
+                    cp -a "$profile_subdir" "$profiles_dir/$subdir_name" 2>/dev/null || true
+                fi
+            done
+        fi
+    fi
+    
+    # Copy default profile settings (optional, if they exist at root level)
     for item in settings.json keybindings.json; do
         local src="$CURSOR_CONFIG_SRC/$item"
         local dest="$CURSOR_CONFIG_DEST/$item"
         
         if [[ -f "$src" ]]; then
-            # Only copy if destination doesn't exist or is older
             if [[ ! -f "$dest" ]] || [[ "$src" -nt "$dest" ]]; then
                 cp "$src" "$dest" || return 1
             fi
         fi
     done
     
-    # Symlink the profiles directory (contains PeterProfile with settings)
-    local profile_src="$CURSOR_CONFIG_SRC/profiles"
-    local profile_dest="$CURSOR_CONFIG_DEST/profiles"
+    # Find the profile ID for PeterProfile
+    local profile_id
+    profile_id=$(get_profile_id "$PROFILE_NAME")
     
-    if [[ -d "$profile_src" ]]; then
-        # Backup existing profiles directory if it's not a symlink
-        if [[ -d "$profile_dest" ]] && [[ ! -L "$profile_dest" ]]; then
-            local backup_dir
-            backup_dir="${profile_dest}.backup.$(date +%Y%m%d_%H%M%S)"
-            mv "$profile_dest" "$backup_dir" || return 1
-            echo "Backed up existing profiles to $backup_dir"
+    if [[ -z "$profile_id" ]]; then
+        echo ""
+        echo "╔══════════════════════════════════════════════════════════════════╗"
+        echo "║  PeterProfile not found in Cursor                                ║"
+        echo "╠══════════════════════════════════════════════════════════════════╣"
+        echo "║  Please create it manually:                                      ║"
+        echo "║                                                                  ║"
+        echo "║  1. Open Cursor IDE                                              ║"
+        echo "║  2. Click the gear icon (bottom-left) → Profiles                 ║"
+        echo "║  3. Click 'Create Profile'                                       ║"
+        echo "║  4. Name it exactly: PeterProfile                                ║"
+        echo "║  5. Re-run this install script                                   ║"
+        echo "╚══════════════════════════════════════════════════════════════════╝"
+        echo ""
+        return 1
+    fi
+    
+    local profile_dir="$CURSOR_CONFIG_DEST/profiles/$profile_id"
+    
+    # Ensure profile directory exists
+    mkdir -p "$profile_dir"
+    
+    # Symlink settings files from dotfiles into the profile directory
+    for file in settings.json keybindings.json; do
+        local src="$src_dir/$file"
+        local dest="$profile_dir/$file"
+        
+        if [[ ! -f "$src" ]]; then
+            continue
         fi
         
-        # Remove existing symlink if it's pointing to the wrong place
-        if [[ -L "$profile_dest" ]]; then
-            local current_target
-            current_target=$(readlink -f "$profile_dest")
-            local expected_target
-            expected_target=$(readlink -f "$profile_src")
+        # Backup existing file if it's not a symlink
+        if [[ -f "$dest" ]] && [[ ! -L "$dest" ]]; then
+            local backup="${dest}.backup.$(date +%Y%m%d_%H%M%S)"
+            mv "$dest" "$backup"
+            echo "Backed up existing $file to $backup"
+        fi
+        
+        # Remove existing symlink if pointing to wrong location
+        if [[ -L "$dest" ]]; then
+            local current_target expected_target
+            current_target=$(readlink -f "$dest")
+            expected_target=$(readlink -f "$src")
             if [[ "$current_target" != "$expected_target" ]]; then
-                rm "$profile_dest"
+                rm "$dest"
             fi
         fi
         
-        # Create the symlink if it doesn't exist
-        if [[ ! -L "$profile_dest" ]]; then
-            ln -sf "$profile_src" "$profile_dest" || return 1
+        # Create symlink if needed
+        if [[ ! -L "$dest" ]]; then
+            ln -sf "$src" "$dest" || return 1
+            echo "Linked $file → $src"
         fi
-    fi
+    done
     
-    # Explicitly do NOT sync these directories (let Cursor manage them locally):
-    # - globalStorage/ - machine-specific state, SQLite databases
-    # - workspaceStorage/ - workspace-specific caches
+    # Note: These stay local (machine-specific):
+    # - globalStorage/ - SQLite databases, machine state
+    # - workspaceStorage/ - workspace caches
     # - History/ - local file edit history
-    # - extensions.json (root) - has absolute paths to extensions
+    # - extensions.json - absolute paths to extensions
 }
 
 if cursor_config_correct; then
-    print_skip "Cursor config already symlinked"
+    print_skip "Cursor PeterProfile already configured"
 else
-    step "Configuring Cursor with PeterProfile" setup_cursor_config
+    step "Configuring Cursor PeterProfile" setup_cursor_config
 fi
 
 ###############################################################################
