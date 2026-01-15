@@ -3312,6 +3312,12 @@ class ExecutionTUI(BaseTUI):
         max_workers = min((os.cpu_count() or 4) * 2, 16)
         scheduler = ParallelScheduler(self.statuses, max_workers)
 
+        # Pre-populate completed_paths with disabled scripts (assumed already run)
+        for section in self.manifest.sections:
+            for script in section.scripts:
+                if not script.enabled:
+                    scheduler.completed_paths.add(script.path)
+
         # Open log file and write header
         self._write_log_header()
 
