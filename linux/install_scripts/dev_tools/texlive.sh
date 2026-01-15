@@ -9,7 +9,7 @@ standalone_init
 # See: https://www.tug.org/texlive/quickinstall.html
 
 install_texlive() {
-    local tmpdir year arch_dir texlive_bin install_dir
+    local tmpdir year arch_dir texlive_bin install_dir profile_file
     tmpdir=$(mktemp -d) || return 1
     
     # Use subshell to isolate directory changes
@@ -25,9 +25,46 @@ install_texlive() {
         [ -n "$install_dir" ] && [ -d "$install_dir" ] || { echo "TexLive installer directory not found" >&2; exit 1; }
         cd "$install_dir" || exit 1
         
-        # Install non-interactively (full scheme by default)
+        # Create installation profile to disable GUI apps and documentation
+        profile_file="$tmpdir/texlive.profile"
+        
+        # Determine binary architecture for profile
+        local binary_arch
+        case "$ARCH" in
+            x86_64) binary_arch="binary_x86_64-linux" ;;
+            arm64|aarch64) binary_arch="binary_aarch64-linux" ;;
+            *) binary_arch="binary_x86_64-linux" ;;  # default fallback
+        esac
+        
+        cat > "$profile_file" << EOF
+# TeX Live installation profile
+# Installs full scheme but without GUI apps, desktop entries, or documentation
+selected_scheme scheme-full
+TEXDIR /usr/local/texlive/2026
+TEXMFLOCAL /usr/local/texlive/texmf-local
+TEXMFSYSCONFIG /usr/local/texlive/2026/texmf-config
+TEXMFSYSVAR /usr/local/texlive/2026/texmf-var
+$binary_arch 1
+instopt_adjustpath 0
+tlpdbopt_autobackup 1
+tlpdbopt_backupdir tlpkg/backups
+tlpdbopt_create_formats 1
+tlpdbopt_desktop_integration 0
+tlpdbopt_file_assocs 0
+tlpdbopt_generate_updmap 0
+tlpdbopt_install_docfiles 0
+tlpdbopt_install_srcfiles 0
+tlpdbopt_post_code 1
+tlpdbopt_sys_bin /usr/local/bin
+tlpdbopt_sys_info 0
+tlpdbopt_sys_man 0
+tlpdbopt_w32_multi_user 1
+EOF
+        
+        # Install non-interactively using profile
         print_warning "TeX Live installation may take 30+ minutes..."
-        sudo perl ./install-tl --no-interaction
+        print_warning "Skipping documentation and GUI apps to prevent desktop entries"
+        sudo perl ./install-tl --profile="$profile_file"
     )
     local install_rc=$?
     rm -rf "$tmpdir"
