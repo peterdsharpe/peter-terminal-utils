@@ -205,16 +205,20 @@ fi
 
 # Check if config is already correctly symlinked
 cursor_config_correct() {
-    # Check if destination is a symlink pointing to our source
-    if [[ -L "$CURSOR_CONFIG_DEST" ]]; then
-        local current_target
-        current_target=$(readlink -f "$CURSOR_CONFIG_DEST")
-        local expected_target
-        expected_target=$(readlink -f "$CURSOR_CONFIG_SRC")
-        [[ "$current_target" == "$expected_target" ]]
-    else
+    # Check if profiles directory is correctly symlinked
+    local profile_dest="$CURSOR_CONFIG_DEST/profiles"
+    local profile_src="$CURSOR_CONFIG_SRC/profiles"
+    
+    if [[ ! -L "$profile_dest" ]]; then
         return 1
     fi
+    
+    local current_target
+    current_target=$(readlink -f "$profile_dest")
+    local expected_target
+    expected_target=$(readlink -f "$profile_src")
+    
+    [[ "$current_target" == "$expected_target" ]]
 }
 
 setup_cursor_config() {
@@ -224,22 +228,78 @@ setup_cursor_config() {
         return 1
     fi
     
-    # Backup existing config if it exists and is not a symlink
-    if [[ -d "$CURSOR_CONFIG_DEST" ]] && [[ ! -L "$CURSOR_CONFIG_DEST" ]]; then
-        local backup_dir
-        backup_dir="$CURSOR_CONFIG_DEST.backup.$(date +%Y%m%d_%H%M%S)"
-        mv "$CURSOR_CONFIG_DEST" "$backup_dir" || return 1
-        echo "Backed up existing config to $backup_dir"
+    # Handle migration from old approach: if $CURSOR_CONFIG_DEST is itself a
+    # symlink (e.g., pointing to dotfiles/cursor-config), we need to replace it
+    # with a real directory. Otherwise, creating symlinks inside it would write
+    # into the dotfiles directory and create circular references.
+    if [[ -L "$CURSOR_CONFIG_DEST" ]]; then
+        echo "Migrating from old config symlink approach..."
+        local old_target
+        old_target=$(readlink -f "$CURSOR_CONFIG_DEST")
+        rm "$CURSOR_CONFIG_DEST"
+        mkdir -p "$CURSOR_CONFIG_DEST"
+        
+        # Copy over non-profile files from old location (globalStorage, etc.)
+        # These are machine-specific and shouldn't be symlinked
+        for item in globalStorage workspaceStorage History extensions.json; do
+            if [[ -e "$old_target/$item" ]]; then
+                cp -a "$old_target/$item" "$CURSOR_CONFIG_DEST/" 2>/dev/null || true
+            fi
+        done
     fi
     
-    # Remove existing symlink if present (and not already correct)
-    [[ -L "$CURSOR_CONFIG_DEST" ]] && rm "$CURSOR_CONFIG_DEST"
+    # Ensure Cursor User config directory exists
+    mkdir -p "$CURSOR_CONFIG_DEST"
     
-    # Create parent directory
-    mkdir -p "$(dirname "$CURSOR_CONFIG_DEST")"
+    # Copy global settings files (optional, if they exist at root level)
+    # These are less common but we'll handle them if present
+    for item in settings.json keybindings.json; do
+        local src="$CURSOR_CONFIG_SRC/$item"
+        local dest="$CURSOR_CONFIG_DEST/$item"
+        
+        if [[ -f "$src" ]]; then
+            # Only copy if destination doesn't exist or is older
+            if [[ ! -f "$dest" ]] || [[ "$src" -nt "$dest" ]]; then
+                cp "$src" "$dest" || return 1
+            fi
+        fi
+    done
     
-    # Create symlink
-    ln -sf "$CURSOR_CONFIG_SRC" "$CURSOR_CONFIG_DEST"
+    # Symlink the profiles directory (contains PeterProfile with settings)
+    local profile_src="$CURSOR_CONFIG_SRC/profiles"
+    local profile_dest="$CURSOR_CONFIG_DEST/profiles"
+    
+    if [[ -d "$profile_src" ]]; then
+        # Backup existing profiles directory if it's not a symlink
+        if [[ -d "$profile_dest" ]] && [[ ! -L "$profile_dest" ]]; then
+            local backup_dir
+            backup_dir="${profile_dest}.backup.$(date +%Y%m%d_%H%M%S)"
+            mv "$profile_dest" "$backup_dir" || return 1
+            echo "Backed up existing profiles to $backup_dir"
+        fi
+        
+        # Remove existing symlink if it's pointing to the wrong place
+        if [[ -L "$profile_dest" ]]; then
+            local current_target
+            current_target=$(readlink -f "$profile_dest")
+            local expected_target
+            expected_target=$(readlink -f "$profile_src")
+            if [[ "$current_target" != "$expected_target" ]]; then
+                rm "$profile_dest"
+            fi
+        fi
+        
+        # Create the symlink if it doesn't exist
+        if [[ ! -L "$profile_dest" ]]; then
+            ln -sf "$profile_src" "$profile_dest" || return 1
+        fi
+    fi
+    
+    # Explicitly do NOT sync these directories (let Cursor manage them locally):
+    # - globalStorage/ - machine-specific state, SQLite databases
+    # - workspaceStorage/ - workspace-specific caches
+    # - History/ - local file edit history
+    # - extensions.json (root) - has absolute paths to extensions
 }
 
 if cursor_config_correct; then
@@ -249,17 +309,24 @@ else
 fi
 
 ###############################################################################
-### Install Extensions (optional, on first run)
+### Extension Management
 ###############################################################################
 
-# Extensions are listed in cursor-config/extensions.txt
-# They can be installed after Cursor first launch with:
-#   while read ext; do cursor --install-extension "$ext"; done < extensions.txt
+# Extensions are managed per-machine (NOT synced via dotfiles).
 # 
-# We don't do this automatically because:
-# 1. Cursor needs to run at least once to initialize
-# 2. Extension installation can be slow and may require network
-# 3. Some extensions may not be available in Cursor's marketplace
+# Why? extensions.json contains:
+#   - Absolute file paths (/home/peter/.cursor/extensions/...)
+#   - Platform-specific binaries (-linux-x64, -darwin-arm64, etc.)
+#   - Machine-specific metadata
+#
+# Instead, we maintain extensions.txt with extension IDs.
+# Install extensions after first Cursor launch with:
+#   while read ext; do cursor --install-extension "$ext"; done < extensions.txt
+#
+# This approach ensures:
+#   ✓ Extensions work correctly on each platform
+#   ✓ No git noise from extension updates
+#   ✓ Fresh installs get the right platform-specific versions
 
 if [[ -f "$CURSOR_CONFIG_SRC/extensions.txt" ]]; then
     print_info "Extensions list available at: $CURSOR_CONFIG_SRC/extensions.txt"

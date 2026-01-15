@@ -1,0 +1,11 @@
+# Machine-specific state and caches
+globalStorage/
+workspaceStorage/
+History/
+
+# Root-level extensions.json has absolute paths
+extensions.json
+
+# Profile-level machine-specific files
+profiles/*/extensions.json
+profiles/*/globalStorage/
