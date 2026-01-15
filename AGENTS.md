@@ -1,0 +1,1 @@
+* All installation scripts in `./linux/install_scripts` should be executable (chmod +x) and have the correct shebang.
