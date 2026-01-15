@@ -22,12 +22,12 @@ RUN apt-get update -qq && \
 RUN useradd -m -s /bin/bash testuser && \
     echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Copy the linux setup directory
-COPY --chown=testuser:testuser . /home/testuser/linux-setup
+# Copy the full repository (build context is repo root)
+COPY --chown=testuser:testuser . /home/testuser/peter-terminal-utils
 
 # Switch to test user
 USER testuser
-WORKDIR /home/testuser/linux-setup
+WORKDIR /home/testuser/peter-terminal-utils/linux
 
 # Make setup executable
 RUN chmod +x setup

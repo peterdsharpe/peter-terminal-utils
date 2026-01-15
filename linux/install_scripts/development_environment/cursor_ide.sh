@@ -121,7 +121,7 @@ install_cursor_deb() {
     echo "Downloading Cursor $version..."
     curl -L "$deb_url" -o "$tmp_deb" || { rm -f "$tmp_deb"; return 1; }
     
-    sudo dpkg -i "$tmp_deb" || sudo apt-get install -f -y
+    pkg_install_local "$tmp_deb"
     local result=$?
     rm -f "$tmp_deb"
     return $result
@@ -224,6 +224,38 @@ get_profile_id() {
         "$STORAGE_JSON" 2>/dev/null
 }
 
+# Create a profile directly in storage.json (no GUI required)
+# Returns the new profile ID
+create_profile_directly() {
+    local profile_name="$1"
+    local profile_id
+    
+    # Generate a unique 8-character hex ID (similar to what Cursor uses)
+    profile_id=$(head -c 4 /dev/urandom | xxd -p)
+    
+    # Ensure directories exist
+    mkdir -p "$CURSOR_CONFIG_DEST/globalStorage"
+    mkdir -p "$CURSOR_CONFIG_DEST/profiles/$profile_id"
+    
+    # Initialize storage.json if it doesn't exist
+    if [[ ! -f "$STORAGE_JSON" ]]; then
+        echo '{}' > "$STORAGE_JSON"
+    fi
+    
+    # Add the profile to userDataProfiles array
+    # Handle case where userDataProfiles doesn't exist yet
+    local tmp_file="${STORAGE_JSON}.tmp"
+    jq --arg name "$profile_name" --arg loc "$profile_id" \
+        'if .userDataProfiles then
+            .userDataProfiles += [{"name": $name, "location": $loc}]
+         else
+            .userDataProfiles = [{"name": $name, "location": $loc}]
+         end' \
+        "$STORAGE_JSON" > "$tmp_file" && mv "$tmp_file" "$STORAGE_JSON"
+    
+    echo "$profile_id"
+}
+
 # Check if profile settings are correctly symlinked
 cursor_config_correct() {
     local profile_id
@@ -324,29 +356,17 @@ setup_cursor_config() {
     local profile_id
     profile_id=$(get_profile_id "$PROFILE_NAME")
     
+    # Auto-create profile if it doesn't exist
     if [[ -z "$profile_id" ]]; then
-        echo ""
-        echo "╔══════════════════════════════════════════════════════════════════╗"
-        echo "║  PeterProfile not found in Cursor                                ║"
-        echo "╠══════════════════════════════════════════════════════════════════╣"
-        if [[ ! -f "$STORAGE_JSON" ]]; then
-        echo "║  Cursor hasn't been opened yet. Please:                          ║"
-        echo "║                                                                  ║"
-        echo "║  1. Open Cursor IDE for the first time                           ║"
-        echo "║  2. Complete any initial setup prompts                           ║"
-        echo "║  3. Go to: gear icon (bottom-left) → Profiles → Create Profile   ║"
+        echo "Creating $PROFILE_NAME profile..."
+        profile_id=$(create_profile_directly "$PROFILE_NAME")
+        
+        if [[ -n "$profile_id" ]]; then
+            echo "Created $PROFILE_NAME with ID: $profile_id"
         else
-        echo "║  Please create the profile manually:                             ║"
-        echo "║                                                                  ║"
-        echo "║  1. Open Cursor IDE                                              ║"
-        echo "║  2. Click the gear icon (bottom-left) → Profiles                 ║"
-        echo "║  3. Click 'Create Profile'                                       ║"
+            echo "Failed to create profile in storage.json" >&2
+            return 1
         fi
-        echo "║  4. Name it exactly: PeterProfile                                ║"
-        echo "║  5. Re-run this install script                                   ║"
-        echo "╚══════════════════════════════════════════════════════════════════╝"
-        echo ""
-        return 1
     fi
     
     local profile_dir="$CURSOR_CONFIG_DEST/profiles/$profile_id"

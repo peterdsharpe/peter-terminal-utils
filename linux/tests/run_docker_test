@@ -164,7 +164,7 @@ def build_image(linux_dir: Path, *, no_cache: bool = False) -> bool:
     """Build the Docker test image.
 
     Args:
-        linux_dir: Path to the linux/ directory to copy into the image.
+        linux_dir: Path to the linux/ directory (used to find Dockerfile).
         no_cache: If True, rebuild without using cached layers.
 
     Returns:
@@ -177,6 +177,9 @@ def build_image(linux_dir: Path, *, no_cache: bool = False) -> bool:
         print_error(f"Dockerfile not found: {dockerfile}")
         return False
 
+    # Use repo root as build context (so ipy/ and other siblings are included)
+    repo_root = linux_dir.parent
+
     cmd = [
         "docker",
         "build",
@@ -187,7 +190,7 @@ def build_image(linux_dir: Path, *, no_cache: bool = False) -> bool:
     ]
     if no_cache:
         cmd.append("--no-cache")
-    cmd.append(str(linux_dir))
+    cmd.append(str(repo_root))
 
     try:
         run_cmd(cmd, stream=True)
@@ -227,7 +230,7 @@ def run_container(*, dry_run: bool = False, logs_dir: Path | None = None) -> int
     if logs_dir is not None:
         logs_dir.mkdir(parents=True, exist_ok=True)
         logs_dir.chmod(0o777)
-        cmd.extend(["-v", f"{logs_dir}:/home/testuser/linux-setup/logs"])
+        cmd.extend(["-v", f"{logs_dir}:/home/testuser/peter-terminal-utils/linux/logs"])
 
     cmd.append(IMAGE_NAME)
 
