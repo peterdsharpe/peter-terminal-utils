@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Git Settings
 # @description: Aliases, git-lfs, merge/rebase configuration
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

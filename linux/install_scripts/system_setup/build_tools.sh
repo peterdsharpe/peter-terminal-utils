@@ -1,28 +1,13 @@
 #!/bin/bash
-# @name: Core Packages
-# @description: Essential bootstrap packages (git, curl, build tools, compression)
+# @name: Build Tools
+# @description: Compilers and archive tools (build-essential, p7zip, unrar)
 # @requires: sudo
+# @depends: bootstrap.sh
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-install_core_packages() {
-    # Pre-flight check: ensure package manager is in healthy state
-    if ! pkg_check_health; then
-        return 1
-    fi
-
-    local packages=(
-        # Version control (many scripts depend on these)
-        git git-lfs
-        # Downloading (many installers need these)
-        curl wget
-        # JSON processing (GNOME extension scripts, API parsing)
-        jq
-        # Compression (font installs, GitHub binary installs need these)
-        unzip zip zstd
-    )
-
+install_build_tools() {
     # Packages requiring name mapping
     local mapped_packages=(
         build-essential  # gcc, make, etc. for compiling
@@ -34,19 +19,6 @@ install_core_packages() {
     if [[ "$PKG_MANAGER" == "apt" ]]; then
         distro_specific+=(unrar)  # On Fedora/Arch, use RPM Fusion / AUR
     fi
-
-    step_start "Updating package manager"
-    run pkg_update
-    step_end
-
-    step_start "Upgrading system packages"
-    run pkg_upgrade
-    step_end
-
-    step_start "Installing core packages"
-    # shellcheck disable=SC2086
-    run pkg_install ${packages[*]}
-    step_end
 
     step_start "Installing build tools"
     local mapped_list=""
@@ -65,4 +37,4 @@ install_core_packages() {
     fi
 }
 
-require_sudo "Core packages" install_core_packages
+require_sudo "Build Tools" install_build_tools

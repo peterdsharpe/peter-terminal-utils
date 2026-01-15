@@ -2,7 +2,7 @@
 # @name: GitHub CLI
 # @description: GitHub's official CLI for managing repos, PRs, and issues
 # @repo: cli/cli
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

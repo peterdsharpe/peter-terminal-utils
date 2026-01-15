@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Dash to Panel
 # @description: GNOME extension for Windows-style taskbar
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Docker
 # @description: Container runtime for building and running applications
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @requires: sudo
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

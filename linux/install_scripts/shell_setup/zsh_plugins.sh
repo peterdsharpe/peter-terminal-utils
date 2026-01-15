@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Zsh Plugins
 # @description: Syntax highlighting, autosuggestions, autocomplete
-# @depends: ohmyzsh.sh, core_packages.sh
+# @depends: ohmyzsh.sh, bootstrap.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

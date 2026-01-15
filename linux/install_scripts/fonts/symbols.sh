@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Symbols Nerd Font
 # @description: Fallback font for missing glyphs and icons
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

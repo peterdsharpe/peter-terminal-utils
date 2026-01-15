@@ -2,7 +2,7 @@
 # @name: neovim
 # @description: Hyperextensible Vim-based text editor
 # @repo: neovim/neovim
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

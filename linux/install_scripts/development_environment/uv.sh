@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: uv
 # @description: Fast Python package and project manager from Astral
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

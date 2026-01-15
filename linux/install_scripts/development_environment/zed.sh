@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Zed
 # @description: High-performance code editor from the creators of Atom
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @headless: skip
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

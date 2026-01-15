@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Libinput Config
 # @description: Custom scroll speed via LD_PRELOAD
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @requires: sudo
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

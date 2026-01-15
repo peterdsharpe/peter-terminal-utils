@@ -3,6 +3,7 @@
 # @description: GNOME desktop applications and tools
 # @requires: sudo
 # @headless: skip
+# @depends: bootstrap.sh
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

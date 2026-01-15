@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: TeX Live
 # @description: Full TeX Live distribution (7+GB, ~30 min)
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @requires: sudo
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

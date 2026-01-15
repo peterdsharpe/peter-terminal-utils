@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Cursor IDE
 # @description: Full Cursor IDE with PeterProfile configuration
-# @depends: core_packages.sh
+# @depends: bootstrap.sh
 # @headless: skip
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
