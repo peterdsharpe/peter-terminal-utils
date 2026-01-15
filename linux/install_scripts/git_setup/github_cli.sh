@@ -26,20 +26,18 @@ install_github_cli() {
     if [[ "$HAS_SUDO" == true ]]; then
         case "$PKG_MANAGER" in
             apt)
-                # Install via apt repository
+                # Add GitHub CLI apt repository
                 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
                 sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
                 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
-                sudo apt-get update -qq || return 1
-                sudo apt-get install -yq gh
+                pkg_update || return 1
+                # shellcheck disable=SC2046
+                pkg_install $(pkg_name gh)
                 ;;
-            dnf)
-                # Fedora has gh in default repos
-                sudo dnf install -y gh
-                ;;
-            pacman)
-                # Arch has gh in community repo
-                sudo pacman -S --noconfirm github-cli
+            dnf|pacman|zypper)
+                # These distros have gh in default/community repos
+                # shellcheck disable=SC2046
+                pkg_install $(pkg_name gh)
                 ;;
             *)
                 # Fall back to binary install

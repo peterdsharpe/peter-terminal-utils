@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: SSH Key
 # @description: Generate ~/.ssh/id_ed25519 key pair
+# @depends: build_tools.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

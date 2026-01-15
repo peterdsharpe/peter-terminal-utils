@@ -1,6 +1,6 @@
 #!/bin/bash
 # @name: Build Tools
-# @description: Compilers and archive tools (build-essential, p7zip, unrar)
+# @description: Compilers, archive tools, and SSH utilities (build-essential, p7zip, xz, bzip2, openssh)
 # @requires: sudo
 # @depends: bootstrap.sh
 # @locks: pkg
@@ -12,6 +12,9 @@ install_build_tools() {
     local mapped_packages=(
         build-essential  # gcc, make, etc. for compiling
         p7zip-full       # 7z support
+        xz-utils         # xz compression (for .tar.xz archives)
+        bzip2            # bzip2 compression (for .tar.bz2 archives)
+        openssh-client   # SSH client utilities (ssh-keygen, ssh, scp)
     )
 
     # Packages only available on certain distros

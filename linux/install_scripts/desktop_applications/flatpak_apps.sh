@@ -15,13 +15,7 @@ fi
 
 ### Ensure flatpak is installed
 install_flatpak() {
-    case "$PKG_MANAGER" in
-        apt) sudo apt-get install -yq flatpak ;;
-        dnf) sudo dnf install -y flatpak ;;
-        pacman) sudo pacman -S --noconfirm flatpak ;;
-        zypper) sudo zypper install -y flatpak ;;
-        *) echo "Cannot install flatpak: unsupported package manager" >&2; return 1 ;;
-    esac
+    pkg_install flatpak
 }
 
 if ! command -v flatpak &>/dev/null; then

@@ -11,12 +11,14 @@ install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
     # Wait for docker group to be created (the install script creates it)
     # Then add current user to it
+    local current_user
+    current_user="$(whoami)"
     if getent group docker &>/dev/null; then
-        sudo usermod -aG docker "$USER"
+        sudo usermod -aG docker "$current_user"
     else
         # Group should exist after docker install; if not, create it
         sudo groupadd -f docker
-        sudo usermod -aG docker "$USER"
+        sudo usermod -aG docker "$current_user"
     fi
 }
 

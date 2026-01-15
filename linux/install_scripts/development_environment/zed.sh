@@ -16,7 +16,8 @@ if is_wsl; then
 fi
 
 install_zed() {
-    curl -f https://zed.dev/install.sh | sh
+    # Zed's installer requires SHELL to be set; ensure it's available
+    SHELL="${SHELL:-$(command -v bash)}" curl -f https://zed.dev/install.sh | sh
 }
 
 ensure_command "Zed" zed install_zed

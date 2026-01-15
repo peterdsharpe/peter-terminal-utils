@@ -15,6 +15,15 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 ###############################################################################
+### PATH Setup - Ensure common tool directories are available
+###############################################################################
+# Tools like uv, cargo, and GitHub binaries install to these directories.
+# Adding them early ensures dependent scripts can find newly-installed tools.
+
+[[ -d "$HOME/.local/bin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
+[[ -d "$HOME/.cargo/bin" ]] && [[ ":$PATH:" != *":$HOME/.cargo/bin:"* ]] && export PATH="$HOME/.cargo/bin:$PATH"
+
+###############################################################################
 ### Logging Helpers
 ###############################################################################
 
@@ -429,6 +438,20 @@ detect_pkg_manager() {
 
 PKG_MANAGER=$(detect_pkg_manager)
 
+# Lock file for serializing package manager operations
+# Prevents race conditions when multiple scripts call pkg_install concurrently
+PKG_LOCK="/tmp/peter-terminal-utils-pkg.lock"
+
+### Execute a command while holding the package manager lock
+### Uses flock to serialize access - blocks until lock is available
+### Usage: with_pkg_lock command args...
+with_pkg_lock() {
+    (
+        flock -x 200
+        "$@"
+    ) 200>"$PKG_LOCK"
+}
+
 ### Check if dpkg is in a consistent state (apt-based distros only)
 ### Returns 0 if OK, 1 if needs repair
 ### Usage: pkg_check_health || { echo "Fix with: sudo dpkg --configure -a"; exit 1; }
@@ -446,8 +469,13 @@ pkg_check_health() {
 }
 
 ### Install packages using the detected package manager
+### Automatically serialized via flock to prevent concurrent apt/dnf conflicts
 ### Usage: pkg_install package1 package2 ...
 pkg_install() {
+    with_pkg_lock _pkg_install_impl "$@"
+}
+
+_pkg_install_impl() {
     case "$PKG_MANAGER" in
         apt) sudo apt-get install -yq "$@" ;;
         dnf) sudo dnf install -y "$@" ;;
@@ -458,8 +486,13 @@ pkg_install() {
 }
 
 ### Update package manager cache
+### Automatically serialized via flock to prevent concurrent conflicts
 ### Usage: pkg_update
 pkg_update() {
+    with_pkg_lock _pkg_update_impl
+}
+
+_pkg_update_impl() {
     case "$PKG_MANAGER" in
         apt) sudo apt-get update -qq ;;
         dnf) sudo dnf check-update || true ;;  # Returns 100 if updates available
@@ -470,13 +503,36 @@ pkg_update() {
 }
 
 ### Upgrade all packages
+### Automatically serialized via flock to prevent concurrent conflicts
 ### Usage: pkg_upgrade
 pkg_upgrade() {
+    with_pkg_lock _pkg_upgrade_impl
+}
+
+_pkg_upgrade_impl() {
     case "$PKG_MANAGER" in
         apt) sudo apt-get upgrade -yq ;;
         dnf) sudo dnf upgrade -y ;;
         pacman) sudo pacman -Su --noconfirm ;;
         zypper) sudo zypper update -y ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
+    esac
+}
+
+### Install a local package file (.deb, .rpm, .pkg.tar.zst)
+### Automatically serialized via flock to prevent concurrent conflicts
+### Usage: pkg_install_local /path/to/package.deb
+pkg_install_local() {
+    with_pkg_lock _pkg_install_local_impl "$@"
+}
+
+_pkg_install_local_impl() {
+    local pkg_path="$1"
+    case "$PKG_MANAGER" in
+        apt) sudo apt install -y "$pkg_path" ;;
+        dnf) sudo dnf install -y "$pkg_path" ;;
+        pacman) sudo pacman -U --noconfirm "$pkg_path" ;;
+        zypper) sudo zypper install -y --allow-unsigned-rpm "$pkg_path" ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -491,7 +547,9 @@ pkg_name() {
         dnf)
             case "$apt_name" in
                 build-essential) echo "gcc gcc-c++ make" ;;
+                libinput-dev) echo "libinput-devel" ;;
                 ncdu) echo "ncdu" ;;
+                ninja-build) echo "ninja-build" ;;
                 nvtop) echo "nvtop" ;;
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh-server" ;;
@@ -502,7 +560,10 @@ pkg_name() {
         pacman)
             case "$apt_name" in
                 build-essential) echo "base-devel" ;;
+                gh) echo "github-cli" ;;
+                libinput-dev) echo "libinput" ;;
                 ncdu) echo "ncdu" ;;
+                ninja-build) echo "ninja" ;;
                 nvtop) echo "nvtop" ;;
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh" ;;

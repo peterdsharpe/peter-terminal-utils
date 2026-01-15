@@ -6,12 +6,13 @@ A curses-based terminal interface for selecting and installing system components
 Parses install_scripts/manifest.conf and provides interactive selection with presets.
 
 Usage:
-    setup              # Interactive TUI mode
-    setup --preset 1   # Non-interactive: Desktop preset
-    setup --preset 2   # Non-interactive: Headless preset
-    setup --list       # Show available presets
-    setup --dry-run    # Dry run mode
-    setup --help       # Show help
+    setup                       # Interactive TUI mode
+    setup --preset 1            # Non-interactive: Desktop preset
+    setup --preset 2            # Non-interactive: Headless preset
+    setup --preset 2 --verbose  # Stream live output (for Docker/CI)
+    setup --list                # Show available presets
+    setup --dry-run             # Dry run mode
+    setup --help                # Show help
 """
 
 import argparse
@@ -32,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from itertools import batched, chain
 from pathlib import Path
-from typing import Literal, NamedTuple, Self
+from typing import Callable, Literal, NamedTuple, Self
 
 # Type aliases for literal values
 SectionState = Literal["all", "none", "partial"]
@@ -939,6 +940,300 @@ def run_script_simple(
         capture_output=True,
         text=True,
     )
+
+
+def run_script_streaming(
+    script_path: Path,
+    scripts_dir: Path,
+    env: dict[str, str],
+) -> int:
+    """Execute a script with live streaming output.
+
+    Streams stdout/stderr to the console in real-time, useful for debugging
+    and Docker/CI environments where you want to see script progress.
+
+    Args:
+        script_path: Full path to the script to execute.
+        scripts_dir: Directory containing install scripts.
+        env: Environment variables for execution.
+
+    Returns:
+        Exit code from the script.
+    """
+    bash_cmd = build_script_command(scripts_dir, script_path)
+    process = subprocess.Popen(
+        ["bash", "-c", bash_cmd],
+        env=env,
+        cwd=scripts_dir.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,  # Line buffered
+    )
+    if process.stdout is not None:
+        for line in process.stdout:
+            print(f"    {line}", end="")
+    process.wait()
+    return process.returncode
+
+
+###############################################################################
+### Install Logger
+###############################################################################
+
+
+@dataclass
+class InstallLogger:
+    """Handles logging for both interactive and non-interactive execution.
+
+    Creates timestamped log files (.log and .json) in the logs/ directory.
+    The JSON file stores the script selection; the .log file stores execution output.
+    """
+
+    scripts_dir: Path
+    dry_run: bool
+    headless: bool
+    statuses: list["ScriptStatus"]
+    start_time: float = field(default_factory=time.monotonic)
+    _wall_start: float = field(default_factory=time.time)
+
+    def get_log_paths(self) -> tuple[Path, Path]:
+        """Generate timestamped log file paths in the logs/ directory.
+
+        Returns:
+            Tuple of (console_log_path, json_log_path).
+        """
+        logs_dir = self.scripts_dir.parent / "logs"
+        logs_dir.mkdir(exist_ok=True)
+
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(self._wall_start))
+        console_path = logs_dir / f"{timestamp}.log"
+        json_path = logs_dir / f"{timestamp}.json"
+
+        return console_path, json_path
+
+    def write_header(self) -> None:
+        """Write log header and JSON selection file. Creates/truncates log file."""
+        console_path, json_path = self.get_log_paths()
+
+        # Write JSON selection (same format as --export)
+        scripts = [status.script.path for status in self.statuses]
+        data = {
+            "version": 1,
+            "description": "peter-terminal-utils selection export",
+            "scripts": scripts,
+        }
+        with open(json_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+        # Write console log header
+        start_time_str = time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime(self._wall_start)
+        )
+        with open(console_path, "w") as f:
+            f.write("Peter Sharpe's Linux Setup - Installation Log\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Timestamp: {start_time_str}\n")
+            f.write(f"Dry Run:   {self.dry_run}\n")
+            f.write(f"Headless:  {self.headless}\n")
+            f.write(f"Scripts:   {len(self.statuses)}\n")
+            f.write("\n" + "=" * 60 + "\n\n")
+
+    def append_result(self, status: "ScriptStatus") -> None:
+        """Append a script's result to the log file."""
+        console_path, _ = self.get_log_paths()
+
+        with open(console_path, "a") as f:
+            state_indicator = status.state.indicator
+            f.write(
+                f"{state_indicator} [{status.state.name}] "
+                f"{status.section.name} / {status.script.display_name}\n"
+            )
+            if status.exit_code is not None:
+                f.write(f"  Exit code: {status.exit_code}\n")
+            if status.output_lines:
+                f.write("  Output:\n")
+                for line in status.output_lines:
+                    clean_line = strip_ansi(line)
+                    f.write(f"    {clean_line}\n")
+            f.write("\n")
+
+    def write_summary(self, end_time: float | None = None) -> None:
+        """Append final summary to the log file."""
+        console_path, _ = self.get_log_paths()
+
+        success_count = sum(1 for s in self.statuses if s.state == ScriptState.SUCCESS)
+        fail_count = sum(1 for s in self.statuses if s.state == ScriptState.FAILED)
+        skipped_count = sum(1 for s in self.statuses if s.state == ScriptState.SKIPPED)
+
+        end = end_time if end_time is not None else time.monotonic()
+        duration = end - self.start_time
+
+        with open(console_path, "a") as f:
+            f.write("=" * 60 + "\n")
+            f.write(
+                f"Summary: {success_count} succeeded, {fail_count} failed, {skipped_count} skipped\n"
+            )
+            f.write(f"Duration: {duration:.1f}s\n")
+
+
+###############################################################################
+### Parallel Script Execution
+###############################################################################
+
+
+def run_scripts_parallel(
+    statuses: list["ScriptStatus"],
+    manifest: Manifest,
+    scripts_dir: Path,
+    env: dict[str, str],
+    logger: InstallLogger,
+    *,
+    run_live: Callable[["ScriptStatus"], bool],
+    run_silent: Callable[["ScriptStatus"], bool],
+    on_update: Callable[[], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> tuple[int, int]:
+    """Run scripts with dependency-aware parallelism.
+
+    This is the core execution engine used by both TUI and CLI modes.
+    Scripts are scheduled based on dependencies and locks, with parallel
+    scripts running in a thread pool.
+
+    Args:
+        statuses: List of ScriptStatus objects to execute.
+        manifest: The manifest (used to pre-populate disabled scripts as complete).
+        scripts_dir: Path to install_scripts directory.
+        env: Environment variables for script execution.
+        logger: InstallLogger for writing results.
+        run_live: Callback to run a non-parallel script with live output.
+            Takes ScriptStatus, returns True on success.
+        run_silent: Callback to run a parallel script silently.
+            Takes ScriptStatus, returns True on success.
+        on_update: Optional callback for UI updates (polling input, redrawing).
+        is_cancelled: Optional callback to check if execution should stop.
+
+    Returns:
+        Tuple of (success_count, fail_count).
+    """
+    success_count = 0
+    fail_count = 0
+
+    # Dynamic worker count based on CPU cores
+    max_workers = min((os.cpu_count() or 4) * 2, 16)
+    scheduler = ParallelScheduler(statuses, max_workers)
+
+    # Pre-populate completed_paths with disabled scripts (assumed already run)
+    for section in manifest.sections:
+        for script in section.scripts:
+            if not script.enabled:
+                scheduler.completed_paths.add(script.path)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers
+        ) as executor:
+            futures: dict[concurrent.futures.Future[bool], ScriptStatus] = {}
+
+            while True:
+                # Check cancellation
+                if is_cancelled is not None and is_cancelled():
+                    for status in statuses:
+                        if status.state == ScriptState.PENDING:
+                            status.state = ScriptState.SKIPPED
+                            logger.append_result(status)
+                    break
+
+                # Find scripts ready to start
+                ready = scheduler.get_ready_scripts(len(futures))
+
+                for status in ready:
+                    if not status.script.is_parallel:
+                        # Non-parallel scripts run synchronously with live output
+                        status.state = ScriptState.RUNNING
+                        if on_update:
+                            on_update()
+
+                        if run_live(status):
+                            success_count += 1
+                        else:
+                            fail_count += 1
+
+                        scheduler.mark_complete(status)
+                        logger.append_result(status)
+                        if on_update:
+                            on_update()
+                    else:
+                        # Parallel scripts run in thread pool
+                        status.state = ScriptState.RUNNING
+                        scheduler.acquire_locks(status)
+                        future = executor.submit(run_silent, status)
+                        futures[future] = status
+
+                # Check if we're done
+                if not futures and not ready:
+                    all_done = all(
+                        s.state != ScriptState.PENDING for s in statuses
+                    )
+                    if all_done:
+                        break
+
+                    # Deadlock: pending scripts exist but none can start
+                    pending = [
+                        s for s in statuses if s.state == ScriptState.PENDING
+                    ]
+                    for status in pending:
+                        unsatisfied = [
+                            dep
+                            for dep in status.script.dependencies
+                            if not any(
+                                p.endswith(f"/{dep}.sh") or p == f"{dep}.sh"
+                                for p in scheduler.completed_paths
+                            )
+                        ]
+                        status.output_lines.append(
+                            f"Deadlock: unsatisfied dependencies: {unsatisfied}"
+                        )
+                        status.state = ScriptState.FAILED
+                        status.exit_code = 1
+                        fail_count += 1
+                        logger.append_result(status)
+                    break
+
+                # Wait for any completion (with timeout for animation/polling)
+                if futures:
+                    done, _ = concurrent.futures.wait(
+                        futures.keys(),
+                        timeout=0.08,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+
+                    for future in done:
+                        status = futures.pop(future)
+                        scheduler.release_locks(status)
+                        scheduler.mark_complete(status)
+                        try:
+                            if future.result():
+                                success_count += 1
+                            else:
+                                fail_count += 1
+                        except Exception:
+                            status.state = ScriptState.FAILED
+                            fail_count += 1
+                        logger.append_result(status)
+
+                # UI update
+                if on_update:
+                    on_update()
+
+    except KeyboardInterrupt:
+        # Mark remaining as skipped
+        for status in statuses:
+            if status.state in (ScriptState.PENDING, ScriptState.RUNNING):
+                status.state = ScriptState.SKIPPED
+                logger.append_result(status)
+
+    return success_count, fail_count
 
 
 ###############################################################################
@@ -2292,7 +2587,7 @@ class ExecutionTUI(BaseTUI):
     spinner: BrailleSpinner = field(default_factory=BrailleSpinner, init=False)
     start_time: float = field(default_factory=time.monotonic, init=False)
     end_time: float | None = field(default=None, init=False)
-    _wall_start: float = field(default_factory=time.time, init=False)
+    _logger: InstallLogger | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -2301,6 +2596,14 @@ class ExecutionTUI(BaseTUI):
             ScriptStatus(section=section, script=script)
             for section, script in self.manifest.get_enabled_scripts()
         ]
+        # Create logger for file output
+        self._logger = InstallLogger(
+            scripts_dir=self.scripts_dir,
+            dry_run=self.dry_run,
+            headless=self.headless,
+            statuses=self.statuses,
+            start_time=self.start_time,
+        )
 
     def _set_running_idx(self, idx: int) -> None:
         """Update running index, and viewing index if following."""
@@ -3305,140 +3608,56 @@ class ExecutionTUI(BaseTUI):
         Returns (success_count, fail_count).
         """
         self.stdscr.keypad(True)  # Enable arrow key recognition
-        success_count = 0
-        fail_count = 0
 
-        # Dynamic worker count based on CPU cores
-        max_workers = min((os.cpu_count() or 4) * 2, 16)
-        scheduler = ParallelScheduler(self.statuses, max_workers)
+        # Prepare environment
+        env = prepare_script_env(self.dry_run, self.headless, stream_output=True)
 
-        # Pre-populate completed_paths with disabled scripts (assumed already run)
-        for section in self.manifest.sections:
-            for script in section.scripts:
-                if not script.enabled:
-                    scheduler.completed_paths.add(script.path)
+        # Write log header
+        self._logger.write_header()
 
-        # Open log file and write header
-        self._write_log_header()
+        # Define TUI-specific callbacks for the parallel scheduler
+        def run_live(status: ScriptStatus) -> bool:
+            """Run a non-parallel script with live output in TUI."""
+            self._set_running_idx(self.statuses.index(status))
+            self._poll_input()
+            self.draw()
+            return self.run_script(status)
 
-        try:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max_workers
-            ) as executor:
-                futures: dict[concurrent.futures.Future[bool], ScriptStatus] = {}
+        def run_silent(status: ScriptStatus) -> bool:
+            """Run a parallel script silently."""
+            return self._run_script_silent(status)
 
-                while True:
-                    if self.cancelled:
-                        # Mark all pending as skipped and log them
-                        for status in self.statuses:
-                            if status.state == ScriptState.PENDING:
-                                status.state = ScriptState.SKIPPED
-                                self._append_script_result(status)
-                        break
+        def on_update() -> None:
+            """Update TUI display and handle input."""
+            # Update running index to first running script
+            running_scripts = [
+                s for s in self.statuses if s.state == ScriptState.RUNNING
+            ]
+            if running_scripts:
+                self._set_running_idx(self.statuses.index(running_scripts[0]))
+            self._poll_input()
+            self.draw()
 
-                    # Find scripts ready to start
-                    ready = scheduler.get_ready_scripts(len(futures))
+        def is_cancelled() -> bool:
+            """Check if user cancelled execution."""
+            return self.cancelled
 
-                    for status in ready:
-                        if not status.script.is_parallel:
-                            # Non-parallel scripts run synchronously with live output
-                            status.state = ScriptState.RUNNING
-                            self._set_running_idx(self.statuses.index(status))
-                            self._poll_input()
-                            self.draw()
-
-                            if self.run_script(status):
-                                success_count += 1
-                            else:
-                                fail_count += 1
-
-                            scheduler.mark_complete(status)
-                            self._append_script_result(status)
-                            self._poll_input()
-                            self.draw()
-                        else:
-                            # Parallel scripts run in thread pool
-                            status.state = ScriptState.RUNNING
-                            scheduler.acquire_locks(status)
-                            future = executor.submit(self._run_script_silent, status)
-                            futures[future] = status
-
-                    # Update running index to first running script
-                    running_scripts = [
-                        s for s in self.statuses if s.state == ScriptState.RUNNING
-                    ]
-                    if running_scripts:
-                        self._set_running_idx(self.statuses.index(running_scripts[0]))
-
-                    # Check if we're done
-                    if not futures and not ready:
-                        # No more work to do
-                        all_done = all(
-                            s.state != ScriptState.PENDING for s in self.statuses
-                        )
-                        if all_done:
-                            break
-
-                        # Deadlock: pending scripts exist but none can start.
-                        # Causes: circular deps, missing deps, or misspelled deps.
-                        pending = [
-                            s for s in self.statuses if s.state == ScriptState.PENDING
-                        ]
-                        for status in pending:
-                            unsatisfied = [
-                                dep
-                                for dep in status.script.dependencies
-                                if not any(
-                                    p.endswith(f"/{dep}.sh") or p == f"{dep}.sh"
-                                    for p in scheduler.completed_paths
-                                )
-                            ]
-                            status.output_lines.append(
-                                f"Deadlock: unsatisfied dependencies: {unsatisfied}"
-                            )
-                            status.state = ScriptState.FAILED
-                            status.exit_code = 1
-                            fail_count += 1
-                            self._append_script_result(status)
-                        break
-
-                    # Wait for any completion (with timeout for animation)
-                    if futures:
-                        done, _ = concurrent.futures.wait(
-                            futures.keys(),
-                            timeout=0.08,
-                            return_when=concurrent.futures.FIRST_COMPLETED,
-                        )
-
-                        for future in done:
-                            status = futures.pop(future)
-                            scheduler.release_locks(status)
-                            scheduler.mark_complete(status)
-                            try:
-                                if future.result():
-                                    success_count += 1
-                                else:
-                                    fail_count += 1
-                            except Exception:
-                                status.state = ScriptState.FAILED
-                                fail_count += 1
-                            self._append_script_result(status)
-
-                    # Redraw for animation
-                    self._poll_input()
-                    self.draw()
-
-        except KeyboardInterrupt:
-            self.cancelled = True
-            # Mark remaining as skipped and log them
-            for status in self.statuses:
-                if status.state in (ScriptState.PENDING, ScriptState.RUNNING):
-                    status.state = ScriptState.SKIPPED
-                    self._append_script_result(status)
+        # Run the parallel scheduler
+        success_count, fail_count = run_scripts_parallel(
+            statuses=self.statuses,
+            manifest=self.manifest,
+            scripts_dir=self.scripts_dir,
+            env=env,
+            logger=self._logger,
+            run_live=run_live,
+            run_silent=run_silent,
+            on_update=on_update,
+            is_cancelled=is_cancelled,
+        )
 
         # Freeze elapsed time at completion and write log summary
         self.end_time = time.monotonic()
-        self._write_log_summary()
+        self._logger.write_summary(self.end_time)
 
         # Final draw and allow browsing until 'q' is pressed
         self.draw()
@@ -3459,87 +3678,6 @@ class ExecutionTUI(BaseTUI):
     def _run_script_silent(self, status: ScriptStatus) -> bool:
         """Run a script without display updates (for parallel execution)."""
         return self._execute_script(status, silent=True)
-
-    def _get_log_paths(self) -> tuple[Path, Path]:
-        """Generate timestamped log file paths in the logs/ directory.
-
-        Returns:
-            Tuple of (console_log_path, json_log_path).
-        """
-        logs_dir = self.scripts_dir.parent / "logs"
-        logs_dir.mkdir(exist_ok=True)
-
-        # Use wall-clock time for human-readable timestamps
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(self._wall_start))
-
-        console_path = logs_dir / f"{timestamp}.log"
-        json_path = logs_dir / f"{timestamp}.json"
-
-        return console_path, json_path
-
-    def _write_log_header(self) -> None:
-        """Write log header and JSON selection file. Creates/truncates log file."""
-        console_path, json_path = self._get_log_paths()
-
-        # Write JSON selection (same format as --export)
-        scripts = [status.script.path for status in self.statuses]
-        data = {
-            "version": 1,
-            "description": "peter-terminal-utils selection export",
-            "scripts": scripts,
-        }
-        with open(json_path, "w") as f:
-            json.dump(data, f, indent=2)
-
-        # Write console log header
-        start_time_str = time.strftime(
-            "%Y-%m-%d %H:%M:%S", time.localtime(self._wall_start)
-        )
-        with open(console_path, "w") as f:
-            f.write("Peter Sharpe's Linux Setup - Installation Log\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(f"Timestamp: {start_time_str}\n")
-            f.write(f"Dry Run:   {self.dry_run}\n")
-            f.write(f"Headless:  {self.headless}\n")
-            f.write(f"Scripts:   {len(self.statuses)}\n")
-            f.write("\n" + "=" * 60 + "\n\n")
-
-    def _append_script_result(self, status: ScriptStatus) -> None:
-        """Append a script's result to the log file."""
-        console_path, _ = self._get_log_paths()
-
-        with open(console_path, "a") as f:
-            state_indicator = status.state.indicator
-            f.write(
-                f"{state_indicator} [{status.state.name}] "
-                f"{status.section.name} / {status.script.display_name}\n"
-            )
-            if status.exit_code is not None:
-                f.write(f"  Exit code: {status.exit_code}\n")
-            if status.output_lines:
-                f.write("  Output:\n")
-                for line in status.output_lines:
-                    clean_line = strip_ansi(line)
-                    f.write(f"    {clean_line}\n")
-            f.write("\n")
-
-    def _write_log_summary(self) -> None:
-        """Append final summary to the log file."""
-        console_path, _ = self._get_log_paths()
-
-        success_count = sum(1 for s in self.statuses if s.state == ScriptState.SUCCESS)
-        fail_count = sum(1 for s in self.statuses if s.state == ScriptState.FAILED)
-        skipped_count = sum(1 for s in self.statuses if s.state == ScriptState.SKIPPED)
-
-        end = self.end_time if self.end_time is not None else time.monotonic()
-        duration = end - self.start_time
-
-        with open(console_path, "a") as f:
-            f.write("=" * 60 + "\n")
-            f.write(
-                f"Summary: {success_count} succeeded, {fail_count} failed, {skipped_count} skipped\n"
-            )
-            f.write(f"Duration: {duration:.1f}s\n")
 
 
 ###############################################################################
@@ -3585,10 +3723,125 @@ def run_interactive(
     return 1 if fail > 0 else 0
 
 
+def _execute_cli_script(
+    status: ScriptStatus,
+    scripts_dir: Path,
+    env: dict[str, str],
+    verbose: bool,
+) -> bool:
+    """Execute a script in CLI mode (non-TUI).
+
+    Handles both verbose (streaming) and non-verbose (spinner) modes.
+    Updates status.state, status.exit_code, and status.output_lines.
+
+    Args:
+        status: ScriptStatus to execute and update.
+        scripts_dir: Path to install_scripts directory.
+        env: Environment variables for execution.
+        verbose: If True, stream output live; otherwise use spinner.
+
+    Returns:
+        True on success, False on failure.
+    """
+    script = status.script
+    section = status.section
+    script_path = scripts_dir / script.path
+
+    if not script_path.exists() or not os.access(script_path, os.X_OK):
+        print(f"✗ {script.display_name} (not found or not executable)", flush=True)
+        status.state = ScriptState.FAILED
+        status.exit_code = 1
+        status.output_lines.append("Script not found or not executable")
+        return False
+
+    if verbose:
+        # Stream output live for debugging
+        print(f"▶ {section.name} / {script.display_name}", flush=True)
+        print("─" * 60, flush=True)
+        try:
+            bash_cmd = build_script_command(scripts_dir, script_path)
+            process = subprocess.Popen(
+                ["bash", "-c", bash_cmd],
+                env=env,
+                cwd=scripts_dir.parent,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            if process.stdout is not None:
+                for line in process.stdout:
+                    print(f"    {line}", end="", flush=True)
+                    status.output_lines.append(line.rstrip())
+            process.wait()
+            status.exit_code = process.returncode
+
+            if process.returncode == 0:
+                print(f"✓ {script.display_name} succeeded", flush=True)
+                status.state = ScriptState.SUCCESS
+                print(flush=True)
+                return True
+            else:
+                print(f"✗ {script.display_name} failed (exit code {process.returncode})", flush=True)
+                status.state = ScriptState.FAILED
+                print(flush=True)
+                return False
+        except Exception as e:
+            print(f"✗ {script.display_name} failed: {e}", flush=True)
+            status.state = ScriptState.FAILED
+            status.exit_code = 1
+            status.output_lines.append(str(e))
+            print(flush=True)
+            return False
+    else:
+        # Use spinner while script runs
+        spinner = ThreadedSpinner(f"{script.display_name}...")
+        spinner.start()
+
+        try:
+            result = run_script_simple(script_path, scripts_dir, env)
+            status.exit_code = result.returncode
+            if result.stdout:
+                status.output_lines.extend(result.stdout.strip().split("\n"))
+            if result.stderr:
+                status.output_lines.extend(result.stderr.strip().split("\n"))
+
+            if result.returncode == 0:
+                spinner.stop("✓")
+                status.state = ScriptState.SUCCESS
+                return True
+            else:
+                spinner.stop("✗")
+                status.state = ScriptState.FAILED
+                if result.stderr:
+                    for line in result.stderr.strip().split("\n")[:5]:
+                        print(f"    {line}")
+                return False
+        except Exception as e:
+            spinner.stop("✗")
+            print(f"    {e}")
+            status.state = ScriptState.FAILED
+            status.exit_code = 1
+            status.output_lines.append(str(e))
+            return False
+
+
 def run_non_interactive(
-    manifest: Manifest, scripts_dir: Path, dry_run: bool, headless: bool = False
+    manifest: Manifest,
+    scripts_dir: Path,
+    dry_run: bool,
+    headless: bool = False,
+    verbose: bool = False,
 ) -> int:
-    """Run scripts without TUI. Returns exit code."""
+    """Run scripts without TUI using parallel scheduler. Returns exit code.
+
+    Args:
+        manifest: Parsed manifest with script selections.
+        scripts_dir: Path to install_scripts directory.
+        dry_run: If True, preview changes without executing.
+        headless: If True, skip GUI-only packages.
+        verbose: If True, stream live script output (useful for Docker/CI).
+    """
     enabled = manifest.get_enabled_scripts()
     if not enabled:
         print("No scripts selected.")
@@ -3598,50 +3851,67 @@ def run_non_interactive(
     if not prompt_sudo_if_needed(enabled):
         return 0  # User cancelled
 
-    print(f"\n{'=' * 60}")
-    print(f" Installing {len(enabled)} components...")
+    # Build status list for logging (same structure as ExecutionTUI)
+    statuses = [
+        ScriptStatus(section=section, script=script) for section, script in enabled
+    ]
+
+    # Create logger
+    start_time = time.monotonic()
+    logger = InstallLogger(
+        scripts_dir=scripts_dir,
+        dry_run=dry_run,
+        headless=headless,
+        statuses=statuses,
+        start_time=start_time,
+    )
+
+    print(f"\n{'=' * 60}", flush=True)
+    print(f" Installing {len(enabled)} components...", flush=True)
     if headless:
-        print(" (Headless mode - skipping GUI packages)")
-    print(f"{'=' * 60}\n")
+        print(" (Headless mode - skipping GUI packages)", flush=True)
+    if verbose:
+        print(" (Verbose mode - streaming script output)", flush=True)
+    print(f"{'=' * 60}\n", flush=True)
 
     env = prepare_script_env(dry_run, headless)
 
-    success = 0
-    fail = 0
+    # Define CLI-specific callbacks for the parallel scheduler
+    def run_live(status: ScriptStatus) -> bool:
+        """Run a non-parallel script with output display."""
+        return _execute_cli_script(status, scripts_dir, env, verbose)
 
-    for section, script in enabled:
-        script_path = scripts_dir / script.path
+    def run_silent(status: ScriptStatus) -> bool:
+        """Run a parallel script silently (captured output)."""
+        return _execute_cli_script(status, scripts_dir, env, verbose=False)
 
-        if not script_path.exists() or not os.access(script_path, os.X_OK):
-            print(f"✗ {script.display_name} (not found or not executable)")
-            fail += 1
-            continue
+    # Run the parallel scheduler (write_header called inside)
+    logger.write_header()
+    success_count, fail_count = run_scripts_parallel(
+        statuses=statuses,
+        manifest=manifest,
+        scripts_dir=scripts_dir,
+        env=env,
+        logger=logger,
+        run_live=run_live,
+        run_silent=run_silent,
+        on_update=None,  # CLI doesn't need periodic updates
+        is_cancelled=None,  # CLI doesn't support cancellation
+    )
 
-        # Start spinner while script runs
-        spinner = ThreadedSpinner(f"{script.display_name}...")
-        spinner.start()
+    # Write summary
+    end_time = time.monotonic()
+    logger.write_summary(end_time)
 
-        try:
-            result = run_script_simple(script_path, scripts_dir, env)
-            if result.returncode == 0:
-                spinner.stop("✓")
-                success += 1
-            else:
-                spinner.stop("✗")
-                if result.stderr:
-                    for line in result.stderr.strip().split("\n")[:5]:
-                        print(f"    {line}")
-                fail += 1
-        except Exception as e:
-            spinner.stop("✗")
-            print(f"    {e}")
-            fail += 1
+    print(f"\n{'=' * 60}", flush=True)
+    print(f" Complete: {success_count} succeeded, {fail_count} failed", flush=True)
+    print(f"{'=' * 60}\n", flush=True)
 
-    print(f"\n{'=' * 60}")
-    print(f" Complete: {success} succeeded, {fail} failed")
-    print(f"{'=' * 60}\n")
+    # Show log location
+    console_path, _ = logger.get_log_paths()
+    print(f" Log: {console_path}", flush=True)
 
-    return 1 if fail > 0 else 0
+    return 1 if fail_count > 0 else 0
 
 
 def list_presets() -> None:
@@ -3696,6 +3966,12 @@ Examples:
         "--dry-run",
         action="store_true",
         help="Dry run mode (preview changes)",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Stream live script output (useful for Docker/CI debugging)",
     )
     parser.add_argument(
         "--export",
@@ -3757,7 +4033,9 @@ Examples:
         manifest.import_selections(import_path)
         # When importing, check if HEADLESS was set in environment or default to N
         headless = os.environ.get("HEADLESS", "N") == "Y"
-        return run_non_interactive(manifest, scripts_dir, args.dry_run, headless)
+        return run_non_interactive(
+            manifest, scripts_dir, args.dry_run, headless, args.verbose
+        )
 
     # Non-interactive mode with preset
     if args.preset:
@@ -3767,7 +4045,9 @@ Examples:
             return 1
         manifest.apply_preset(args.preset)
         headless = PRESETS[args.preset].is_headless
-        return run_non_interactive(manifest, scripts_dir, args.dry_run, headless)
+        return run_non_interactive(
+            manifest, scripts_dir, args.dry_run, headless, args.verbose
+        )
 
     # Interactive mode
     try:

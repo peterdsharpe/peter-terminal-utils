@@ -76,21 +76,8 @@ install_rustdesk() {
     # Download package
     run curl -fsSL -o "${tmpdir}/${pkg_name}" "$pkg_url"
     
-    # Install based on package manager
-    case "$PKG_MANAGER" in
-        apt)
-            run sudo apt install -y "${tmpdir}/${pkg_name}"
-            ;;
-        dnf)
-            run sudo dnf install -y "${tmpdir}/${pkg_name}"
-            ;;
-        zypper)
-            run sudo zypper install -y --allow-unsigned-rpm "${tmpdir}/${pkg_name}"
-            ;;
-        pacman)
-            run sudo pacman -U --noconfirm "${tmpdir}/${pkg_name}"
-            ;;
-    esac
+    # Install local package file
+    run pkg_install_local "${tmpdir}/${pkg_name}"
     
     step_end
     

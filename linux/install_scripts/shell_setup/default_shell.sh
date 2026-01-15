@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 change_default_shell() {
-    step "Changing default shell to zsh" sudo chsh -s "$(command -v zsh)" "$USER"
+    step "Changing default shell to zsh" sudo chsh -s "$(command -v zsh)" "$(whoami)"
 }
 
 if [ "$SHELL" != "$(command -v zsh)" ]; then

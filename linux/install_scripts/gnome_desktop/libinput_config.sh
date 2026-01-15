@@ -50,12 +50,8 @@ fi
 
 # Build dependencies + clone + build + install
 step_start "Installing libinput-config"
-case "$PKG_MANAGER" in
-    apt) run sudo apt-get install -y meson ninja-build libinput-dev ;;
-    dnf) run sudo dnf install -y meson ninja-build libinput-devel ;;
-    pacman) run sudo pacman -S --noconfirm meson ninja libinput ;;
-    *) print_error "Unsupported package manager for libinput-config dependencies"; exit 1 ;;
-esac
+# shellcheck disable=SC2046
+run pkg_install meson $(pkg_name ninja-build) $(pkg_name libinput-dev)
 tmpdir=$(mktemp -d)
 run git clone --depth 1 https://gitlab.com/warningnonpotablewater/libinput-config.git "$tmpdir/libinput-config"
 run meson setup "$tmpdir/libinput-config/build" "$tmpdir/libinput-config"

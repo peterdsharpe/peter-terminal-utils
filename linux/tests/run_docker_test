@@ -198,11 +198,13 @@ def build_image(linux_dir: Path, *, no_cache: bool = False) -> bool:
         return False
 
 
-def run_container(*, dry_run: bool = False) -> int:
+def run_container(*, dry_run: bool = False, logs_dir: Path | None = None) -> int:
     """Run the test container and execute the setup script.
 
     Args:
         dry_run: If True, run setup in dry-run mode (preview only).
+        logs_dir: Host directory to mount for logs. If provided, container logs
+            will be written here for post-run debugging.
 
     Returns:
         Exit code from the container (0 = all scripts passed).
@@ -215,12 +217,23 @@ def run_container(*, dry_run: bool = False) -> int:
         "--name",
         CONTAINER_NAME,
         "--rm",  # Remove container after exit
-        IMAGE_NAME,
+        "-e",
+        "PYTHONUNBUFFERED=1",  # Force unbuffered output for live streaming
     ]
+
+    # Mount logs directory if provided
+    # Note: We need to make the directory writable by the container user (testuser),
+    # which has a different UID than the host user. Setting 777 permissions allows this.
+    if logs_dir is not None:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        logs_dir.chmod(0o777)
+        cmd.extend(["-v", f"{logs_dir}:/home/testuser/linux-setup/logs"])
+
+    cmd.append(IMAGE_NAME)
 
     # Override default CMD if dry-run requested
     if dry_run:
-        cmd.extend(["./setup", "--preset", "2", "--dry-run"])
+        cmd.extend(["./setup", "--preset", "1", "--dry-run", "--verbose"])
 
     print_step("Running setup in container...")
     start_time = time.time()
@@ -282,9 +295,10 @@ def main() -> int:
         print_success("Build completed (--build-only specified, skipping test run)")
         return 0
 
-    # Run the container
+    # Run the container with logs mounted to host
     print_header("Running Setup in Container")
-    exit_code = run_container(dry_run=args.dry_run)
+    logs_dir = linux_dir / "logs"
+    exit_code = run_container(dry_run=args.dry_run, logs_dir=logs_dir)
 
     # Print summary
     print_header("Test Summary")
@@ -294,6 +308,9 @@ def main() -> int:
         print_error(f"Setup failed with exit code: {exit_code}")
         print("\nTo debug, you can run the container interactively:")
         print(f"  docker run -it --rm {IMAGE_NAME} /bin/bash")
+
+    # Point to logs
+    print(f"\n{CYAN}Logs written to:{NC} {logs_dir}/")
 
     return exit_code
 
