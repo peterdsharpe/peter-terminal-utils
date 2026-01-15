@@ -13,5 +13,8 @@ install_uv() {
 
 ensure_command "uv" uv install_uv
 
+# Ensure ~/.local/bin is in PATH (needed after fresh install)
+[[ -d "$HOME/.local/bin" && ! "$PATH" =~ "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+
 # Update to latest version
 step "Updating uv to latest version" uv self update

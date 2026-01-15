@@ -13,5 +13,9 @@ install_rust() {
 
 ensure_command "Rust" rustup install_rust
 
+# Source cargo env to ensure rustup is in PATH (needed after fresh install)
+# shellcheck source=/dev/null
+[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+
 # Update Rust toolchain to latest
 step "Updating Rust toolchain" rustup update
