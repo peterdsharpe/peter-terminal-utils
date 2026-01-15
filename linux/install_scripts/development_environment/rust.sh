@@ -13,3 +13,5 @@ install_rust() {
 
 ensure_command "Rust" rustup install_rust
 
+# Update Rust toolchain to latest
+step "Updating Rust toolchain" rustup update
