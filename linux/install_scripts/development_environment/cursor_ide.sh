@@ -237,11 +237,17 @@ cursor_config_correct() {
     local profile_dir="$CURSOR_CONFIG_DEST/profiles/$profile_id"
     local src_dir="$CURSOR_CONFIG_SRC/$PROFILE_NAME"
     
-    # Check that both settings.json and keybindings.json are symlinked correctly
+    # Check that settings files are correctly symlinked
     for file in settings.json keybindings.json; do
         local dest="$profile_dir/$file"
         local src="$src_dir/$file"
         
+        # Skip files that don't exist in source (consistent with setup_cursor_config)
+        if [[ ! -f "$src" ]]; then
+            continue
+        fi
+        
+        # Source exists, so dest must be a symlink pointing to it
         if [[ ! -L "$dest" ]]; then
             return 1
         fi
@@ -323,11 +329,19 @@ setup_cursor_config() {
         echo "╔══════════════════════════════════════════════════════════════════╗"
         echo "║  PeterProfile not found in Cursor                                ║"
         echo "╠══════════════════════════════════════════════════════════════════╣"
-        echo "║  Please create it manually:                                      ║"
+        if [[ ! -f "$STORAGE_JSON" ]]; then
+        echo "║  Cursor hasn't been opened yet. Please:                          ║"
+        echo "║                                                                  ║"
+        echo "║  1. Open Cursor IDE for the first time                           ║"
+        echo "║  2. Complete any initial setup prompts                           ║"
+        echo "║  3. Go to: gear icon (bottom-left) → Profiles → Create Profile   ║"
+        else
+        echo "║  Please create the profile manually:                             ║"
         echo "║                                                                  ║"
         echo "║  1. Open Cursor IDE                                              ║"
         echo "║  2. Click the gear icon (bottom-left) → Profiles                 ║"
         echo "║  3. Click 'Create Profile'                                       ║"
+        fi
         echo "║  4. Name it exactly: PeterProfile                                ║"
         echo "║  5. Re-run this install script                                   ║"
         echo "╚══════════════════════════════════════════════════════════════════╝"
@@ -383,7 +397,10 @@ setup_cursor_config() {
 if cursor_config_correct; then
     print_skip "Cursor PeterProfile already configured"
 else
-    step "Configuring Cursor PeterProfile" setup_cursor_config
+    if ! step "Configuring Cursor PeterProfile" setup_cursor_config; then
+        # Profile setup failed - don't print success at the end
+        exit 1
+    fi
 fi
 
 ###############################################################################
