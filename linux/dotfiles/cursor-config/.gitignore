@@ -1,10 +1,7 @@
-# Machine-specific state and caches
+# Machine-specific directories (if accidentally created here)
 globalStorage/
 workspaceStorage/
 History/
-
-# Root-level extensions.json has absolute paths
-extensions.json
 
 # Profile directories use random hashes per-machine - don't track them
 # Settings are stored in PeterProfile/ and symlinked at install time

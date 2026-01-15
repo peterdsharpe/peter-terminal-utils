@@ -314,18 +314,6 @@ setup_cursor_config() {
         fi
     fi
     
-    # Copy default profile settings (optional, if they exist at root level)
-    for item in settings.json keybindings.json; do
-        local src="$CURSOR_CONFIG_SRC/$item"
-        local dest="$CURSOR_CONFIG_DEST/$item"
-        
-        if [[ -f "$src" ]]; then
-            if [[ ! -f "$dest" ]] || [[ "$src" -nt "$dest" ]]; then
-                cp "$src" "$dest" || return 1
-            fi
-        fi
-    done
-    
     # Find the profile ID for PeterProfile
     local profile_id
     profile_id=$(get_profile_id "$PROFILE_NAME")
