@@ -40,6 +40,10 @@ install_core_packages() {
     run pkg_update
     step_end
 
+    step_start "Upgrading system packages"
+    run pkg_upgrade
+    step_end
+
     step_start "Installing core packages"
     # shellcheck disable=SC2086
     run pkg_install ${packages[*]}
