@@ -65,6 +65,9 @@ install_flatpak_app "org.libreoffice.LibreOffice" "LibreOffice"
 install_flatpak_app "com.valvesoftware.Steam" "Steam"
 install_flatpak_app "org.torproject.torbrowser-launcher" "Tor Browser"
 
+### Update all Flatpak apps to latest versions
+step "Updating Flatpak applications" flatpak update -y --user
+
 ### Set Firefox as default browser
 if command -v xdg-settings &>/dev/null; then
     # Ensure Flatpak exports are in XDG_DATA_DIRS so xdg-settings can find the desktop file
