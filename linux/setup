@@ -1025,7 +1025,9 @@ class HelpEntry(NamedTuple):
 
 # Shortcuts for SelectionTUI
 SELECTION_SHORTCUTS = [
-    HelpEntry("j, k, ↑↓", "Move cursor up/down"),
+    HelpEntry("j, k, ↑↓", "Move cursor / cycle matches"),
+    HelpEntry("n, N", "Next/prev match (when filtered)"),
+    HelpEntry("C-n, C-p", "Next/prev match (when filtered)"),
     HelpEntry("PgUp/PgDn", "Page up/down"),
     HelpEntry("gg", "Jump to top"),
     HelpEntry("G", "Jump to bottom"),
@@ -1755,12 +1757,16 @@ class SelectionTUI(BaseTUI):
                 self.colors["dim"],
             )
         elif self.filtered_indices is not None:
-            # Show filter active
-            filter_line = f" Filter: '{self.search_query}' ({len(self.filtered_indices)} matches)   [Esc] Clear "
+            # Show filter active with current match position
+            try:
+                match_pos = self.filtered_indices.index(self.cursor) + 1
+            except ValueError:
+                match_pos = 0
+            filter_line = f" Filter: '{self.search_query}' ({match_pos}/{len(self.filtered_indices)} matches)   [Esc] Clear "
             self.stdscr.addstr(
                 footer_y + 1, 2, filter_line[: width - 4], self.colors["yellow"]
             )
-            keys2 = " [/] Search   [gg] Top   [G] Bottom   [x] Install   [q] Quit "
+            keys2 = " [j/k] Next/Prev   [n/N] Next/Prev   [x] Install   [q] Quit "
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
         else:
             # Key bindings - line 1
@@ -2037,27 +2043,42 @@ class SelectionTUI(BaseTUI):
         # Reset last_key for non-g keys
         self.last_key = -1
 
-        # Navigation
-        if key in (ord("w"), ord("k"), curses.KEY_UP):
-            if self.cursor > 0:
-                self.cursor -= 1
-        elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
-            if self.cursor < len(items) - 1:
-                self.cursor += 1
-        elif key == curses.KEY_PPAGE:  # Page Up
-            self.cursor = max(0, self.cursor - max(1, self.scroll.visible - 1))
-        elif key == curses.KEY_NPAGE:  # Page Down
-            self.cursor = min(
-                len(items) - 1, self.cursor + max(1, self.scroll.visible - 1)
-            )
+        # Navigation - when filter is active, j/k cycle through matches
+        if self.filtered_indices is not None:
+            if key in (ord("w"), ord("k"), curses.KEY_UP, 16, ord("N")):  # 16 = Ctrl-p
+                self._goto_match(-1)
+            elif key in (ord("s"), ord("j"), curses.KEY_DOWN, 14, ord("n")):  # 14 = Ctrl-n
+                self._goto_match(1)
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self._goto_match(-1)
+            elif key == curses.KEY_NPAGE:  # Page Down
+                self._goto_match(1)
+        else:
+            # Normal navigation through all items
+            if key in (ord("w"), ord("k"), curses.KEY_UP):
+                if self.cursor > 0:
+                    self.cursor -= 1
+            elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+                if self.cursor < len(items) - 1:
+                    self.cursor += 1
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self.cursor = max(0, self.cursor - max(1, self.scroll.visible - 1))
+            elif key == curses.KEY_NPAGE:  # Page Down
+                self.cursor = min(
+                    len(items) - 1, self.cursor + max(1, self.scroll.visible - 1)
+                )
 
-        # Toggle
-        elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
+        # Toggle (also clears filter so Enter selects and exits search)
+        if key in (ord(" "), curses.KEY_ENTER, 10, 13):
             item = items[self.cursor]
             if isinstance(item, Section):
                 item.toggle()
             else:
                 item.enabled = not item.enabled
+            # Clear filter on toggle so Enter exits search mode
+            if self.filtered_indices is not None:
+                self.filtered_indices = None
+                self.search_query = ""
 
         # Presets (keys 1-5)
         elif ord("1") <= key <= ord("5") and (preset_key := chr(key)) in PRESETS:
@@ -2096,6 +2117,20 @@ class SelectionTUI(BaseTUI):
         # Move cursor to first match
         if self.filtered_indices:
             self.cursor = self.filtered_indices[0]
+
+    def _goto_match(self, direction: int) -> None:
+        """Move cursor to next (+1) or previous (-1) match. Wraps around."""
+        if not self.filtered_indices:
+            return
+
+        try:
+            current_pos = self.filtered_indices.index(self.cursor)
+            new_pos = (current_pos + direction) % len(self.filtered_indices)
+        except ValueError:
+            # Cursor not on a match - find nearest in direction
+            new_pos = 0 if direction > 0 else -1
+
+        self.cursor = self.filtered_indices[new_pos]
 
     def show_help(self) -> None:
         """Show help overlay using base class method."""
