@@ -36,7 +36,8 @@
     "remote.SSH.defaultExtensions": [
         "ms-python.python",
         "ms-toolsai.jupyter",
-        "charliermarsh.ruff"
+        "charliermarsh.ruff",
+        "kylinideteam.gitlens"
     ],
     "explorer.confirmPasteNative": false,
     "explorer.compactFolders": false,
@@ -302,7 +303,7 @@
     ],
     "explorer.confirmDelete": false,
     "jupyter.interactiveWindow.textEditor.executeSelection": true,
-    "window.newWindowProfile": "PeterProfile",
+    "window.newWindowProfile": "Default",
     "jupyter.askForKernelRestart": false,
     "editor.tabCompletion": "on",
     "scm.diffDecorationsIgnoreTrimWhitespace": "inherit",
@@ -374,7 +375,7 @@
     "window.title": "${rootName}",
     "window.titleSeparator": " | ",
     "workbench.colorTheme": "Monokai",
-    "workbench.tree.indent": 30,
+    "workbench.tree.indent": 20,
     "workbench.iconTheme": "material-icon-theme",
     "python.experiments.enabled": false,
     "debugpy.showPythonInlineValues": true,
@@ -390,9 +391,17 @@
     "cursor.composer.shouldChimeAfterChatFinishes": true,
     "cursor.composer.usageSummaryDisplay": "always",
     "githubPullRequests.createOnPublishBranch": "never",
-    "editor.fontFamily": "'FiraCode Nerd Font', Consolas, 'Courier New', monospace",
     "editor.fontLigatures": false,
     "editor.fontSize": 13,
     "terminal.integrated.defaultProfile.linux": "zsh",
-    "window.commandCenter": true
+    "terminal.integrated.fontLigatures.enabled": true,
+    "workbench.editor.highlightModifiedTabs": true,
+    "[json]": {
+        "editor.defaultFormatter": "vscode.json-language-features"
+    },
+    "files.watcherExclude": {
+        "**/__pycache__/**": true,
+        "**/.venv/**": true
+    },
+    "editor.fontFamily": "'FiraCode Nerd Font', Consolas, 'Courier New', monospace"
 }

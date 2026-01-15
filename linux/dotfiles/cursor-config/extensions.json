@@ -195,14 +195,6 @@
     },
     {
         "identifier": {
-            "id": "ms-python.black-formatter",
-            "uuid": "859e640c-c157-47da-8699-9080b81c8371"
-        },
-        "displayName": "Black Formatter",
-        "applicationScoped": false
-    },
-    {
-        "identifier": {
             "id": "ms-toolsai.jupyter-keymap",
             "uuid": "9f6dc8db-620c-4844-b8c5-e74914f1be27"
         },
@@ -215,6 +207,13 @@
             "uuid": "06574cb4-e5dc-4631-8174-a543a4533621"
         },
         "displayName": "rust-analyzer",
+        "applicationScoped": false
+    },
+    {
+        "identifier": {
+            "id": "bernhard-42.ocp-cad-viewer"
+        },
+        "displayName": "OCP CAD Viewer",
         "applicationScoped": false
     }
 ]

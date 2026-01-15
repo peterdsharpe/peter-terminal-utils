@@ -22,6 +22,6 @@ oijusti.eol-converter
 pkief.material-icon-theme
 rafaelha.vscode-flamegraph
 github.vscode-pull-request-github
-ms-python.black-formatter
 ms-toolsai.jupyter-keymap
 rust-lang.rust-analyzer
+bernhard-42.ocp-cad-viewer
