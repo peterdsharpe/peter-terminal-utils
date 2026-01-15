@@ -377,7 +377,7 @@
     "window.title": "${rootName}",
     "window.titleSeparator": " | ",
     "workbench.colorTheme": "Monokai",
-    "workbench.tree.indent": 30,
+    "workbench.tree.indent": 16,
     "workbench.iconTheme": "material-icon-theme",
     "python.experiments.enabled": false,
     "debugpy.showPythonInlineValues": true,
