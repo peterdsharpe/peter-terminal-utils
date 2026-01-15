@@ -393,5 +393,6 @@
     "editor.fontFamily": "'FiraCode Nerd Font', Consolas, 'Courier New', monospace",
     "editor.fontLigatures": false,
     "editor.fontSize": 13,
-    "terminal.integrated.defaultProfile.linux": "zsh"
+    "terminal.integrated.defaultProfile.linux": "zsh",
+    "window.commandCenter": true
 }

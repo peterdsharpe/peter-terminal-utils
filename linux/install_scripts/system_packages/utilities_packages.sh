@@ -19,6 +19,7 @@ install_utilities() {
         nvtop        # GPU monitor
         powertop     # Power consumption
         lm-sensors   # Hardware sensors
+        smartmontools # Disk drive health (S.M.A.R.T.)
         # File transfer & sync
         rsync        # Fast file copying
         sshfs        # Mount remote filesystems

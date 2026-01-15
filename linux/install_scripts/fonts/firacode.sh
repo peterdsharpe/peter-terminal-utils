@@ -16,8 +16,21 @@ install_firacode() {
     rm -rf "$tmpdir"
 }
 
-if ! fc-list | grep -i "FiraCode Nerd Font" > /dev/null; then
+# Check if already installed (prefer file check over fc-list for reliability)
+font_installed() {
+    # Check for font files directly (most reliable)
+    ls ~/.local/share/fonts/*FiraCode*Nerd* &>/dev/null && return 0
+    # Fallback to fc-list if fontconfig is available
+    command -v fc-list &>/dev/null && fc-list | grep -qi "FiraCode.*Nerd" && return 0
+    return 1
+}
+
+if ! font_installed; then
     step "Installing Fira Code Nerd Font" install_firacode
+    # Rebuild font cache if fontconfig is available
+    if command -v fc-cache &>/dev/null; then
+        step "Rebuilding font cache" fc-cache -f
+    fi
 else
     print_skip "Fira Code Nerd Font already installed"
 fi

@@ -10,21 +10,37 @@ standalone_init
 skip_if_headless "File manager configuration"
 skip_if_not_gnome "File manager configuration"
 
-### Set Nemo as default file manager
-step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory application/x-gnome-saved-search
+### Helper to check if a gsettings schema exists
+schema_exists() {
+    gsettings list-schemas 2>/dev/null | grep -q "^$1$"
+}
 
-### Nemo preferences
-step_start "Configuring Nemo file manager"
-run gsettings set org.nemo.preferences show-hidden-files true
-run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
-run gsettings set org.nemo.preferences sort-directories-first true
-step_end
+### Set Nemo as default file manager (only if Nemo is installed)
+if command -v nemo &>/dev/null; then
+    step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory application/x-gnome-saved-search
+fi
+
+### Nemo preferences (only if schema exists)
+if schema_exists "org.nemo.preferences"; then
+    step_start "Configuring Nemo file manager"
+    run gsettings set org.nemo.preferences show-hidden-files true
+    run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
+    run gsettings set org.nemo.preferences sort-directories-first true
+    step_end
+else
+    print_skip "Nemo preferences (Nemo not installed)"
+fi
 
 ### Desktop icon handling - transfer from Nautilus to Nemo
-step_start "Configuring desktop icon handling"
-run gsettings set org.gnome.desktop.background show-desktop-icons false
-run gsettings set org.nemo.desktop show-desktop-icons true
-step_end
+if schema_exists "org.nemo.desktop"; then
+    step_start "Configuring desktop icon handling"
+    # This key may not exist on all GNOME versions
+    if gsettings list-keys org.gnome.desktop.background 2>/dev/null | grep -q show-desktop-icons; then
+        run gsettings set org.gnome.desktop.background show-desktop-icons false
+    fi
+    run gsettings set org.nemo.desktop show-desktop-icons true
+    step_end
+fi
 
 ### Nautilus preferences (only if installed)
 if command -v nautilus &> /dev/null; then
