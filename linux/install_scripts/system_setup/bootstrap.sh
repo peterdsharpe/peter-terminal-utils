@@ -13,6 +13,8 @@ install_bootstrap_packages() {
     fi
 
     local packages=(
+        # TLS certificates (required for HTTPS before curl/wget work)
+        ca-certificates
         # Version control (many scripts depend on these)
         git git-lfs
         # Downloading (many installers need these)

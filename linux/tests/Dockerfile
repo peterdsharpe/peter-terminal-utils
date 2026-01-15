@@ -7,14 +7,11 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
-# Install minimal prerequisites needed before setup runs
+# Install only what's needed to run setup (everything else comes from bootstrap.sh)
 # Note: Ubuntu 24.04 minimal image doesn't include Python
 RUN apt-get update -qq && \
     apt-get install -yq --no-install-recommends \
         sudo \
-        curl \
-        ca-certificates \
-        git \
         python3 \
     && rm -rf /var/lib/apt/lists/*
 
