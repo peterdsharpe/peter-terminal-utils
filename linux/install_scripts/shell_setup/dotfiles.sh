@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Dotfiles
 # @description: Symlink .zshrc, nvim config, .p10k.zsh
+# @depends: ohmyzsh.sh
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

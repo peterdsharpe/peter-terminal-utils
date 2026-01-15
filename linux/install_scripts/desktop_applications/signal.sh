@@ -1,7 +1,6 @@
 #!/bin/bash
 # @name: Signal Desktop
 # @description: Encrypted messaging app via Snap
-# @depends: 
 # @requires: sudo
 # @headless: skip
 # @parallel: false
