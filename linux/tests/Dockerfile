@@ -32,5 +32,5 @@ WORKDIR /home/testuser/linux-setup
 # Make setup executable
 RUN chmod +x setup
 
-# Default command runs headless preset
-CMD ["./setup", "--preset", "2"]
+# Default command runs full desktop preset with verbose output for debugging
+CMD ["./setup", "--preset", "1", "--verbose"]
