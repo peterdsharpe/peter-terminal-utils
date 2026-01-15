@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Favorite Apps
 # @description: Pin apps to dash/panel in preferred order
-# @depends: flatpak_apps, cursor, signal
+# @depends: flatpak_apps.sh, cursor_ide.sh, signal.sh
 # @headless: skip
 # @parallel: false
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
