@@ -93,6 +93,14 @@ install_rustdesk() {
     esac
     
     step_end
+    
+    # Disable the always-on service to avoid constant D-Bus polling overhead.
+    # RustDesk's systemd service polls for DBUS_SESSION_BUS_ADDRESS ~1/sec,
+    # spawning many subprocesses. Start manually with `rustdesk` when needed.
+    if systemctl list-unit-files rustdesk.service &>/dev/null; then
+        step "Disabling RustDesk service (start manually when needed)" \
+            sudo systemctl disable --now rustdesk.service
+    fi
 }
 
 require_sudo "RustDesk" install_rustdesk
