@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: RustDesk
 # @description: Open-source remote desktop client from GitHub releases
+# @depends: bootstrap.sh
 # @requires: sudo
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"

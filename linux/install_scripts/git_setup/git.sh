@@ -24,7 +24,7 @@ run git config --global alias.last "log -1 HEAD --stat"
 # Better merge/rebase defaults
 run git config --global merge.conflictstyle diff3
 run git config --global rebase.autoStash true
-# Initialize git-lfs (only needed once per user)
-run git lfs install
+# Initialize git-lfs (--force overwrites existing hooks from package install)
+run git lfs install --force
 step_end
 

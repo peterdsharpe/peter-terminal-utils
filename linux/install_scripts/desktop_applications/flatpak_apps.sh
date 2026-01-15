@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Flatpak Apps
 # @description: Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero, Tor Browser via Flatpak
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
