@@ -2,10 +2,19 @@
 # @name: Zed
 # @description: High-performance code editor from the creators of Atom
 # @depends: core_packages.sh
+# @headless: skip
 # @parallel: true
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
+
+skip_if_headless "Zed"
+
+# WSL uses Zed installed on Windows host - don't install Linux version
+if is_wsl; then
+    print_skip "Zed (use Windows installation in WSL)"
+    exit 0
+fi
 
 install_zed() {
     curl -f https://zed.dev/install.sh | sh
