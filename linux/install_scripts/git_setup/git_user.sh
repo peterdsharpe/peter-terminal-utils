@@ -2,6 +2,7 @@
 # @name: Git User Identity
 # @description: Set git user.name and user.email globally
 # @depends: bootstrap.sh
+# @locks: gitconfig
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

@@ -2,6 +2,7 @@
 # @name: Git Settings
 # @description: Aliases, git-lfs, merge/rebase configuration
 # @depends: bootstrap.sh
+# @locks: gitconfig
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
