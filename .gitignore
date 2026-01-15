@@ -15,3 +15,9 @@ credentials.json
 
 # Install logs
 linux/logs/
+
+# Cursor IDE state files
+linux/dotfiles/cursor-config/History/
+linux/dotfiles/cursor-config/globalStorage/
+linux/dotfiles/cursor-config/profiles/*/globalStorage/
+linux/dotfiles/cursor-config/workspaceStorage/
