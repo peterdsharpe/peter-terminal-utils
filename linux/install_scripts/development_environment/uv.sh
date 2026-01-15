@@ -13,3 +13,5 @@ install_uv() {
 
 ensure_command "uv" uv install_uv
 
+# Update to latest version
+step "Updating uv to latest version" uv self update
