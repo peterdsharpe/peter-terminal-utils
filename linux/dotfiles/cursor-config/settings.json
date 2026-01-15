@@ -302,7 +302,7 @@
     ],
     "explorer.confirmDelete": false,
     "jupyter.interactiveWindow.textEditor.executeSelection": true,
-    "window.newWindowProfile": "Default",
+    "window.newWindowProfile": "PeterProfile",
     "jupyter.askForKernelRestart": false,
     "editor.tabCompletion": "on",
     "scm.diffDecorationsIgnoreTrimWhitespace": "inherit",
