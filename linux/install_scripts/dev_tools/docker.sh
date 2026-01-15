@@ -9,7 +9,15 @@ standalone_init
 
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
-    sudo usermod -aG docker "$USER"
+    # Wait for docker group to be created (the install script creates it)
+    # Then add current user to it
+    if getent group docker &>/dev/null; then
+        sudo usermod -aG docker "$USER"
+    else
+        # Group should exist after docker install; if not, create it
+        sudo groupadd -f docker
+        sudo usermod -aG docker "$USER"
+    fi
 }
 
 ensure_command "Docker" docker install_docker sudo

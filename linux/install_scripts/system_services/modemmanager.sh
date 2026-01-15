@@ -18,9 +18,12 @@ disable_modemmanager() {
     fi
     
     # Check current state
+    # Note: systemctl is-enabled returns exit code 1 for "disabled", so we must ignore the exit code
     local is_enabled is_active
-    is_enabled=$(systemctl is-enabled ModemManager.service 2>/dev/null || echo "unknown")
-    is_active=$(systemctl is-active ModemManager.service 2>/dev/null || echo "unknown")
+    is_enabled=$(systemctl is-enabled ModemManager.service 2>/dev/null) || true
+    is_active=$(systemctl is-active ModemManager.service 2>/dev/null) || true
+    [[ -z "$is_enabled" ]] && is_enabled="unknown"
+    [[ -z "$is_active" ]] && is_active="unknown"
     
     if [[ "$is_enabled" == "disabled" && "$is_active" != "active" ]]; then
         print_skip "ModemManager already disabled and stopped"

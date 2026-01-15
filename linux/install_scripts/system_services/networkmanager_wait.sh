@@ -24,8 +24,10 @@ disable_networkmanager_wait() {
     fi
     
     # Check current state
+    # Note: systemctl is-enabled returns exit code 1 for "disabled", so we must ignore the exit code
     local is_enabled
-    is_enabled=$(systemctl is-enabled "$service" 2>/dev/null || echo "unknown")
+    is_enabled=$(systemctl is-enabled "$service" 2>/dev/null) || true
+    [[ -z "$is_enabled" ]] && is_enabled="unknown"
     
     if [[ "$is_enabled" == "disabled" ]]; then
         print_skip "NetworkManager-wait-online already disabled"
