@@ -442,6 +442,10 @@ PKG_MANAGER=$(detect_pkg_manager)
 # Prevents race conditions when multiple scripts call pkg_install concurrently
 PKG_LOCK="/tmp/peter-terminal-utils-pkg.lock"
 
+# Timeout (seconds) for apt to wait for dpkg lock
+# Handles cases where PackageKit or other apt processes temporarily hold the lock
+APT_LOCK_TIMEOUT=120
+
 ### Execute a command while holding the package manager lock
 ### Uses flock to serialize access - blocks until lock is available
 ### Usage: with_pkg_lock command args...
@@ -477,7 +481,7 @@ pkg_install() {
 
 _pkg_install_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get install -yq "$@" ;;
+        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -yq "$@" ;;
         dnf) sudo dnf install -y "$@" ;;
         pacman) sudo pacman -S --noconfirm "$@" ;;
         zypper) sudo zypper install -y "$@" ;;
@@ -494,7 +498,7 @@ pkg_update() {
 
 _pkg_update_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get update -qq ;;
+        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update -qq ;;
         dnf) sudo dnf check-update || true ;;  # Returns 100 if updates available
         pacman) sudo pacman -Sy ;;
         zypper) sudo zypper refresh ;;
@@ -511,7 +515,7 @@ pkg_upgrade() {
 
 _pkg_upgrade_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get upgrade -yq ;;
+        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" upgrade -yq ;;
         dnf) sudo dnf upgrade -y ;;
         pacman) sudo pacman -Su --noconfirm ;;
         zypper) sudo zypper update -y ;;
@@ -529,7 +533,7 @@ pkg_install_local() {
 _pkg_install_local_impl() {
     local pkg_path="$1"
     case "$PKG_MANAGER" in
-        apt) sudo apt install -y "$pkg_path" ;;
+        apt) sudo apt -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y "$pkg_path" ;;
         dnf) sudo dnf install -y "$pkg_path" ;;
         pacman) sudo pacman -U --noconfirm "$pkg_path" ;;
         zypper) sudo zypper install -y --allow-unsigned-rpm "$pkg_path" ;;
