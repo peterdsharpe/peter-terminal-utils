@@ -51,3 +51,7 @@ install_github_cli() {
 
 ensure_command "GitHub CLI" gh install_github_cli
 
+# Remind user to authenticate if not already logged in
+if command -v gh &>/dev/null && ! gh auth status &>/dev/null 2>&1; then
+    print_info "Run 'gh auth login' to authenticate with GitHub"
+fi
