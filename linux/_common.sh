@@ -827,29 +827,26 @@ _read_config_value() {
     grep -E "^${key}\s*=" "$config_file" 2>/dev/null | sed -E 's/^[^=]+=[[:space:]]*"([^"]+)".*/\1/' | head -1
 }
 
-# When running standalone (not orchestrated), prompt for missing config
+# When running standalone (not orchestrated), set sensible defaults
+# Only prompts for sudo if the calling script requires it (@requires: sudo)
 standalone_init() {
     if [[ "${ORCHESTRATED:-}" == "true" ]]; then
         return 0
     fi
     
-    # Running standalone - set defaults or prompt
+    # Running standalone - set sensible defaults without prompts
     : "${DRY_RUN:=false}"
+    : "${HEADLESS:=N}"  # Default to non-headless, no prompt
     
-    if [[ -z "${HEADLESS:-}" ]]; then
-        if prompt_yn "Headless mode (skip GUI packages)? [y/N]" "N"; then
-            HEADLESS="Y"
-        else
-            HEADLESS="N"
-        fi
-    fi
+    # Determine the calling script (to check its metadata)
+    local caller_script="${BASH_SOURCE[1]}"
     
+    # Only prompt for sudo if this specific script requires it
     if [[ -z "${HAS_SUDO:-}" ]]; then
-        if sudo -n true 2>/dev/null; then
+        if sudo -n true 2>/dev/null || [[ $EUID -eq 0 ]]; then
             HAS_SUDO=true
-        elif [[ $EUID -eq 0 ]]; then
-            HAS_SUDO=true
-        else
+        elif script_requires_sudo "$caller_script"; then
+            # This script needs sudo - prompt for it
             if prompt_yn "Authenticate with sudo? [Y/n]" "Y"; then
                 if sudo -v; then
                     HAS_SUDO=true
@@ -859,20 +856,18 @@ standalone_init() {
             else
                 HAS_SUDO=false
             fi
+        else
+            # Script doesn't require sudo - skip silently
+            HAS_SUDO=false
         fi
     fi
     
-    # Read defaults from config.toml
-    local default_git_name default_git_email
-    default_git_name=$(_read_config_value "git_name") || default_git_name="Your Name"
-    default_git_email=$(_read_config_value "git_email") || default_git_email="you@example.com"
-    
+    # Read git config defaults silently (no prompts)
     if [[ -z "${GIT_NAME:-}" ]]; then
-        GIT_NAME=$(prompt_input "Git user name" "$default_git_name")
+        GIT_NAME=$(_read_config_value "git_name") || GIT_NAME="Peter Sharpe"
     fi
-    
     if [[ -z "${GIT_EMAIL:-}" ]]; then
-        GIT_EMAIL=$(prompt_input "Git email" "$default_git_email")
+        GIT_EMAIL=$(_read_config_value "git_email") || GIT_EMAIL="peterdsharpe@gmail.com"
     fi
     
     # Export for any child processes
