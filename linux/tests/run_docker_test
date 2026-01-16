@@ -234,9 +234,11 @@ def run_container(*, dry_run: bool = False, logs_dir: Path | None = None) -> int
 
     cmd.append(IMAGE_NAME)
 
-    # Override default CMD if dry-run requested
+    # Specify the setup command (always explicit, not relying on Dockerfile CMD)
+    setup_cmd = ["./setup", "--preset", "1", "--verbose"]
     if dry_run:
-        cmd.extend(["./setup", "--preset", "1", "--dry-run", "--verbose"])
+        setup_cmd.insert(3, "--dry-run")
+    cmd.extend(setup_cmd)
 
     print_step("Running setup in container...")
     start_time = time.time()

@@ -29,5 +29,5 @@ WORKDIR /home/testuser/peter-terminal-utils/linux
 # Make setup executable
 RUN chmod +x setup
 
-# Default command runs full desktop preset with verbose output for debugging
-CMD ["./setup", "--preset", "1", "--verbose"]
+# Default to bash (actual setup command is specified by run_docker_test)
+CMD ["/bin/bash"]
