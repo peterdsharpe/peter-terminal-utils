@@ -506,7 +506,6 @@ class Script:
             # @name: bat
             # @description: Modern cat replacement
             # @requires: sudo
-            # @parallel: true
 
         Args:
             script_path: Path to the script file.
@@ -893,7 +892,9 @@ def prepare_script_env(
     env = os.environ.copy()
     env["_SOURCED"] = "1"
     env["ORCHESTRATED"] = "true"
-    env["DRY_RUN"] = "true" if dry_run else "false"
+    # Note: Use empty string for false because some scripts (e.g., get.docker.com)
+    # treat ANY non-empty DRY_RUN value as dry-run mode
+    env["DRY_RUN"] = "true" if dry_run else ""
     env["HEADLESS"] = "Y" if headless else "N"
     env["INSTALL_SNAPS"] = "N" if headless else "Y"
     env["HAS_SUDO"] = "true" if check_sudo_available() else "false"
