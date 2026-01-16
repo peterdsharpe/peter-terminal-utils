@@ -1,6 +1,6 @@
 #!/bin/bash
 # @name: Flatpak Apps
-# @description: Obsidian, VS Code, Firefox, Inkscape, LibreOffice, Steam, Zotero, Tor Browser via Flatpak
+# @description: Productivity, creative, and media apps via Flatpak
 # @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -43,7 +43,8 @@ fi
 install_flatpak_app() {
     local app_id="$1"
     local app_name="$2"
-    if flatpak list --app | grep -q "$app_id"; then
+    # flatpak info succeeds if app is installed (user OR system)
+    if flatpak info "$app_id" &>/dev/null; then
         print_skip "$app_name already installed"
     else
         step "Installing $app_name" flatpak install -y --user flathub "$app_id"
@@ -58,6 +59,10 @@ install_flatpak_app "org.inkscape.Inkscape" "Inkscape"
 install_flatpak_app "org.libreoffice.LibreOffice" "LibreOffice"
 install_flatpak_app "com.valvesoftware.Steam" "Steam"
 install_flatpak_app "org.torproject.torbrowser-launcher" "Tor Browser"
+install_flatpak_app "org.gimp.GIMP" "GIMP"
+install_flatpak_app "org.blender.Blender" "Blender"
+install_flatpak_app "com.transmissionbt.Transmission" "Transmission"
+install_flatpak_app "com.prusa3d.PrusaSlicer" "PrusaSlicer"
 
 ### Update all Flatpak apps to latest versions
 step "Updating Flatpak applications" flatpak update -y --user

@@ -26,6 +26,9 @@ install_utilities() {
         rclone       # Cloud storage sync
         # Document processing
         pandoc       # Universal document converter
+        # Media
+        vlc          # Media player
+        flameshot    # Screenshot tool
     )
 
     step_start "Installing utility packages"
