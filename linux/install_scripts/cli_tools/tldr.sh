@@ -25,6 +25,9 @@ install_tealdeer() {
     mkdir -p "$HOME/.local/bin"
     curl -fsSL -o "$HOME/.local/bin/tldr" "$binary_url" || return 1
     chmod +x "$HOME/.local/bin/tldr"
+
+    # Download the tldr page cache
+    "$HOME/.local/bin/tldr" --update
 }
 
 ensure_command "tldr" tldr "install_tealdeer"
