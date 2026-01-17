@@ -1069,6 +1069,59 @@ class InstallLogger:
                     f.write(f"    {clean_line}\n")
             f.write("\n")
 
+    def _compute_concurrency_stats(self) -> dict[str, float | int]:
+        """Compute parallelism statistics from script timing data.
+
+        Returns dict with:
+            - peak_concurrency: Maximum scripts running simultaneously
+            - sum_durations: Total CPU time across all scripts
+            - wall_time: Actual elapsed time
+            - speedup: sum_durations / wall_time (parallelism efficiency)
+        """
+        # Collect scripts that actually ran (have both start and end times)
+        intervals = [
+            (s.start_time, s.end_time)
+            for s in self.statuses
+            if s.start_time is not None and s.end_time is not None
+        ]
+
+        if not intervals:
+            return {"peak_concurrency": 0, "sum_durations": 0.0, "wall_time": 0.0, "speedup": 1.0}
+
+        # Sum of all script durations
+        sum_durations = sum(end - start for start, end in intervals)
+
+        # Wall time from first start to last end
+        min_start = min(start for start, _ in intervals)
+        max_end = max(end for _, end in intervals)
+        wall_time = max_end - min_start
+
+        # Peak concurrency: use event-based counting
+        # Create events: +1 at start, -1 at end
+        events: list[tuple[float, int]] = []
+        for start, end in intervals:
+            events.append((start, 1))   # Script starts
+            events.append((end, -1))    # Script ends
+
+        # Sort by time, with ends (-1) before starts (+1) at same time
+        # This prevents counting a script that ends exactly when another starts
+        events.sort(key=lambda e: (e[0], e[1]))
+
+        peak = 0
+        current = 0
+        for _, delta in events:
+            current += delta
+            peak = max(peak, current)
+
+        speedup = sum_durations / wall_time if wall_time > 0 else 1.0
+
+        return {
+            "peak_concurrency": peak,
+            "sum_durations": sum_durations,
+            "wall_time": wall_time,
+            "speedup": speedup,
+        }
+
     def write_summary(self, end_time: float | None = None) -> None:
         """Append final summary to the log file."""
         console_path, _ = self.get_log_paths()
@@ -1080,12 +1133,21 @@ class InstallLogger:
         end = end_time if end_time is not None else time.monotonic()
         duration = end - self.start_time
 
+        # Compute concurrency statistics
+        stats = self._compute_concurrency_stats()
+
         with open(console_path, "a") as f:
             f.write("=" * 60 + "\n")
             f.write(
                 f"Summary: {success_count} succeeded, {fail_count} failed, {skipped_count} skipped\n"
             )
             f.write(f"Duration: {duration:.1f}s\n")
+            f.write("\n")
+            f.write("Parallelism:\n")
+            f.write(f"  Peak concurrency: {stats['peak_concurrency']} scripts\n")
+            f.write(f"  Total script time: {stats['sum_durations']:.1f}s\n")
+            f.write(f"  Wall-clock time: {stats['wall_time']:.1f}s\n")
+            f.write(f"  Speedup: {stats['speedup']:.1f}x\n")
 
 
 ###############################################################################
@@ -3114,7 +3176,11 @@ class ExecutionTUI(BaseTUI):
                 title = "✓ Complete"
                 title_color = self.colors["green"]
         else:
-            title = f"Installing {completed}/{total}"
+            running_count = sum(1 for s in self.statuses if s.state == ScriptState.RUNNING)
+            if running_count > 0:
+                title = f"Installing {completed}/{total} ({running_count} active)"
+            else:
+                title = f"Installing {completed}/{total}"
             title_color = self.colors["cyan"]
 
         if self.dry_run:
@@ -3226,7 +3292,32 @@ class ExecutionTUI(BaseTUI):
 
         # Show cursor marker for running script when user is viewing elsewhere
         cursor = "»" if is_running and not is_viewing else " "
-        line = f"{cursor}{indicator} {status.script.display_name}"
+
+        # Calculate duration string for running/completed scripts
+        dur_str = ""
+        if status.start_time is not None:
+            if status.end_time is not None:
+                # Completed: show final duration with one decimal
+                dur = status.end_time - status.start_time
+                dur_str = f"{dur:.1f}s"
+            elif state == ScriptState.RUNNING:
+                # Running: show live counter (no decimal, with ellipsis)
+                dur = time.monotonic() - status.start_time
+                dur_str = f"{dur:.0f}s…"
+
+        # Build line with duration right-aligned
+        # Format: "»⠋ Name                 12s…"
+        prefix = f"{cursor}{indicator} "
+        name = status.script.display_name
+        if dur_str:
+            # Reserve space for duration (right-aligned)
+            name_width = width - len(prefix) - len(dur_str) - 1
+            if name_width > 0:
+                line = f"{prefix}{name[:name_width].ljust(name_width)} {dur_str}"
+            else:
+                line = f"{prefix}{name}"[:width]
+        else:
+            line = f"{prefix}{name}"
 
         # Combine color with reverse highlight if this script is being viewed
         attr = color | self.colors["reverse"] if is_viewing else color
