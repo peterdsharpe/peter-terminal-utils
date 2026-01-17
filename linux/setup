@@ -866,7 +866,7 @@ def prompt_sudo_if_needed(enabled_scripts: list[tuple[Section, Script]]) -> bool
             print(" ✓ Sudo credentials cached")
             return True
         else:
-            print(" ✗ Sudo authentication failed")
+            print(" ✗ Sudo authentication failed - scripts requiring sudo will be skipped")
             return True  # Continue anyway, scripts will skip
     except (KeyboardInterrupt, EOFError):
         print("\n Cancelled")
@@ -1427,6 +1427,7 @@ SELECTION_SHORTCUTS = [
 SELECTION_FOOTER_NOTES = [
     "Sections toggle all children",
     "[x]=enabled [~]=partial [ ]=disabled",
+    "Mouse: click to select, double-click to toggle",
 ]
 
 # Shortcuts for ExecutionTUI
@@ -1445,6 +1446,7 @@ EXECUTION_SHORTCUTS = [
 EXECUTION_FOOTER_NOTES = [
     "Left panel: script list, Right panel: output",
     "Follow mode auto-scrolls to running script",
+    "Mouse: click to select, scroll wheel, drag scrollbar",
 ]
 
 
@@ -3193,11 +3195,17 @@ class ExecutionTUI(BaseTUI):
             title_color = self.colors["yellow"]
         elif completed == total:
             failed = sum(1 for s in self.statuses if s.state == ScriptState.FAILED)
+            succeeded = sum(1 for s in self.statuses if s.state == ScriptState.SUCCESS)
+            skipped = sum(1 for s in self.statuses if s.state == ScriptState.SKIPPED)
             if failed > 0:
-                title = f"Complete - {failed} Failed"
+                title = f"Complete - {succeeded} OK, {failed} Failed"
+                if skipped > 0:
+                    title += f", {skipped} Skipped"
                 title_color = self.colors["red"]
             else:
-                title = "✓ Complete"
+                title = f"✓ Complete - {succeeded} OK"
+                if skipped > 0:
+                    title += f", {skipped} Skipped"
                 title_color = self.colors["green"]
         else:
             running_count = sum(1 for s in self.statuses if s.state == ScriptState.RUNNING)
