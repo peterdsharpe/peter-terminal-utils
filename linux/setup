@@ -1060,6 +1060,16 @@ class InstallLogger:
             if status.start_time is not None and status.end_time is not None:
                 duration = status.end_time - status.start_time
                 f.write(f"  Duration: {duration:.2f}s\n")
+            # Log lock contention wait time if script was blocked
+            if (
+                status.ready_time is not None
+                and status.start_time is not None
+                and status.blocked_by_locks
+            ):
+                lock_wait = status.start_time - status.ready_time
+                if lock_wait > 0.1:  # Avoid noise from scheduling jitter
+                    locks_str = ", ".join(sorted(status.blocked_by_locks))
+                    f.write(f"  Lock wait: {lock_wait:.2f}s (blocked by: {locks_str})\n")
             if status.exit_code is not None:
                 f.write(f"  Exit code: {status.exit_code}\n")
             if status.output_lines:
@@ -2558,6 +2568,8 @@ class ScriptStatus:
     exit_code: int | None = None
     start_time: float | None = None  # monotonic time when script started
     end_time: float | None = None  # monotonic time when script finished
+    ready_time: float | None = None  # when dependencies became satisfied
+    blocked_by_locks: set[str] | None = None  # which locks blocked this script
 
 
 @dataclass
@@ -2602,6 +2614,9 @@ class ParallelScheduler:
         - Fit within worker limit
 
         Non-parallel scripts only run when nothing else is running.
+
+        Also tracks ready_time (when deps first satisfied) and blocked_by_locks
+        (which locks are preventing a ready script from starting) for diagnostics.
         """
         ready: list[ScriptStatus] = []
         # Track locks from scripts added to this batch to prevent conflicts
@@ -2616,12 +2631,21 @@ class ParallelScheduler:
                 # Non-parallel scripts run alone
                 if running_count == 0 and not ready:
                     if self.deps_satisfied(status):
+                        # Track when dependencies became satisfied
+                        if status.ready_time is None:
+                            status.ready_time = time.monotonic()
                         ready.append(status)
                         break  # Only one non-parallel at a time
             else:
                 if not self.deps_satisfied(status):
                     continue
+                # Track when dependencies became satisfied
+                if status.ready_time is None:
+                    status.ready_time = time.monotonic()
                 if self.has_lock_conflict(status):
+                    # Record which locks are blocking (first occurrence only)
+                    if status.blocked_by_locks is None:
+                        status.blocked_by_locks = status.script.locks & self.held_locks
                     continue
                 # Also check for conflicts with other scripts in this batch
                 if status.script.locks & batch_locks:
