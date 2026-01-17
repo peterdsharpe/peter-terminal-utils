@@ -1,5 +1,6 @@
 # Ubuntu 24.04 test environment for peter-terminal-utils
-# Builds a container with a non-root user that has passwordless sudo access.
+# Builds a minimal container with a non-root user that has passwordless sudo access.
+# The repository is mounted at runtime, not copied at build time.
 
 FROM ubuntu:24.04
 
@@ -19,15 +20,13 @@ RUN apt-get update -qq && \
 RUN useradd -m -s /bin/bash testuser && \
     echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Copy the full repository (build context is repo root)
-COPY --chown=testuser:testuser . /home/testuser/peter-terminal-utils
+# Create mount point directory with correct ownership
+RUN mkdir -p /home/testuser/peter-terminal-utils && \
+    chown testuser:testuser /home/testuser/peter-terminal-utils
 
 # Switch to test user
 USER testuser
 WORKDIR /home/testuser/peter-terminal-utils/linux
 
-# Make setup executable
-RUN chmod +x setup
-
-# Default to bash (actual setup command is specified by run_docker_test)
+# Default to bash (repo must be mounted at runtime)
 CMD ["/bin/bash"]
