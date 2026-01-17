@@ -7,4 +7,4 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-ensure_command "fd" fd "install_github_binary sharkdp/fd fd"
+ensure_github_tool "sharkdp/fd" "fd"

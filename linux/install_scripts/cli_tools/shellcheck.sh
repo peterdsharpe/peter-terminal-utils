@@ -7,4 +7,4 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-ensure_command "shellcheck" shellcheck "install_github_binary koalaman/shellcheck shellcheck"
+ensure_github_tool "koalaman/shellcheck" "shellcheck"

@@ -7,4 +7,4 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-ensure_command "btop" btop "install_github_binary aristocratos/btop btop"
+ensure_github_tool "aristocratos/btop" "btop"

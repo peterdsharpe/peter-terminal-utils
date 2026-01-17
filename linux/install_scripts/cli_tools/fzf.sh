@@ -7,14 +7,13 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-install_fzf() {
-    # Remove any existing/incomplete install for idempotency
-    rm -rf "$HOME/.fzf"
-    git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf" || return 1
-    "$HOME/.fzf/install" --bin || return 1
-    mkdir -p "$HOME/.local/bin"
-    install -m 755 "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
-}
+# Clone or update fzf repo
+ensure_git_repo "https://github.com/junegunn/fzf.git" "$HOME/.fzf" "fzf"
 
-ensure_command "fzf" fzf install_fzf
+# Build and install binary after clone/update
+step "Building fzf binary" "$HOME/.fzf/install" --bin
+
+# Symlink to ~/.local/bin
+mkdir -p "$HOME/.local/bin"
+step "Installing fzf to ~/.local/bin" install -m 755 "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
 

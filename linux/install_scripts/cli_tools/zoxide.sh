@@ -7,9 +7,6 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-install_zoxide() {
-    curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh
-}
-
-ensure_command "zoxide" zoxide install_zoxide
+# Zoxide archive is flat (no top-level directory), so strip=0
+ensure_github_tool "ajeetdsouza/zoxide" "zoxide" "zoxide" 0
 
