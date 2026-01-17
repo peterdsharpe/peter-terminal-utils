@@ -8,7 +8,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-ensure_command "delta" delta "install_github_binary dandavison/delta delta"
+ensure_github_tool "dandavison/delta" "delta"
 
 # Configure git to use delta as the pager (only if delta is now available)
 if command -v delta &>/dev/null; then

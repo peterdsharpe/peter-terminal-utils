@@ -15,9 +15,10 @@ if is_wsl; then
     exit 0
 fi
 
-install_zed() {
+# Zed install script handles both install and update
+if ! command -v zed &>/dev/null; then
     # Zed's installer requires SHELL to be set; ensure it's available
-    SHELL="${SHELL:-$(command -v bash)}" curl -f https://zed.dev/install.sh | sh
-}
-
-ensure_command "Zed" zed install_zed
+    step "Installing Zed" bash -c 'SHELL="${SHELL:-$(command -v bash)}" curl -f https://zed.dev/install.sh | sh'
+else
+    print_skip "Zed already installed"
+fi

@@ -259,7 +259,7 @@ skip_if_headless() {
     fi
 }
 
-### Install a command if not already present
+### Install a command if not already present (LEGACY - prefer ensure_github_tool)
 ### Optional 4th param "sudo" skips if HAS_SUDO=false
 ensure_command() {
     local name="$1"
@@ -277,6 +277,98 @@ ensure_command() {
     else
         print_skip "$name already installed"
     fi
+}
+
+### Install/update a tool from GitHub releases with version checking
+### Compares installed version against latest GitHub release, updates if outdated
+### Usage: ensure_github_tool "owner/repo" "tool_name" [binary_name] [strip_components]
+ensure_github_tool() {
+    local repo="$1"
+    local tool="$2"
+    local binary="${3:-$tool}"
+    local strip="${4:-1}"
+
+    if command -v "$binary" &>/dev/null; then
+        local installed latest
+        installed=$(get_installed_version "$binary") || installed=""
+        latest=$(github_latest_version "$repo") || {
+            print_warning "Cannot check $tool version (network?)"
+            return 0
+        }
+
+        if [[ -n "$installed" ]]; then
+            semver_compare "$installed" "$latest"
+            case $? in
+                0) print_skip "$tool at latest ($installed)"; return 0 ;;
+                2) print_skip "$tool newer than release ($installed > $latest)"; return 0 ;;
+                1) print_info "$tool: $installed -> $latest" ;;
+            esac
+        fi
+    fi
+
+    step "Installing $tool" install_github_binary "$repo" "$tool" "$binary" "$strip"
+}
+
+### Clone a git repo if missing, pull if exists
+### For tools installed via git clone (oh-my-zsh, zsh plugins, powerlevel10k)
+### Usage: ensure_git_repo "https://github.com/user/repo.git" "/dest/path" [name]
+ensure_git_repo() {
+    local url="$1"
+    local dest="$2"
+    local name="${3:-$(basename "$url" .git)}"
+
+    if [[ -d "$dest/.git" ]]; then
+        step "Updating $name" git -C "$dest" pull --ff-only
+    else
+        # Remove incomplete clone if present
+        rm -rf "$dest"
+        step "Cloning $name" git clone --depth=1 "$url" "$dest"
+    fi
+}
+
+### Install/update a GNOME Shell extension from extensions.gnome.org
+### Uses --force flag which handles both install and update
+### Usage: ensure_gnome_extension "extension-uuid@author" [display_name]
+ensure_gnome_extension() {
+    local uuid="$1"
+    local name="${2:-$uuid}"
+
+    # Skip if gnome-extensions command not available
+    command -v gnome-extensions &>/dev/null || {
+        print_skip "$name (gnome-extensions unavailable)"
+        return 0
+    }
+
+    local shell_ver download_url tmpzip api_resp
+
+    shell_ver=$(gnome-shell --version 2>/dev/null | grep -oP '\d+' | head -1) || {
+        print_warning "Cannot determine GNOME Shell version"
+        return 1
+    }
+
+    api_resp=$(curl -sf --connect-timeout 10 \
+        "https://extensions.gnome.org/extension-info/?uuid=$uuid&shell_version=$shell_ver") || {
+        print_warning "Cannot fetch $name info from extensions.gnome.org"
+        return 1
+    }
+
+    download_url=$(echo "$api_resp" | jq -r '.download_url // empty')
+    [[ -n "$download_url" ]] || {
+        print_warning "$name not available for GNOME Shell $shell_ver"
+        return 1
+    }
+
+    tmpzip=$(mktemp --suffix=.zip)
+    if ! curl -sfL "https://extensions.gnome.org$download_url" -o "$tmpzip"; then
+        rm -f "$tmpzip"
+        return 1
+    fi
+
+    # --force handles both install and update
+    step "Installing/updating $name" gnome-extensions install --force "$tmpzip"
+    local result=$?
+    rm -f "$tmpzip"
+    return $result
 }
 
 ### Run something only if sudo is available, otherwise skip with message
@@ -306,6 +398,177 @@ prompt_input() {
     local response
     read -r -p "$prompt [$default]: " response
     echo "${response:-$default}"
+}
+
+###############################################################################
+### Semver Utilities - Version extraction and comparison per semver.org spec
+###############################################################################
+
+### Extract semver from command's --version output
+### Strips ANSI codes, finds first semver-like match, normalizes
+### Returns: X.Y.Z or X.Y.Z-prerelease (build metadata stripped for comparison)
+### Usage: version=$(get_installed_version "binary_name")
+get_installed_version() {
+    local binary="$1"
+    local output version
+
+    # Get version output, strip ANSI escape codes (handles btop's colored output)
+    output=$("$binary" --version 2>&1 | head -10 | sed 's/\x1b\[[0-9;]*m//g') || return 1
+
+    # Extract first semver-like match: v?X.Y.Z with optional pre-release suffix
+    # Handles formats like:
+    #   "bat 0.26.1 (979ba22)"     -> 0.26.1
+    #   "v0.23.4 [+git]"           -> 0.23.4
+    #   "1.4.6+e969f43"            -> 1.4.6
+    #   "NVIM v0.10.4"             -> 0.10.4
+    #   "version=0.57.0"           -> 0.57.0
+    #   "0.60 (devel)"             -> 0.60.0 (normalized)
+    version=$(echo "$output" | grep -oP 'v?(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?(-[0-9A-Za-z.-]+)?' | head -1)
+
+    # Normalize: strip v prefix
+    version="${version#v}"
+
+    # Strip build metadata (everything after +) for comparison purposes
+    version="${version%+*}"
+
+    # If only X.Y format (like fzf "0.60"), append .0 to normalize to X.Y.Z
+    if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        version="${version}.0"
+    fi
+
+    # Return empty string instead of partial match if no valid version found
+    [[ -z "$version" ]] && return 1
+
+    echo "$version"
+}
+
+### Compare two semver strings per semver.org spec (section 11)
+### Returns: 0 if v1 == v2, 1 if v1 < v2, 2 if v1 > v2
+### Handles: X.Y.Z, pre-release (-alpha.1), ignores build metadata (+sha)
+### Usage: semver_compare "1.0.0" "2.0.0"; case $? in 0) equal ;; 1) less ;; 2) greater ;; esac
+semver_compare() {
+    local v1="$1" v2="$2"
+
+    # Strip build metadata (ignored for precedence per spec section 10)
+    v1="${v1%+*}"
+    v2="${v2%+*}"
+
+    # Strip v prefix if present (common in git tags)
+    v1="${v1#v}"
+    v2="${v2#v}"
+
+    # Equal check (fast path)
+    [[ "$v1" == "$v2" ]] && return 0
+
+    # Split into core (X.Y.Z) and pre-release (-alpha.1)
+    local v1_core="${v1%%-*}" v1_pre="" v2_core="${v2%%-*}" v2_pre=""
+    [[ "$v1" == *-* ]] && v1_pre="${v1#*-}"
+    [[ "$v2" == *-* ]] && v2_pre="${v2#*-}"
+
+    # Compare core version (X.Y.Z) numerically
+    local IFS='.'
+    # shellcheck disable=SC2206  # Intentional word splitting on IFS
+    local -a c1=($v1_core) c2=($v2_core)
+    local i
+    for ((i=0; i<3; i++)); do
+        local n1="${c1[i]:-0}" n2="${c2[i]:-0}"
+        ((n1 < n2)) && return 1
+        ((n1 > n2)) && return 2
+    done
+
+    # Core versions equal - check pre-release
+    # Per spec section 11.3: version without pre-release > version with pre-release
+    [[ -z "$v1_pre" && -n "$v2_pre" ]] && return 2  # 1.0.0 > 1.0.0-alpha
+    [[ -n "$v1_pre" && -z "$v2_pre" ]] && return 1  # 1.0.0-alpha < 1.0.0
+    [[ -z "$v1_pre" && -z "$v2_pre" ]] && return 0  # Both no pre-release
+
+    # Both have pre-release - compare dot-separated identifiers per spec section 11.4
+    _semver_compare_prerelease "$v1_pre" "$v2_pre"
+}
+
+### Compare pre-release identifiers per semver spec section 11.4
+### Called by semver_compare when both versions have pre-release suffixes
+_semver_compare_prerelease() {
+    local p1="$1" p2="$2"
+    local IFS='.'
+    # shellcheck disable=SC2206  # Intentional word splitting on IFS
+    local -a ids1=($p1) ids2=($p2)
+    local i len1=${#ids1[@]} len2=${#ids2[@]}
+    local max=$((len1 > len2 ? len1 : len2))
+
+    for ((i=0; i<max; i++)); do
+        local id1="${ids1[i]:-}" id2="${ids2[i]:-}"
+
+        # Spec 11.4.4: Fewer identifiers = lower precedence (if all preceding equal)
+        [[ -z "$id1" && -n "$id2" ]] && return 1
+        [[ -n "$id1" && -z "$id2" ]] && return 2
+
+        # Spec 11.4.1: Both numeric - compare numerically
+        if [[ "$id1" =~ ^[0-9]+$ && "$id2" =~ ^[0-9]+$ ]]; then
+            ((id1 < id2)) && return 1
+            ((id1 > id2)) && return 2
+        # Spec 11.4.3: Numeric identifiers < non-numeric identifiers
+        elif [[ "$id1" =~ ^[0-9]+$ ]]; then
+            return 1
+        elif [[ "$id2" =~ ^[0-9]+$ ]]; then
+            return 2
+        # Spec 11.4.2: Both non-numeric - compare lexically in ASCII sort order
+        else
+            [[ "$id1" < "$id2" ]] && return 1
+            [[ "$id1" > "$id2" ]] && return 2
+        fi
+    done
+    return 0
+}
+
+### Run semver comparison tests against spec examples
+### Call with: _test_semver (for development/CI validation)
+_test_semver() {
+    local -a tests=(
+        # From semver.org spec section 11.2 - basic version ordering
+        "1.0.0:2.0.0:1"      # 1.0.0 < 2.0.0
+        "2.0.0:2.1.0:1"      # 2.0.0 < 2.1.0
+        "2.1.0:2.1.1:1"      # 2.1.0 < 2.1.1
+        # Spec section 11.3 - pre-release has lower precedence than release
+        "1.0.0-alpha:1.0.0:1"
+        # Spec section 11.4 - pre-release version ordering (from spec example)
+        "1.0.0-alpha:1.0.0-alpha.1:1"
+        "1.0.0-alpha.1:1.0.0-alpha.beta:1"
+        "1.0.0-alpha.beta:1.0.0-beta:1"
+        "1.0.0-beta:1.0.0-beta.2:1"
+        "1.0.0-beta.2:1.0.0-beta.11:1"
+        "1.0.0-beta.11:1.0.0-rc.1:1"
+        "1.0.0-rc.1:1.0.0:1"
+        # Spec section 10 - build metadata ignored for precedence
+        "1.0.0+build1:1.0.0+build2:0"
+        "1.0.0+abc:1.0.0:0"
+        "1.0.0-alpha+001:1.0.0-alpha+002:0"
+        # Equality tests
+        "1.0.0:1.0.0:0"
+        "1.0.0-alpha:1.0.0-alpha:0"
+        # Reverse direction tests (v1 > v2 should return 2)
+        "2.0.0:1.0.0:2"
+        "1.0.0:1.0.0-alpha:2"
+        # v prefix handling
+        "v1.0.0:1.0.0:0"
+        "v1.0.0:v1.0.0:0"
+    )
+    local passed=0 failed=0
+    for test in "${tests[@]}"; do
+        IFS=':' read -r v1 v2 expected <<< "$test"
+        semver_compare "$v1" "$v2"
+        local result=$?
+        if [[ "$result" == "$expected" ]]; then
+            echo -e "${GREEN}✓${NC} $v1 vs $v2 = $result"
+            ((passed++))
+        else
+            echo -e "${RED}✗${NC} $v1 vs $v2 = $result (expected $expected)"
+            ((failed++))
+        fi
+    done
+    echo ""
+    echo "Passed: $passed, Failed: $failed"
+    [[ $failed -eq 0 ]]
 }
 
 ### Get latest version from GitHub releases (uses redirect, not API - avoids rate limits)
@@ -597,7 +860,7 @@ get_release_arch() {
     local tool="$1"
     case "$tool" in
         # Standard Rust musl/gnu builds (most tools)
-        bat|fd|delta|eza|bottom)
+        bat|fd|delta|eza|bottom|zoxide)
             case "$ARCH" in
                 x86_64) echo "x86_64-unknown-linux-musl" ;;
                 arm64)  echo "aarch64-unknown-linux-gnu" ;;
@@ -620,6 +883,24 @@ get_release_arch() {
                 x86_64) echo "linux.x86_64" ;;
                 arm64)  echo "linux.aarch64" ;;
             esac ;;
+        # fastfetch uses non-standard naming (linux-amd64 instead of x86_64)
+        fastfetch)
+            case "$ARCH" in
+                x86_64) echo "linux-amd64" ;;
+                arm64)  echo "linux-aarch64" ;;
+            esac ;;
+        # tealdeer releases raw binaries with musl suffix
+        tealdeer)
+            case "$ARCH" in
+                x86_64) echo "linux-x86_64-musl" ;;
+                arm64)  echo "linux-aarch64-musl" ;;
+            esac ;;
+        # neovim uses simple arch naming
+        neovim)
+            case "$ARCH" in
+                x86_64) echo "linux-x86_64" ;;
+                arm64)  echo "linux-arm64" ;;
+            esac ;;
         *)
             echo "Unknown tool for arch mapping: $tool" >&2
             return 1 ;;
@@ -631,18 +912,20 @@ get_release_arch() {
 ###############################################################################
 
 # Install a binary from GitHub releases
-# Usage: install_github_binary "owner/repo" "tool_name" [binary_name] [strip_components]
+# Usage: install_github_binary "owner/repo" "tool_name" [binary_name] [strip_components] [type]
 #   - owner/repo: GitHub repository (e.g., "sharkdp/bat")
 #   - tool_name: Tool name for arch lookup and tarball naming
 #   - binary_name: Name of binary inside archive (defaults to tool_name)
 #   - strip_components: tar --strip-components value (default: 1)
 #       Use 0 for flat archives where the binary is at the archive root
 #       Use 1 for archives with a single top-level directory (most common)
+#   - type: "auto" (default) tries archives, "raw" downloads raw binary (e.g., tealdeer)
 install_github_binary() {
     local repo="$1"
     local tool="$2"
     local binary="${3:-$tool}"
     local strip="${4:-1}"
+    local dl_type="${5:-auto}"
 
     local version arch_suffix tmpdir archive_url
 
@@ -655,8 +938,46 @@ install_github_binary() {
     _cleanup_tmpdir() { rm -rf "$tmpdir"; }
     trap _cleanup_tmpdir EXIT TERM INT
 
-    # Common URL patterns - try different naming conventions
     local base_url="https://github.com/$repo/releases/download"
+
+    # Handle raw binary downloads (e.g., tealdeer releases raw executables, not archives)
+    if [[ "$dl_type" == "raw" ]]; then
+        local raw_patterns=(
+            # tealdeer style: tealdeer-linux-x86_64-musl
+            "$base_url/v${version}/${tool}-${arch_suffix}"
+            # Alternative without v prefix
+            "$base_url/${version}/${tool}-${arch_suffix}"
+        )
+
+        local raw_url=""
+        for pattern in "${raw_patterns[@]}"; do
+            if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
+                raw_url="$pattern"
+                break
+            fi
+        done
+
+        if [[ -z "$raw_url" ]]; then
+            echo "Could not find raw binary URL for $tool v$version" >&2
+            _cleanup_tmpdir
+            trap - EXIT TERM INT
+            return 1
+        fi
+
+        mkdir -p "$HOME/.local/bin"
+        if ! curl -fsSL -o "$HOME/.local/bin/$binary" "$raw_url"; then
+            _cleanup_tmpdir
+            trap - EXIT TERM INT
+            return 1
+        fi
+        chmod +x "$HOME/.local/bin/$binary"
+
+        _cleanup_tmpdir
+        trap - EXIT TERM INT
+        return 0
+    fi
+
+    # Archive download: try different naming conventions
     local patterns=(
         # v-prefixed tag, v-prefixed filename: bat-v0.24.0-x86_64-...
         "$base_url/v${version}/${tool}-v${version}-${arch_suffix}.tar.gz"

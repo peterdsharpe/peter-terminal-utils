@@ -7,24 +7,33 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
+# Docker requires sudo for installation
+if [[ "${HAS_SUDO:-false}" == false ]]; then
+    print_skip "Docker (requires sudo)"
+    exit 0
+fi
+
 install_docker() {
     curl -fsSL https://get.docker.com | sh || return 1
-    # Wait for docker group to be created (the install script creates it)
-    # Then add current user to it
+    # Add current user to docker group
     local current_user
     current_user="$(whoami)"
     if getent group docker &>/dev/null; then
         sudo usermod -aG docker "$current_user"
     else
-        # Group should exist after docker install; if not, create it
         sudo groupadd -f docker
         sudo usermod -aG docker "$current_user"
     fi
 }
 
-ensure_command "Docker" docker install_docker sudo
+# Install if not present (package manager handles updates via apt/dnf upgrade)
+if ! command -v docker &>/dev/null; then
+    step "Installing Docker" install_docker
+else
+    print_skip "Docker already installed"
+fi
 
 # Show warning if user not yet in docker group (requires logout/login to take effect)
-if [[ "$HAS_SUDO" == true ]] && ! groups | grep -q docker; then
+if ! groups | grep -q docker; then
     print_warning "Log out and back in to use docker without sudo"
 fi
