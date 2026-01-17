@@ -3422,7 +3422,9 @@ class ExecutionTUI(BaseTUI):
             viewed = self.statuses[self.viewing_idx]
             panel_indicator = "◀ scripts" if self.focus_panel == "left" else "output ▶"
             status_text = f" {viewed.section.name} / {viewed.script.display_name} [{panel_indicator}]"
-            if not self.following:
+            if self.following:
+                status_text += " (following)"
+            else:
                 status_text += " (browsing)"
         else:
             status_text = " Complete "
