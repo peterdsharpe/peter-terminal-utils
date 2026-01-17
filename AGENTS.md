@@ -1,1 +1,2 @@
 * All installation scripts in `./linux/install_scripts` should be executable (chmod +x) and have the correct shebang.
+* Error messages should always include actionable context. Never just say "X failed" - explain what was happening, what went wrong, and ideally what to do about it.

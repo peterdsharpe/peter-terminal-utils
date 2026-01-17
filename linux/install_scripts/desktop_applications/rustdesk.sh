@@ -42,7 +42,7 @@ install_rustdesk() {
     
     # Get latest version from GitHub
     version=$(github_latest_version "rustdesk/rustdesk") || {
-        print_error "Failed to get latest RustDesk version"
+        print_error "Failed to get latest RustDesk version from GitHub API (check network connectivity)"
         return 1
     }
     

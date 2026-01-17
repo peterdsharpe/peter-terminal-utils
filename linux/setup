@@ -872,7 +872,7 @@ def prompt_sudo_if_needed(enabled_scripts: list[tuple[Section, Script]]) -> bool
         print("\n Cancelled")
         return False
     except Exception as e:
-        print(f" Error: {e}")
+        print(f" Error checking sudo: {type(e).__name__}: {e}")
         return True  # Continue anyway
 
 
@@ -3630,20 +3630,25 @@ class ExecutionTUI(BaseTUI):
 
         try:
             if silent:
-                # Batch capture for parallel execution
-                result = subprocess.run(
+                # Streaming capture for parallel execution
+                # Uses Popen with line-buffered pipes so output appears live in TUI
+                process = subprocess.Popen(
                     ["bash", "-c", bash_cmd],
                     env=env,
                     cwd=self.scripts_dir.parent,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
-                    timeout=600,  # 10 minute timeout
+                    bufsize=1,  # Line buffered
                 )
-                status.exit_code = result.returncode
-                if result.stdout:
-                    status.output_lines.extend(result.stdout.strip().split("\n"))
-                if result.stderr:
-                    status.output_lines.extend(result.stderr.strip().split("\n"))
+
+                # Read output incrementally (thread-safe append to list)
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        status.output_lines.append(line.rstrip())
+                process.wait()
+
+                status.exit_code = process.returncode
             else:
                 # PTY for live output with display updates and keyboard input
                 master_fd, slave_fd = pty.openpty()
@@ -3716,14 +3721,10 @@ class ExecutionTUI(BaseTUI):
                 status.state = ScriptState.FAILED
                 return False
 
-        except subprocess.TimeoutExpired:
-            status.output_lines.append("Script timed out after 10 minutes")
-            status.end_time = time.monotonic()
-            status.state = ScriptState.FAILED
-            status.exit_code = 124
-            return False
         except Exception as e:
-            status.output_lines.append(f"Error: {e}")
+            status.output_lines.append(
+                f"Error executing {status.script.path}: {type(e).__name__}: {e}"
+            )
             status.end_time = time.monotonic()
             status.state = ScriptState.FAILED
             status.exit_code = 1
@@ -3959,11 +3960,11 @@ def _execute_cli_script(
                 return False
         except Exception as e:
             spinner.stop("✗")
-            print(f"    {e}")
+            print(f"    {type(e).__name__}: {e}")
             status.end_time = time.monotonic()
             status.state = ScriptState.FAILED
             status.exit_code = 1
-            status.output_lines.append(str(e))
+            status.output_lines.append(f"{type(e).__name__}: {e}")
             return False
 
 

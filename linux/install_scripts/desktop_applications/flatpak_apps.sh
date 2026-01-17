@@ -24,7 +24,7 @@ if ! command -v flatpak &>/dev/null; then
         step "Installing Flatpak" install_flatpak
         # Verify installation succeeded before continuing
         if ! command -v flatpak &>/dev/null; then
-            print_error "Flatpak installation failed"
+            print_error "Flatpak installation failed - check package manager output above"
             exit 1
         fi
     else

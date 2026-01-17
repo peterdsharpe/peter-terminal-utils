@@ -66,7 +66,8 @@ step "Setting scroll-factor=$SCROLL_FACTOR" bash -c "echo 'scroll-factor=$SCROLL
 # Find installed library (meson installs to architecture-specific paths)
 LIBINPUT_CONFIG_SO=$(find_libinput_config_so)
 if [[ -z "$LIBINPUT_CONFIG_SO" ]]; then
-    print_error "Build failed: libinput-config.so not found in expected locations"
+    print_error "Build failed: libinput-config.so not found. Checked: /usr/local/lib[64]/, /usr/local/lib/\$(arch)/"
+    print_error "Check ninja build output above for errors"
     exit 1
 fi
 
