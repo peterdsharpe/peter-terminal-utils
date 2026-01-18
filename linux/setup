@@ -1528,46 +1528,196 @@ def make_panel_header(label: str, width: int, right_label: str = "") -> str:
     return tab + BOX_H * fill_len + right_section + BOX_TR
 
 
+###############################################################################
+### UI Color Theme (True Color with fallbacks)
+###############################################################################
+
+
+def has_true_color() -> bool:
+    """Check if terminal supports 24-bit true color.
+
+    Detects via COLORTERM environment variable, which modern terminals set
+    to 'truecolor' or '24bit' when they support 16 million colors.
+    """
+    colorterm = os.environ.get("COLORTERM", "").lower()
+    return colorterm in ("truecolor", "24bit")
+
+
+# Monokai-inspired color palette with true black background
+# Each color has: (R, G, B) for true color, 256-color index, ANSI color constant
+#
+# True color gives exact RGB. 256-color gives close approximations from the
+# 6x6x6 color cube. ANSI gives basic terminal colors (may vary by terminal theme).
+
+THEME_COLORS: dict[str, tuple[tuple[int, int, int], int, int]] = {
+    # Semantic colors - soft pastel-ish palette with good contrast on black
+    # RGB values are slightly desaturated and brightened for readability
+    #                                    RGB (24-bit)      256   ANSI
+    "green":   ((134, 222, 179),  115, curses.COLOR_GREEN),   # Mint green (#86deb3)
+    "yellow":  ((240, 220, 140),  222, curses.COLOR_YELLOW),  # Soft gold (#f0dc8c)
+    "cyan":    ((120, 224, 220),  116, curses.COLOR_CYAN),    # Aqua/teal (#78e0dc)
+    "red":     ((255, 135, 155),  210, curses.COLOR_RED),     # Soft coral (#ff879b)
+    "blue":    ((140, 170, 255),  111, curses.COLOR_BLUE),    # Soft blue (#8caaff)
+    "magenta": ((200, 160, 255),  183, curses.COLOR_MAGENTA), # Lavender (#c8a0ff)
+    "white":   ((250, 250, 245),  255, curses.COLOR_WHITE),   # Warm white (#fafaf5)
+    "dim":     ((160, 160, 150),  102, curses.COLOR_WHITE),   # Warm gray (#a0a096)
+}
+
+# Background: true black for consistency
+THEME_BG_RGB = (0, 0, 0)  # True black
+THEME_BG_256 = 16         # True black in 256-color palette
+
+
 def init_colors() -> dict[ColorName, int]:
-    """Initialize curses color pairs and return a mapping."""
+    """Initialize curses color pairs with theme colors.
+
+    Uses 24-bit true color when available (COLORTERM=truecolor),
+    falls back to 256-color approximations, then basic ANSI colors.
+    """
     curses.start_color()
     curses.use_default_colors()
 
-    # Use true black background for consistent appearance across terminals
-    # In 256-color mode, color 16 is true black (0,0,0) from the color cube
-    # In 8-color mode, fall back to COLOR_BLACK (which may be themed)
+    # Determine color mode and background
+    # Always use true black (color 16 in 256-color mode) for consistency
+    use_true_color = has_true_color() and curses.can_change_color()
+
     if curses.COLORS >= 256:
-        bg = 16  # True black from 256-color palette
+        bg = 16  # True black from 256-color palette (works in both 256 and true color)
     else:
         bg = curses.COLOR_BLACK
 
-    # Define color pairs (all with black background)
-    curses.init_pair(1, curses.COLOR_GREEN, bg)   # Enabled
-    curses.init_pair(2, curses.COLOR_YELLOW, bg)  # Partial
-    curses.init_pair(3, curses.COLOR_CYAN, bg)    # Running/info
-    curses.init_pair(4, curses.COLOR_RED, bg)     # Failed/error
-    curses.init_pair(5, curses.COLOR_BLUE, bg)    # Header
-    curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Header bar
-    curses.init_pair(7, curses.COLOR_MAGENTA, bg) # Magenta
-    curses.init_pair(8, curses.COLOR_WHITE, bg)   # Default text on black
+    color_map: dict[ColorName, int] = {}
 
-    return {
-        "green": curses.color_pair(1),
-        "yellow": curses.color_pair(2),
-        "cyan": curses.color_pair(3),
-        "red": curses.color_pair(4),
-        "blue": curses.color_pair(5),
-        "header": curses.color_pair(6),
-        "magenta": curses.color_pair(7),
-        "default": curses.color_pair(8),
-        "dim": curses.A_DIM,
-        "bold": curses.A_BOLD,
-        "reverse": curses.A_REVERSE,
-    }
+    # Initialize each theme color
+    for pair_num, (name, (rgb, color_256, color_ansi)) in enumerate(THEME_COLORS.items(), start=1):
+        if use_true_color:
+            # Create custom color with exact RGB
+            # Start at index 20 to avoid conflicts with standard colors (0-15)
+            # and color 16 (true black used as background)
+            color_idx = 20 + pair_num
+            r, g, b = rgb
+            curses.init_color(color_idx, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+            curses.init_pair(pair_num, color_idx, bg)
+        elif curses.COLORS >= 256:
+            # Use 256-color palette approximation
+            curses.init_pair(pair_num, color_256, bg)
+        else:
+            # Fall back to basic ANSI colors
+            curses.init_pair(pair_num, color_ansi, bg)
+
+        color_map[name] = curses.color_pair(pair_num)
+
+    # Header bar (inverted colors for selection bar)
+    header_pair = len(THEME_COLORS) + 1
+    curses.init_pair(header_pair, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    color_map["header"] = curses.color_pair(header_pair)
+
+    # Default text color pair (for screen background) - white on black
+    default_pair = len(THEME_COLORS) + 2
+    if use_true_color:
+        # Use the custom white color (pair 7 -> color index 20+7=27)
+        curses.init_pair(default_pair, 27, bg)
+    elif curses.COLORS >= 256:
+        curses.init_pair(default_pair, 255, bg)
+    else:
+        curses.init_pair(default_pair, curses.COLOR_WHITE, bg)
+    color_map["default"] = curses.color_pair(default_pair)
+
+    # Text attributes (not color pairs)
+    color_map["bold"] = curses.A_BOLD
+    color_map["reverse"] = curses.A_REVERSE
+
+    return color_map
 
 
 ###############################################################################
-### Rainbow Color System (256-color support)
+### Rainbow Color System (True Color + 256-color fallback)
+###############################################################################
+
+###############################################################################
+### OKLCH Color Space (Perceptually Uniform)
+###############################################################################
+
+# OKLCH is the most modern perceptually uniform color space. It separates:
+#   L: Lightness (0-1, perceptually linear)
+#   C: Chroma (0-0.4ish, saturation/colorfulness)
+#   H: Hue (0-360°, perceptually uniform)
+#
+# Converting OKLCH -> sRGB requires going through OKLab intermediate space:
+#   OKLCH -> OKLab -> Linear RGB -> sRGB (with gamma)
+
+
+def oklch_to_srgb(L: float, C: float, h_deg: float) -> tuple[int, int, int]:
+    """Convert OKLCH to sRGB (0-255 per channel).
+
+    Based on Björn Ottosson's OKLab/OKLCH color space.
+    Reference: https://bottosson.github.io/posts/oklab/
+
+    Args:
+        L: Lightness (0-1)
+        C: Chroma (0 to ~0.4)
+        h_deg: Hue in degrees (0-360)
+
+    Returns:
+        Tuple of (r, g, b) each in 0-255 range, clamped to valid sRGB gamut.
+    """
+    # OKLCH to OKLab
+    h_rad = math.radians(h_deg)
+    a = C * math.cos(h_rad)
+    b = C * math.sin(h_rad)
+
+    # OKLab to linear RGB (via LMS intermediate)
+    # These matrices are from Ottosson's derivation
+    l_ = L + 0.3963377774 * a + 0.2158037573 * b
+    m_ = L - 0.1055613458 * a - 0.0638541728 * b
+    s_ = L - 0.0894841775 * a - 1.2914855480 * b
+
+    # Cube the LMS values
+    l = l_ * l_ * l_
+    m = m_ * m_ * m_
+    s = s_ * s_ * s_
+
+    # LMS to linear RGB
+    r_lin = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    b_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+
+    # Linear RGB to sRGB (gamma correction)
+    def linear_to_srgb(x: float) -> int:
+        if x <= 0.0031308:
+            val = 12.92 * x
+        else:
+            val = 1.055 * (x ** (1 / 2.4)) - 0.055
+        return max(0, min(255, int(round(val * 255))))
+
+    return linear_to_srgb(r_lin), linear_to_srgb(g_lin), linear_to_srgb(b_lin)
+
+
+def generate_oklch_rainbow(n_colors: int, L: float = 0.7, C: float = 0.15) -> list[tuple[int, int, int]]:
+    """Generate a perceptually uniform rainbow using OKLCH color space.
+
+    Args:
+        n_colors: Number of colors to generate.
+        L: Lightness (0.7 is good for visibility on dark backgrounds).
+        C: Chroma (0.15 gives vivid but not oversaturated colors).
+
+    Returns:
+        List of (r, g, b) tuples, each channel 0-255.
+    """
+    colors = []
+    for i in range(n_colors):
+        hue = (i / n_colors) * 360.0
+        r, g, b = oklch_to_srgb(L, C, hue)
+        colors.append((r, g, b))
+    return colors
+
+
+# Number of colors in true color rainbow (can be arbitrarily high)
+TRUE_COLOR_RAINBOW_SIZE = 72  # Smooth hue transitions
+
+
+###############################################################################
+### 256-Color Fallback Palette
 ###############################################################################
 
 # Perceptually uniform rainbow palette for 256-color terminals.
@@ -1628,7 +1778,9 @@ RAINBOW_BASIC = ["red", "yellow", "green", "cyan", "blue", "magenta"]
 
 
 def init_rainbow_colors(start_pair: int = 20) -> list[int]:
-    """Initialize 256-color rainbow pairs if terminal supports them.
+    """Initialize rainbow color pairs for the terminal.
+
+    Attempts true color first (24-bit), falls back to 256-color palette.
 
     Args:
         start_pair: Starting color pair number for rainbow colors.
@@ -1636,21 +1788,46 @@ def init_rainbow_colors(start_pair: int = 20) -> list[int]:
     Returns:
         List of curses color_pair values for rainbow, or empty if not supported.
     """
-    if curses.COLORS < 256:
-        return []
+    # True black background (color 16 in 256-color, or init custom for true color)
+    bg = 16 if curses.COLORS >= 256 else curses.COLOR_BLACK
 
-    # Use true black (color 16) as background in 256-color mode
-    bg = 16
+    # Try true color if terminal supports it and curses can change colors
+    if has_true_color() and curses.can_change_color():
+        rainbow_rgb = generate_oklch_rainbow(TRUE_COLOR_RAINBOW_SIZE)
+        rainbow_pairs = []
 
-    rainbow_pairs = []
-    for i, color in enumerate(RAINBOW_256):
-        pair_num = start_pair + i
-        try:
-            curses.init_pair(pair_num, color, bg)
-            rainbow_pairs.append(curses.color_pair(pair_num))
-        except curses.error:
-            break
-    return rainbow_pairs
+        # Start custom color definitions at index 100 to avoid conflicts
+        color_start = 100
+
+        for i, (r, g, b) in enumerate(rainbow_rgb):
+            color_num = color_start + i
+            pair_num = start_pair + i
+
+            try:
+                # curses uses 0-1000 scale for RGB, not 0-255
+                curses.init_color(color_num, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+                curses.init_pair(pair_num, color_num, bg)
+                rainbow_pairs.append(curses.color_pair(pair_num))
+            except curses.error:
+                break
+
+        if rainbow_pairs:
+            return rainbow_pairs
+        # Fall through to 256-color if true color init failed
+
+    # 256-color fallback
+    if curses.COLORS >= 256:
+        rainbow_pairs = []
+        for i, color in enumerate(RAINBOW_256):
+            pair_num = start_pair + i
+            try:
+                curses.init_pair(pair_num, color, bg)
+                rainbow_pairs.append(curses.color_pair(pair_num))
+            except curses.error:
+                break
+        return rainbow_pairs
+
+    return []
 
 
 ###############################################################################
@@ -1669,7 +1846,7 @@ IMPULSE_TAU = 6.0       # decay time constant (characters)
 IMPULSE_AMPLITUDE = 0.6 # peak amplitude
 
 # Animation constants
-BOLD_THRESHOLD = 0.2    # amplitude to trigger bold text
+BOLD_THRESHOLD = 0.1    # amplitude to trigger bold text
 AUTO_SPAWN_INTERVAL = 2.0  # seconds between auto-spawned waves
 
 
