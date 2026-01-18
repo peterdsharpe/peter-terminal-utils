@@ -1533,14 +1533,23 @@ def init_colors() -> dict[ColorName, int]:
     curses.start_color()
     curses.use_default_colors()
 
-    # Define color pairs
-    curses.init_pair(1, curses.COLOR_GREEN, -1)  # Enabled
-    curses.init_pair(2, curses.COLOR_YELLOW, -1)  # Partial
-    curses.init_pair(3, curses.COLOR_CYAN, -1)  # Running/info
-    curses.init_pair(4, curses.COLOR_RED, -1)  # Failed/error
-    curses.init_pair(5, curses.COLOR_BLUE, -1)  # Header
+    # Use true black background for consistent appearance across terminals
+    # In 256-color mode, color 16 is true black (0,0,0) from the color cube
+    # In 8-color mode, fall back to COLOR_BLACK (which may be themed)
+    if curses.COLORS >= 256:
+        bg = 16  # True black from 256-color palette
+    else:
+        bg = curses.COLOR_BLACK
+
+    # Define color pairs (all with black background)
+    curses.init_pair(1, curses.COLOR_GREEN, bg)   # Enabled
+    curses.init_pair(2, curses.COLOR_YELLOW, bg)  # Partial
+    curses.init_pair(3, curses.COLOR_CYAN, bg)    # Running/info
+    curses.init_pair(4, curses.COLOR_RED, bg)     # Failed/error
+    curses.init_pair(5, curses.COLOR_BLUE, bg)    # Header
     curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Header bar
-    curses.init_pair(7, curses.COLOR_MAGENTA, -1)  # Magenta
+    curses.init_pair(7, curses.COLOR_MAGENTA, bg) # Magenta
+    curses.init_pair(8, curses.COLOR_WHITE, bg)   # Default text on black
 
     return {
         "green": curses.color_pair(1),
@@ -1550,6 +1559,7 @@ def init_colors() -> dict[ColorName, int]:
         "blue": curses.color_pair(5),
         "header": curses.color_pair(6),
         "magenta": curses.color_pair(7),
+        "default": curses.color_pair(8),
         "dim": curses.A_DIM,
         "bold": curses.A_BOLD,
         "reverse": curses.A_REVERSE,
@@ -1629,11 +1639,14 @@ def init_rainbow_colors(start_pair: int = 20) -> list[int]:
     if curses.COLORS < 256:
         return []
 
+    # Use true black (color 16) as background in 256-color mode
+    bg = 16
+
     rainbow_pairs = []
     for i, color in enumerate(RAINBOW_256):
         pair_num = start_pair + i
         try:
-            curses.init_pair(pair_num, color, -1)
+            curses.init_pair(pair_num, color, bg)
             rainbow_pairs.append(curses.color_pair(pair_num))
         except curses.error:
             break
@@ -2076,6 +2089,8 @@ class BaseTUI:
         self.colors = init_colors()
         curses.curs_set(0)
         enable_mouse()
+        # Set black background for the entire screen
+        self.stdscr.bkgd(" ", self.colors["default"])
 
     def safe_addstr(self, y: int, x: int, text: str, attr: int = 0) -> None:
         """Write string to screen, ignoring curses boundary errors."""
