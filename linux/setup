@@ -1658,18 +1658,27 @@ def init_rainbow_colors(start_pair: int = 20) -> list[int]:
 ###############################################################################
 
 # Wave physics constants
-WAVE_SPEED = 20.0       # characters per second
-WAVE_SIGMA = 3.0        # width of gaussian envelope (characters)
-WAVE_AMPLITUDE = 0.33    # peak amplitude
+# Gaussian wavelet constants (periodic waves)
+WAVE_SPEED = 12.0       # characters per second
+WAVE_SIGMA = 2.0        # width of gaussian envelope (characters)
+WAVE_AMPLITUDE = 0.40   # peak amplitude
+
+# Impulse wavelet constants (keypress waves)
+IMPULSE_SPEED = 22.0    # characters per second
+IMPULSE_TAU = 6.0       # decay time constant (characters)
+IMPULSE_AMPLITUDE = 0.6 # peak amplitude
+
+# Animation constants
 BOLD_THRESHOLD = 0.2    # amplitude to trigger bold text
 AUTO_SPAWN_INTERVAL = 2.0  # seconds between auto-spawned waves
 
 
 @dataclass
 class Wavelet:
-    """A single traveling wave pulse."""
+    """A single traveling Gaussian wave pulse."""
 
     spawn_time: float  # monotonic time when spawned
+    spawn_x: float = 0.0  # starting x position (can be negative for off-screen spawn)
 
     def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
         """Calculate amplitude and its x-derivative at position x and time t.
@@ -1684,7 +1693,7 @@ class Wavelet:
             Tuple of (amplitude, d_amplitude/dx).
         """
         age = t - self.spawn_time
-        wave_center = age * WAVE_SPEED  # position of wave center
+        wave_center = self.spawn_x + age * WAVE_SPEED
         distance = x - wave_center
         normalized = distance / WAVE_SIGMA
 
@@ -1699,9 +1708,55 @@ class Wavelet:
     def is_expired(self, width: float, t: float) -> bool:
         """Check if wavelet has traveled past the screen."""
         age = t - self.spawn_time
-        wave_center = age * WAVE_SPEED
+        wave_center = self.spawn_x + age * WAVE_SPEED
         # Expired when center is past screen + 3 sigma (negligible amplitude)
         return wave_center > width + 3 * WAVE_SIGMA
+
+
+@dataclass
+class ImpulseWavelet(Wavelet):
+    """Impulse response wave - sharp attack, exponential decay.
+
+    Unlike Gaussian wavelets, these have no left tail - they rise instantly
+    at the wave front and decay exponentially behind it. Useful for keypress
+    feedback where the wave should originate at x=0 with no "appearing from
+    nothing" artifact.
+    """
+
+    def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
+        """Calculate amplitude using one-sided decaying exponential.
+
+        The wave front travels right at IMPULSE_SPEED. Amplitude is zero ahead
+        of the front and decays exponentially behind it.
+
+        Args:
+            x: Screen column position.
+            t: Current time (monotonic).
+
+        Returns:
+            Tuple of (amplitude, d_amplitude/dx).
+        """
+        age = t - self.spawn_time
+        wave_front = self.spawn_x + age * IMPULSE_SPEED
+        distance = wave_front - x  # How far behind the front
+
+        if distance < 0:
+            return 0.0, 0.0  # Ahead of wave front - no amplitude
+
+        # Decaying exponential: A * exp(-distance / tau)
+        amplitude = IMPULSE_AMPLITUDE * math.exp(-distance / IMPULSE_TAU)
+
+        # Derivative: d/dx of A*exp(-(front-x)/tau) = A*exp(...) * (1/tau)
+        derivative = amplitude / IMPULSE_TAU
+
+        return amplitude, derivative
+
+    def is_expired(self, width: float, t: float) -> bool:
+        """Check if impulse wave has decayed past the screen."""
+        age = t - self.spawn_time
+        wave_front = self.spawn_x + age * IMPULSE_SPEED
+        # Expired when front is past screen + 5*tau (negligible tail amplitude)
+        return wave_front > width + 5 * IMPULSE_TAU
 
 
 def sum_wavelets(
@@ -2302,8 +2357,10 @@ class SelectionTUI(BaseTUI):
         self.manifest.apply_preset(self.current_preset)
         # Initialize 256-color rainbow if available
         self.rainbow_pairs = init_rainbow_colors()
-        # Spawn initial wavelet for visual flair on startup
-        self.wavelets.append(Wavelet(spawn_time=time.monotonic()))
+        # Spawn initial Gaussian wavelet with off-screen start for smooth entry
+        self.wavelets.append(
+            Wavelet(spawn_time=time.monotonic(), spawn_x=-3 * WAVE_SIGMA)
+        )
 
     def get_dependency_warnings(self, script: Script) -> list[str]:
         """Get list of dependency warnings for a script.
@@ -2363,16 +2420,22 @@ class SelectionTUI(BaseTUI):
         self.stdscr.refresh()
 
     def _spawn_wavelet(self) -> None:
-        """Spawn a new wavelet at the left edge."""
-        self.wavelets.append(Wavelet(spawn_time=time.monotonic()))
+        """Spawn an impulse wavelet for keypress feedback.
+
+        Uses ImpulseWavelet (decaying exponential) which has no left tail,
+        so it appears cleanly at x=0 without "appearing from nothing".
+        """
+        self.wavelets.append(ImpulseWavelet(spawn_time=time.monotonic(), spawn_x=0))
 
     def _update_wavelets(self, width: int) -> None:
         """Update wavelet list: spawn periodic waves, prune expired ones."""
         t = time.monotonic()
 
-        # Auto-spawn every AUTO_SPAWN_INTERVAL seconds
+        # Auto-spawn periodic Gaussian waves with off-screen start for smooth entry
         if t - self.last_auto_spawn >= AUTO_SPAWN_INTERVAL:
-            self._spawn_wavelet()
+            self.wavelets.append(
+                Wavelet(spawn_time=t, spawn_x=-3 * WAVE_SIGMA)
+            )
             self.last_auto_spawn = t
 
         # Prune expired wavelets
