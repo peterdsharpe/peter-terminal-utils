@@ -22,6 +22,7 @@ import json
 import math
 import os
 import pty
+import random
 import re
 import select
 import subprocess
@@ -1843,11 +1844,19 @@ WAVE_AMPLITUDE = 0.40   # peak amplitude
 # Impulse wavelet constants (keypress waves)
 IMPULSE_SPEED = 22.0    # characters per second
 IMPULSE_TAU = 6.0       # decay time constant (characters)
-IMPULSE_AMPLITUDE = 0.6 # peak amplitude
+IMPULSE_AMPLITUDE = 0.4 # peak amplitude
 
 # Animation constants
 BOLD_THRESHOLD = 0.1    # amplitude to trigger bold text
 AUTO_SPAWN_INTERVAL = 2.0  # seconds between auto-spawned waves
+
+
+def random_speed(base: float, variation: float = 0.2) -> float:
+    """Generate a random speed within ±variation of base speed.
+
+    Creates dispersion effect when multiple wavelets travel at different speeds.
+    """
+    return base * (1.0 + (random.random() * 2 - 1) * variation)
 
 
 @dataclass
@@ -1856,6 +1865,12 @@ class Wavelet:
 
     spawn_time: float  # monotonic time when spawned
     spawn_x: float = 0.0  # starting x position (can be negative for off-screen spawn)
+    speed: float = 0.0  # characters per second (0 means use default)
+
+    def __post_init__(self) -> None:
+        """Set default speed with ±20% random variation if not specified."""
+        if self.speed == 0.0:
+            self.speed = random_speed(WAVE_SPEED)
 
     def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
         """Calculate amplitude and its x-derivative at position x and time t.
@@ -1870,7 +1885,7 @@ class Wavelet:
             Tuple of (amplitude, d_amplitude/dx).
         """
         age = t - self.spawn_time
-        wave_center = self.spawn_x + age * WAVE_SPEED
+        wave_center = self.spawn_x + age * self.speed
         distance = x - wave_center
         normalized = distance / WAVE_SIGMA
 
@@ -1885,7 +1900,7 @@ class Wavelet:
     def is_expired(self, width: float, t: float) -> bool:
         """Check if wavelet has traveled past the screen."""
         age = t - self.spawn_time
-        wave_center = self.spawn_x + age * WAVE_SPEED
+        wave_center = self.spawn_x + age * self.speed
         # Expired when center is past screen + 3 sigma (negligible amplitude)
         return wave_center > width + 3 * WAVE_SIGMA
 
@@ -1900,11 +1915,16 @@ class ImpulseWavelet(Wavelet):
     nothing" artifact.
     """
 
+    def __post_init__(self) -> None:
+        """Set default speed with ±20% random variation for impulse waves."""
+        if self.speed == 0.0:
+            self.speed = random_speed(IMPULSE_SPEED)
+
     def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
         """Calculate amplitude using one-sided decaying exponential.
 
-        The wave front travels right at IMPULSE_SPEED. Amplitude is zero ahead
-        of the front and decays exponentially behind it.
+        The wave front travels right at the wavelet's speed. Amplitude is zero
+        ahead of the front and decays exponentially behind it.
 
         Args:
             x: Screen column position.
@@ -1914,7 +1934,7 @@ class ImpulseWavelet(Wavelet):
             Tuple of (amplitude, d_amplitude/dx).
         """
         age = t - self.spawn_time
-        wave_front = self.spawn_x + age * IMPULSE_SPEED
+        wave_front = self.spawn_x + age * self.speed
         distance = wave_front - x  # How far behind the front
 
         if distance < 0:
@@ -1931,7 +1951,7 @@ class ImpulseWavelet(Wavelet):
     def is_expired(self, width: float, t: float) -> bool:
         """Check if impulse wave has decayed past the screen."""
         age = t - self.spawn_time
-        wave_front = self.spawn_x + age * IMPULSE_SPEED
+        wave_front = self.spawn_x + age * self.speed
         # Expired when front is past screen + 5*tau (negligible tail amplitude)
         return wave_front > width + 5 * IMPULSE_TAU
 
