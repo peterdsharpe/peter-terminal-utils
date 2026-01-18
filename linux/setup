@@ -3035,8 +3035,7 @@ class SelectionTUI(BaseTUI):
 
     def run(self) -> bool:
         """Run the selection TUI. Returns True if user wants to execute, False to quit."""
-        # Use timeout for animation (redraw every ~80ms for smooth waves)
-        self.stdscr.timeout(80)
+        self.stdscr.timeout(10)
         try:
             while True:
                 self.draw()
