@@ -757,6 +757,49 @@ class Manifest:
 
             print()
 
+    def validate(self, scripts_dir: Path) -> list[str]:
+        """Validate manifest against filesystem.
+
+        Checks that:
+        1. All scripts listed in manifest exist on disk
+        2. All .sh files in install_scripts subdirectories are in manifest
+
+        Args:
+            scripts_dir: Path to the install_scripts directory.
+
+        Returns:
+            List of error messages. Empty list means validation passed.
+        """
+        errors: list[str] = []
+
+        # Collect all script paths from manifest
+        manifest_scripts: set[str] = set()
+        for section in self.sections:
+            for script in section.scripts:
+                manifest_scripts.add(script.path)
+
+        # Check that all manifest scripts exist on disk
+        for script_path in manifest_scripts:
+            full_path = scripts_dir / script_path
+            if not full_path.exists():
+                errors.append(f"Manifest references non-existent script: {script_path}")
+
+        # Collect all .sh files in subdirectories (not in root of install_scripts)
+        disk_scripts: set[str] = set()
+        for subdir in scripts_dir.iterdir():
+            if subdir.is_dir() and not subdir.name.startswith("."):
+                for script_file in subdir.glob("*.sh"):
+                    # Build relative path like "system_setup/check_updates.sh"
+                    relative_path = f"{subdir.name}/{script_file.name}"
+                    disk_scripts.add(relative_path)
+
+        # Check that all disk scripts are in manifest
+        missing_from_manifest = disk_scripts - manifest_scripts
+        for script_path in sorted(missing_from_manifest):
+            errors.append(f"Script exists but not in manifest: {script_path}")
+
+        return errors
+
 
 @dataclass
 class DependencyGraph:
@@ -4929,6 +4972,14 @@ Examples:
 
     # Parse manifest (with metadata)
     manifest = Manifest.from_file(manifest_path, scripts_dir)
+
+    # Validate manifest against filesystem
+    validation_errors = manifest.validate(scripts_dir)
+    if validation_errors:
+        print("Manifest validation failed:", file=sys.stderr)
+        for error in validation_errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
 
     # Generate documentation
     if args.docs:
