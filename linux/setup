@@ -1471,7 +1471,7 @@ SELECTION_SHORTCUTS = [
 
 SELECTION_FOOTER_NOTES = [
     "Sections toggle all children",
-    "[x]=enabled [~]=partial [ ]=disabled",
+    "●=enabled ◐=partial ○=disabled",
     "Mouse: click to select, double-click to toggle",
 ]
 
@@ -2849,15 +2849,15 @@ class SelectionTUI(BaseTUI):
         """Draw a section header with folder icon."""
         state = section.state
         if state == "all":
-            checkbox = "[x]"
+            checkbox = "●"
             icon = "📂"
             color = self.colors["green"]
         elif state == "partial":
-            checkbox = "[~]"
+            checkbox = "◐"
             icon = "📂"
             color = self.colors["yellow"]
         else:
-            checkbox = "[ ]"
+            checkbox = "○"
             icon = "📁"
             color = self.colors["dim"]
 
@@ -2874,10 +2874,10 @@ class SelectionTUI(BaseTUI):
     ) -> None:
         """Draw a script entry with its description and dependency warnings."""
         if script.enabled:
-            checkbox = "[x]"
+            checkbox = "●"
             color = self.colors["green"]
         else:
-            checkbox = "[ ]"
+            checkbox = "○"
             color = self.colors["dim"]
 
         name = script.display_name
@@ -2887,7 +2887,7 @@ class SelectionTUI(BaseTUI):
         dep_warnings = self.get_dependency_warnings(script) if script.enabled else []
 
         # Calculate how much space we have for description
-        # Format: "        [x] Name - Description"
+        # Format: "        ● Name - Description"
         prefix = f"        {checkbox} {name}"
         prefix_len = len(prefix)
 
