@@ -1471,7 +1471,7 @@ SELECTION_SHORTCUTS = [
 
 SELECTION_FOOTER_NOTES = [
     "Sections toggle all children",
-    "●=enabled ◐=partial ○=disabled",
+    "──●=on ─◐─=partial ○──=off",
     "Mouse: click to select, double-click to toggle",
 ]
 
@@ -2849,19 +2849,19 @@ class SelectionTUI(BaseTUI):
         """Draw a section header with folder icon."""
         state = section.state
         if state == "all":
-            checkbox = "●"
+            toggle = "──●"
             icon = "📂"
             color = self.colors["green"]
         elif state == "partial":
-            checkbox = "◐"
+            toggle = "─◐─"
             icon = "📂"
             color = self.colors["yellow"]
         else:
-            checkbox = "○"
+            toggle = "○──"
             icon = "📁"
             color = self.colors["dim"]
 
-        line = f" {checkbox} {icon} {section.name}"
+        line = f" {toggle} {icon} {section.name}"
 
         # Combine with reverse if selected
         rev = self.colors["reverse"] if is_selected else 0
@@ -2874,10 +2874,10 @@ class SelectionTUI(BaseTUI):
     ) -> None:
         """Draw a script entry with its description and dependency warnings."""
         if script.enabled:
-            checkbox = "●"
+            toggle = "──●"
             color = self.colors["green"]
         else:
-            checkbox = "○"
+            toggle = "○──"
             color = self.colors["dim"]
 
         name = script.display_name
@@ -2887,8 +2887,8 @@ class SelectionTUI(BaseTUI):
         dep_warnings = self.get_dependency_warnings(script) if script.enabled else []
 
         # Calculate how much space we have for description
-        # Format: "        ● Name - Description"
-        prefix = f"        {checkbox} {name}"
+        # Format: "        ──● Name - Description"
+        prefix = f"        {toggle} {name}"
         prefix_len = len(prefix)
 
         # Reserve space for description (dim separator + text)
