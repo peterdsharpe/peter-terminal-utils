@@ -1597,11 +1597,11 @@ THEME_COLORS: dict[str, tuple[tuple[int, int, int], int, int]] = {
     # Semantic colors - soft pastel-ish palette with good contrast on black
     # RGB values are slightly desaturated and brightened for readability
     #                                    RGB (24-bit)      256   ANSI
-    "green":   ((134, 222, 179),  115, curses.COLOR_GREEN),   # Mint green (#86deb3)
+    "green":   ((134, 227, 172),  115, curses.COLOR_GREEN),   # Mint green (#86deac)
     "yellow":  ((240, 220, 140),  222, curses.COLOR_YELLOW),  # Soft gold (#f0dc8c)
-    "cyan":    ((120, 224, 220),  116, curses.COLOR_CYAN),    # Aqua/teal (#78e0dc)
+    "cyan":    ((100, 190, 235),  117, curses.COLOR_CYAN),    # Sky blue (#64beeb)
     "red":     ((255, 135, 155),  210, curses.COLOR_RED),     # Soft coral (#ff879b)
-    "blue":    ((140, 170, 255),  111, curses.COLOR_BLUE),    # Soft blue (#8caaff)
+    "blue":    ((120, 145, 255),  105, curses.COLOR_BLUE),    # Soft indigo (#7891ff)
     "magenta": ((200, 160, 255),  183, curses.COLOR_MAGENTA), # Lavender (#c8a0ff)
     "white":   ((250, 250, 245),  255, curses.COLOR_WHITE),   # Warm white (#fafaf5)
     "dim":     ((160, 160, 150),  102, curses.COLOR_WHITE),   # Warm gray (#a0a096)
