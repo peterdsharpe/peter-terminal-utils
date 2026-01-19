@@ -1929,8 +1929,8 @@ class Wavelet:
         if self.speed == 0.0:
             self.speed = random_speed(WAVE_SPEED)
 
-    def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
-        """Calculate amplitude and its x-derivative at position x and time t.
+    def amplitude(self, x: float, t: float) -> float:
+        """Calculate amplitude at position x and time t.
 
         Uses a Gaussian envelope traveling left-to-right.
 
@@ -1939,7 +1939,7 @@ class Wavelet:
             t: Current time (monotonic).
 
         Returns:
-            Tuple of (amplitude, d_amplitude/dx).
+            Wave amplitude at the given position.
         """
         age = t - self.spawn_time
         wave_center = self.spawn_x + age * self.speed
@@ -1947,12 +1947,7 @@ class Wavelet:
         normalized = distance / WAVE_SIGMA
 
         # Gaussian: exp(-0.5 * (distance/sigma)^2)
-        amplitude = WAVE_AMPLITUDE * math.exp(-0.5 * normalized * normalized)
-
-        # Derivative: f'(x) = f(x) * (-(x - center) / sigma^2)
-        derivative = amplitude * (-distance / (WAVE_SIGMA * WAVE_SIGMA))
-
-        return amplitude, derivative
+        return WAVE_AMPLITUDE * math.exp(-0.5 * normalized * normalized)
 
     def is_expired(self, width: float, t: float) -> bool:
         """Check if wavelet has traveled past the screen."""
@@ -1977,7 +1972,7 @@ class ImpulseWavelet(Wavelet):
         if self.speed == 0.0:
             self.speed = random_speed(IMPULSE_SPEED)
 
-    def amplitude_and_derivative(self, x: float, t: float) -> tuple[float, float]:
+    def amplitude(self, x: float, t: float) -> float:
         """Calculate amplitude using one-sided decaying exponential.
 
         The wave front travels right at the wavelet's speed. Amplitude is zero
@@ -1988,22 +1983,17 @@ class ImpulseWavelet(Wavelet):
             t: Current time (monotonic).
 
         Returns:
-            Tuple of (amplitude, d_amplitude/dx).
+            Wave amplitude at the given position.
         """
         age = t - self.spawn_time
         wave_front = self.spawn_x + age * self.speed
         distance = wave_front - x  # How far behind the front
 
         if distance < 0:
-            return 0.0, 0.0  # Ahead of wave front - no amplitude
+            return 0.0  # Ahead of wave front - no amplitude
 
         # Decaying exponential: A * exp(-distance / tau)
-        amplitude = IMPULSE_AMPLITUDE * math.exp(-distance / IMPULSE_TAU)
-
-        # Derivative: d/dx of A*exp(-(front-x)/tau) = A*exp(...) * (1/tau)
-        derivative = amplitude / IMPULSE_TAU
-
-        return amplitude, derivative
+        return IMPULSE_AMPLITUDE * math.exp(-distance / IMPULSE_TAU)
 
     def is_expired(self, width: float, t: float) -> bool:
         """Check if impulse wave has decayed past the screen."""
@@ -2013,10 +2003,8 @@ class ImpulseWavelet(Wavelet):
         return wave_front > width + 5 * IMPULSE_TAU
 
 
-def sum_wavelets(
-    wavelets: list[Wavelet], x: float, t: float
-) -> tuple[float, float]:
-    """Sum amplitude and derivative from all wavelets at position x.
+def sum_amplitude(wavelets: list[Wavelet], x: float, t: float) -> float:
+    """Sum amplitude from all wavelets at position x.
 
     Args:
         wavelets: List of active wavelets.
@@ -2024,122 +2012,13 @@ def sum_wavelets(
         t: Current time.
 
     Returns:
-        Tuple of (total_amplitude, total_derivative).
+        Total amplitude at the given position.
     """
-    total_amp = 0.0
-    total_deriv = 0.0
-    for w in wavelets:
-        amp, deriv = w.amplitude_and_derivative(x, t)
-        total_amp += amp
-        total_deriv += deriv
-    return total_amp, total_deriv
+    return sum(w.amplitude(x, t) for w in wavelets)
 
 
 ###############################################################################
 ### Braille Wave Rendering
-###############################################################################
-
-# Braille character encoding: U+2800 + dot bits
-# Dots are numbered: 1,2,3,7 (left column, top-to-bottom) = bits 0,1,2,6
-#                    4,5,6,8 (right column, top-to-bottom) = bits 3,4,5,7
-# We fill from bottom-up for top wave row (amplitude grows upward)
-
-# 9 fill states (0-8 dots) for bottom-up fill
-# For odd states, we choose left or right based on derivative
-# Positive derivative (rising) -> prefer right; Negative (falling) -> prefer left
-# Braille dot encoding (unicode U+2800 + bits):
-# Dot 1 (bit 0) = row 0, col 0 (top-left)
-# Dot 2 (bit 1) = row 1, col 0
-# Dot 3 (bit 2) = row 2, col 0
-# Dot 4 (bit 3) = row 0, col 1 (top-right)
-# Dot 5 (bit 4) = row 1, col 1
-# Dot 6 (bit 5) = row 2, col 1
-# Dot 7 (bit 6) = row 3, col 0 (bottom-left)
-# Dot 8 (bit 7) = row 3, col 1 (bottom-right)
-
-# Bottom-up fill: start from row 3 (dots 7,8), work up to row 0 (dots 1,4)
-# For odd states, left-preference adds left dot first
-BRAILLE_FILL_LEFT = [
-    0x00,               # 0: empty                    ⠀
-    0x40,               # 1: dot 7                    ⡀
-    0xC0,               # 2: dots 7,8                 ⣀
-    0xC4,               # 3: dots 7,8,3               ⣄
-    0xE4,               # 4: dots 7,8,3,6             ⣤
-    0xE6,               # 5: dots 7,8,3,6,2           ⣦
-    0xF6,               # 6: dots 7,8,3,6,2,5         ⣶
-    0xF7,               # 7: dots 7,8,3,6,2,5,1       ⣷
-    0xFF,               # 8: all dots                 ⣿
-]
-
-BRAILLE_FILL_RIGHT = [
-    0x00,               # 0: empty                    ⠀
-    0x80,               # 1: dot 8                    ⢀
-    0xC0,               # 2: dots 7,8                 ⣀
-    0xE0,               # 3: dots 7,8,6               ⣠
-    0xE4,               # 4: dots 7,8,3,6             ⣤
-    0xF4,               # 5: dots 7,8,3,6,5           ⣴
-    0xF6,               # 6: dots 7,8,3,6,2,5         ⣶
-    0xFE,               # 7: dots 7,8,3,6,2,5,4       ⣾
-    0xFF,               # 8: all dots                 ⣿
-]
-
-# Top-down fill (inverted): start from row 0 (dots 1,4), work down to row 3 (dots 7,8)
-# Used for bottom wave row (mirrored visual effect)
-BRAILLE_FILL_LEFT_INV = [
-    0x00,               # 0: empty                    ⠀
-    0x01,               # 1: dot 1                    ⠁
-    0x09,               # 2: dots 1,4                 ⠉
-    0x0B,               # 3: dots 1,4,2               ⠋
-    0x1B,               # 4: dots 1,4,2,5             ⠛
-    0x1F,               # 5: dots 1,4,2,5,3           ⠟
-    0x3F,               # 6: dots 1,4,2,5,3,6         ⠿
-    0x7F,               # 7: dots 1,4,2,5,3,6,7       ⡿
-    0xFF,               # 8: all dots                 ⣿
-]
-
-BRAILLE_FILL_RIGHT_INV = [
-    0x00,               # 0: empty                    ⠀
-    0x08,               # 1: dot 4                    ⠈
-    0x09,               # 2: dots 1,4                 ⠉
-    0x19,               # 3: dots 1,4,5               ⠙
-    0x1B,               # 4: dots 1,4,2,5             ⠛
-    0x3B,               # 5: dots 1,4,2,5,6           ⠻
-    0x3F,               # 6: dots 1,4,2,5,3,6         ⠿
-    0xBF,               # 7: dots 1,4,2,5,3,6,8       ⢿
-    0xFF,               # 8: all dots                 ⣿
-]
-
-
-def amplitude_to_braille(
-    amplitude: float, derivative: float, inverted: bool = False
-) -> str:
-    """Convert amplitude and derivative to a braille character.
-
-    Args:
-        amplitude: Wave amplitude (0.0 to 1.0+, clamped to 8 states).
-        derivative: Rate of change of amplitude (positive = rising).
-        inverted: If True, fill top-down (for bottom wave row).
-
-    Returns:
-        Single braille character representing the wave height.
-    """
-    # Map amplitude to 0-8 fill states
-    fill_state = min(8, max(0, int(amplitude * 8)))
-
-    # Choose left or right preference based on derivative
-    # Positive derivative (wave rising to the right) -> prefer right
-    prefer_right = derivative > 0
-
-    if inverted:
-        pattern = BRAILLE_FILL_RIGHT_INV if prefer_right else BRAILLE_FILL_LEFT_INV
-    else:
-        pattern = BRAILLE_FILL_RIGHT if prefer_right else BRAILLE_FILL_LEFT
-
-    return chr(0x2800 + pattern[fill_state])
-
-
-###############################################################################
-### 3-Row Centered Wave Rendering
 ###############################################################################
 
 # For 3-row wave: 12 total dot-rows (4 per terminal row), centerline at 5.5
@@ -2149,82 +2028,72 @@ def amplitude_to_braille(
 #   Terminal row 1: dot-rows 4-7 (visual rows 4-7, center is between 5 and 6)
 #   Terminal row 2: dot-rows 8-11 (visual rows 8-11, all below center)
 
-# Bits for each dot-row within a braille character:
-DOT_ROW_BITS = [
-    0x01 | 0x08,  # row 0: dots 1,4
-    0x02 | 0x10,  # row 1: dots 2,5
-    0x04 | 0x20,  # row 2: dots 3,6
-    0x40 | 0x80,  # row 3: dots 7,8
-]
-
-# Left-only and right-only bits for derivative-based edge preference
+# Braille dot bits for left and right columns, indexed by dot-row (0-3)
+# Left column: dots 1,2,3,7 (bits 0,1,2,6)
+# Right column: dots 4,5,6,8 (bits 3,4,5,7)
 DOT_ROW_LEFT = [0x01, 0x02, 0x04, 0x40]   # dots 1,2,3,7
 DOT_ROW_RIGHT = [0x08, 0x10, 0x20, 0x80]  # dots 4,5,6,8
 
 
-def wave_3row_bits(amplitude: float, derivative: float, terminal_row: int) -> int:
+def _is_row_filled(visual_row: int, fill_extent: float) -> bool:
+    """Check if a visual row is filled given a fill extent from center.
+
+    Center is at 5.5 (between visual rows 5 and 6). Fill extent specifies
+    how many dot-rows are filled symmetrically above and below center.
+
+    Args:
+        visual_row: The visual row index (0-11, where 5.5 is center).
+        fill_extent: How far the fill extends from center (0-6).
+
+    Returns:
+        True if this visual row should be filled.
+    """
+    if visual_row <= 5:
+        # Above center: distance from center = 5.5 - visual_row
+        # visual_row 5 -> distance 0.5, filled if fill_extent >= 0.5
+        distance = 5.5 - visual_row
+    else:
+        # Below center: distance from center = visual_row - 5.5
+        # visual_row 6 -> distance 0.5, filled if fill_extent >= 0.5
+        distance = visual_row - 5.5
+    return fill_extent >= distance
+
+
+def wave_3row_bits(
+    left_amplitude: float, right_amplitude: float, terminal_row: int
+) -> int:
     """Calculate braille bits for one terminal row of a 3-row centered wave.
 
     The wave spans all 3 terminal rows with centerline in the middle of row 1.
     With 4 dot-rows per terminal row (12 total), center is at position 5.5.
 
+    Each braille column (left and right) is filled independently based on
+    its corresponding amplitude sample.
+
     Args:
-        amplitude: Wave amplitude (0 to 1+, where 1 fills all 3 rows).
-        derivative: Rate of change (positive = rising, for edge preference).
+        left_amplitude: Wave amplitude for left column (0 to 1+).
+        right_amplitude: Wave amplitude for right column (0 to 1+).
         terminal_row: Which row (0=top, 1=middle, 2=bottom).
 
     Returns:
         Braille dot bits for this terminal row.
     """
-    # Map amplitude to number of dot-rows filled above/below center (0-6 each)
-    fill_extent = min(6, max(0, amplitude * 6))
+    # Map amplitudes to number of dot-rows filled above/below center (0-6 each)
+    fill_left = min(6.0, max(0.0, left_amplitude * 6))
+    fill_right = min(6.0, max(0.0, right_amplitude * 6))
 
     # Visual row range for this terminal row
     row_start = terminal_row * 4
-    row_end = row_start + 4
 
     bits = 0
-    for visual_row in range(row_start, row_end):
-        local_row = visual_row - row_start  # 0-3 within terminal row
+    for local_row in range(4):
+        visual_row = row_start + local_row
 
-        # Determine if this visual row is filled
-        # Center is at 5.5, so:
-        #   - Rows 0-5 are above center (row 5 is closest above)
-        #   - Rows 6-11 are below center (row 6 is closest below)
-        filled = False
-        is_edge = False
-
-        if visual_row <= 5:
-            # Above center: distance from center = 5.5 - visual_row
-            # visual_row 5 -> distance 0.5, filled if fill_extent >= 0.5
-            # visual_row 4 -> distance 1.5, filled if fill_extent >= 1.5
-            distance = 5.5 - visual_row
-            if fill_extent >= distance:
-                filled = True
-                # Check if this is the edge row (next row up would not be filled)
-                if visual_row > 0 and fill_extent < (5.5 - (visual_row - 1)):
-                    is_edge = True
-        else:
-            # Below center: distance from center = visual_row - 5.5
-            # visual_row 6 -> distance 0.5, filled if fill_extent >= 0.5
-            # visual_row 7 -> distance 1.5, filled if fill_extent >= 1.5
-            distance = visual_row - 5.5
-            if fill_extent >= distance:
-                filled = True
-                # Check if this is the edge row
-                if visual_row < 11 and fill_extent < ((visual_row + 1) - 5.5):
-                    is_edge = True
-
-        if filled:
-            if is_edge:
-                # At edge, use derivative to pick left or right dot
-                if derivative > 0:
-                    bits |= DOT_ROW_RIGHT[local_row]
-                else:
-                    bits |= DOT_ROW_LEFT[local_row]
-            else:
-                # Interior - fill both columns
-                bits |= DOT_ROW_BITS[local_row]
+        # Check each column independently
+        if _is_row_filled(visual_row, fill_left):
+            bits |= DOT_ROW_LEFT[local_row]
+        if _is_row_filled(visual_row, fill_right):
+            bits |= DOT_ROW_RIGHT[local_row]
 
     return bits
 
@@ -2837,25 +2706,27 @@ class SelectionTUI(BaseTUI):
         title_start = (width - title_width) // 2
 
         # Draw all 3 rows of the wave
+        # Sample amplitude at left (x+0.25) and right (x+0.75) of each character
         for x in range(width):
-            amp, deriv = sum_wavelets(self.wavelets, float(x), t)
-            color = self._get_wave_color(float(x), t, amp)
+            amp_left = sum_amplitude(self.wavelets, x + 0.25, t)
+            amp_right = sum_amplitude(self.wavelets, x + 0.75, t)
+            color = self._get_wave_color(x + 0.5, t, max(amp_left, amp_right))
 
             # Row 0 (top): upper portion of wave
-            bits_top = wave_3row_bits(amp, deriv, 0)
+            bits_top = wave_3row_bits(amp_left, amp_right, 0)
             self.safe_addstr(0, x, chr(0x2800 + bits_top), color)
 
             # Row 1 (middle): wave or centerline (text will overwrite)
             # Use braille dots 3,6 (⠤) for centerline - guaranteed single-width
             # unlike box-drawing "─" which has ambiguous width
-            bits_mid = wave_3row_bits(amp, deriv, 1)
+            bits_mid = wave_3row_bits(amp_left, amp_right, 1)
             if bits_mid == 0:
                 self.safe_addstr(1, x, "⠤", self.colors["dim"])  # braille centerline
             else:
                 self.safe_addstr(1, x, chr(0x2800 + bits_mid), color)
 
             # Row 2 (bottom): lower portion of wave
-            bits_bot = wave_3row_bits(amp, deriv, 2)
+            bits_bot = wave_3row_bits(amp_left, amp_right, 2)
             self.safe_addstr(2, x, chr(0x2800 + bits_bot), color)
 
         # Draw text over row 1 (overwrites wave/centerline)
@@ -2873,8 +2744,8 @@ class SelectionTUI(BaseTUI):
                 # Wide char (emoji): draw without color manipulation
                 self.safe_addstr(1, col, char, 0)
             else:
-                # Get wave amplitude for bold effect
-                amp, _ = sum_wavelets(self.wavelets, float(col), t)
+                # Get wave amplitude for bold effect (sample at character center)
+                amp = sum_amplitude(self.wavelets, col + 0.5, t)
                 text_color = self._get_text_rainbow_color(char_idx, t)
                 if amp > BOLD_THRESHOLD:
                     text_color |= curses.A_BOLD
