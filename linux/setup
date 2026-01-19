@@ -1437,6 +1437,20 @@ TAB_DOWN = "┐"  # Tab end going down
 TAB_UP = "┘"  # Tab end going up
 TAB_START = "┌"  # Tab start
 
+# Toggle animation frames (20ms per frame = 100ms total)
+# Uses 3 fill states (○ ◐ ●) and 3 positions (left, center, right)
+TOGGLE_FRAME_MS = 15
+TOGGLE_FRAMES_ON = ("○──", "─○─", "─◐─", "─●─", "──●")
+TOGGLE_FRAMES_OFF = ("──●", "─●─", "─◐─", "─○─", "○──")
+
+
+@dataclass
+class ToggleAnimation:
+    """Tracks an in-progress toggle animation for a script or section."""
+
+    to_enabled: bool  # Target state we're animating toward
+    start_time: float  # time.monotonic() when animation started
+
 
 ###############################################################################
 ### Help System
@@ -2590,6 +2604,8 @@ class SelectionTUI(BaseTUI):
     wavelets: list[Wavelet] = field(default_factory=list, init=False)
     last_auto_spawn: float = field(default_factory=time.monotonic, init=False)
     rainbow_pairs: list[int] = field(default_factory=list, init=False)
+    # Toggle animation state: maps item key (script.path or section.name) to animation
+    animations: dict[str, ToggleAnimation] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -2642,6 +2658,71 @@ class SelectionTUI(BaseTUI):
         """Get number of lines available for the tree view."""
         height, _ = self.stdscr.getmaxyx()
         return height - 7  # Header (3) + footer (4)
+
+    def _start_animation(self, key: str, to_enabled: bool) -> None:
+        """Register a toggle animation for an item.
+
+        Args:
+            key: Unique identifier (script.path for scripts, section.name for sections).
+            to_enabled: The target state we're animating toward.
+        """
+        self.animations[key] = ToggleAnimation(to_enabled, time.monotonic())
+
+    def _get_toggle_frame(self, key: str, current_enabled: bool) -> str:
+        """Get the current animation frame, or static toggle if not animating.
+
+        Args:
+            key: Unique identifier for the item.
+            current_enabled: The item's current enabled state.
+
+        Returns:
+            Toggle indicator string (e.g., "──●", "─◐─", "○──").
+        """
+        anim = self.animations.get(key)
+        if anim is None:
+            # No animation - return static indicator
+            return "──●" if current_enabled else "○──"
+
+        elapsed_ms = (time.monotonic() - anim.start_time) * 1000
+        frames = TOGGLE_FRAMES_ON if anim.to_enabled else TOGGLE_FRAMES_OFF
+        frame_idx = int(elapsed_ms / TOGGLE_FRAME_MS)
+
+        if frame_idx >= len(frames):
+            # Animation complete - remove and return final state
+            del self.animations[key]
+            return frames[-1]
+
+        return frames[frame_idx]
+
+    def _get_section_toggle_frame(self, section: Section) -> str:
+        """Get the toggle frame for a section, handling partial state.
+
+        Sections can be in partial state, which uses a special indicator.
+        Only animates when transitioning between all/none states.
+        """
+        state = section.state
+        anim = self.animations.get(section.name)
+
+        if anim is None:
+            # No animation - return static indicator based on state
+            if state == "all":
+                return "──●"
+            elif state == "partial":
+                return "─◐─"
+            else:
+                return "○──"
+
+        # Animating - use frame based on target
+        elapsed_ms = (time.monotonic() - anim.start_time) * 1000
+        frames = TOGGLE_FRAMES_ON if anim.to_enabled else TOGGLE_FRAMES_OFF
+        frame_idx = int(elapsed_ms / TOGGLE_FRAME_MS)
+
+        if frame_idx >= len(frames):
+            # Animation complete
+            del self.animations[section.name]
+            return frames[-1]
+
+        return frames[frame_idx]
 
     def draw(self) -> None:
         """Draw the complete selection screen."""
@@ -2848,16 +2929,18 @@ class SelectionTUI(BaseTUI):
     ) -> None:
         """Draw a section header with folder icon."""
         state = section.state
+
+        # Get animated or static toggle indicator
+        toggle = self._get_section_toggle_frame(section)
+
+        # Set icon and color based on current state
         if state == "all":
-            toggle = "──●"
             icon = "📂"
             color = self.colors["green"]
         elif state == "partial":
-            toggle = "─◐─"
             icon = "📂"
             color = self.colors["yellow"]
         else:
-            toggle = "○──"
             icon = "📁"
             color = self.colors["dim"]
 
@@ -2873,12 +2956,11 @@ class SelectionTUI(BaseTUI):
         self, y: int, width: int, script: Script, is_selected: bool
     ) -> None:
         """Draw a script entry with its description and dependency warnings."""
-        if script.enabled:
-            toggle = "──●"
-            color = self.colors["green"]
-        else:
-            toggle = "○──"
-            color = self.colors["dim"]
+        # Get animated or static toggle indicator
+        toggle = self._get_toggle_frame(script.path, script.enabled)
+
+        # Set color based on current state
+        color = self.colors["green"] if script.enabled else self.colors["dim"]
 
         name = script.display_name
         desc = script.description
@@ -3078,9 +3160,22 @@ class SelectionTUI(BaseTUI):
                 if is_double_click or mx <= 12:
                     item = items[item_idx]
                     if isinstance(item, Section):
+                        # Capture before states for all children
+                        before_states = {s.path: s.enabled for s in item.scripts}
+                        before_section_state = item.state
                         item.toggle()
+                        # Animate section if it changed between all/none
+                        after_section_state = item.state
+                        if before_section_state != after_section_state and after_section_state != "partial":
+                            self._start_animation(item.name, after_section_state == "all")
+                        # Animate all children that changed
+                        for script in item.scripts:
+                            if script.enabled != before_states[script.path]:
+                                self._start_animation(script.path, script.enabled)
                     else:
-                        item.enabled = not item.enabled
+                        new_enabled = not item.enabled
+                        item.enabled = new_enabled
+                        self._start_animation(item.path, new_enabled)
             return None
 
         # Footer area clicks
@@ -3264,9 +3359,22 @@ class SelectionTUI(BaseTUI):
         if key in (ord(" "), curses.KEY_ENTER, 10, 13):
             item = items[self.cursor]
             if isinstance(item, Section):
+                # Capture before states for all children
+                before_states = {s.path: s.enabled for s in item.scripts}
+                before_section_state = item.state
                 item.toggle()
+                # Animate section if it changed between all/none
+                after_section_state = item.state
+                if before_section_state != after_section_state and after_section_state != "partial":
+                    self._start_animation(item.name, after_section_state == "all")
+                # Animate all children that changed
+                for script in item.scripts:
+                    if script.enabled != before_states[script.path]:
+                        self._start_animation(script.path, script.enabled)
             else:
-                item.enabled = not item.enabled
+                new_enabled = not item.enabled
+                item.enabled = new_enabled
+                self._start_animation(item.path, new_enabled)
             # Clear filter on toggle so Enter exits search mode
             if self.filtered_indices is not None:
                 self.filtered_indices = None
@@ -3274,8 +3382,28 @@ class SelectionTUI(BaseTUI):
 
         # Presets (keys 1-5)
         elif ord("1") <= key <= ord("5") and (preset_key := chr(key)) in PRESETS:
+            # Capture before states for all items
+            before_scripts: dict[str, bool] = {}
+            before_sections: dict[str, str] = {}
+            for section in self.manifest.sections:
+                before_sections[section.name] = section.state
+                for script in section.scripts:
+                    before_scripts[script.path] = script.enabled
+
             self.current_preset = preset_key
             self.manifest.apply_preset(preset_key)
+
+            # Animate all items that changed
+            for section in self.manifest.sections:
+                # Animate section if it changed between all/none
+                after_state = section.state
+                if before_sections[section.name] != after_state and after_state != "partial":
+                    self._start_animation(section.name, after_state == "all")
+                # Animate scripts that changed
+                for script in section.scripts:
+                    if script.enabled != before_scripts[script.path]:
+                        self._start_animation(script.path, script.enabled)
+
             # Clear any filter when applying preset
             self.filtered_indices = None
             self.search_query = ""
