@@ -1,5 +1,5 @@
 #!/bin/bash
-# @name: Check Updates
+# @name: Ubuntu Distro Update
 # @description: Check for pending Ubuntu distribution upgrades (e.g., 22.04 to 24.04)
 # @requires: sudo
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -78,4 +78,4 @@ check_distro_upgrade() {
     exit 0
 }
 
-require_sudo "Check Updates" check_distro_upgrade
+require_sudo "Ubuntu Distro Update" check_distro_upgrade
