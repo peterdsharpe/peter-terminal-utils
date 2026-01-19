@@ -784,6 +784,28 @@ _pkg_upgrade_impl() {
         zypper) sudo zypper update -y ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
+
+    # Remove packages that were installed as dependencies but are no longer needed
+    case "$PKG_MANAGER" in
+        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
+        dnf) sudo dnf autoremove -y ;;
+        pacman)
+            # Remove orphaned packages if any exist
+            local orphans
+            orphans=$(pacman -Qdtq 2>/dev/null) || true
+            if [[ -n "$orphans" ]]; then
+                echo "$orphans" | sudo pacman -Rs --noconfirm -
+            fi
+            ;;
+        zypper)
+            # zypper doesn't have autoremove; remove unneeded packages if any
+            local unneeded
+            unneeded=$(zypper packages --unneeded 2>/dev/null | awk -F'|' 'NR>4 && NF>2 {gsub(/^ +| +$/, "", $3); if ($3 != "") print $3}') || true
+            if [[ -n "$unneeded" ]]; then
+                sudo zypper remove -y $unneeded
+            fi
+            ;;
+    esac
 }
 
 ### Install a local package file (.deb, .rpm, .pkg.tar.zst)
