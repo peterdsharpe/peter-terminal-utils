@@ -46,6 +46,32 @@ fi
 source $ZSH/oh-my-zsh.sh
 
 ###############################################################################
+### PATH setup (must be before command-v checks below)
+###############################################################################
+
+# Add user-local binaries to PATH
+export PATH="$HOME/.local/bin:$PATH"
+
+# Add Cargo (Rust) to PATH
+if [ -f "$HOME/.cargo/env" ]; then
+    source "$HOME/.cargo/env"
+fi
+
+# Add TeX Live to PATH if installed
+if [ -d /usr/local/texlive ]; then
+    # Find the latest year directory
+    TEXLIVE_YEAR=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
+    if [ -n "$TEXLIVE_YEAR" ]; then
+        # Auto-detect architecture
+        if [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux" ]; then
+            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux:$PATH"
+        elif [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux" ]; then
+            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux:$PATH"
+        fi
+    fi
+fi
+
+###############################################################################
 ### Modern CLI aliases
 ###############################################################################
 
@@ -109,25 +135,8 @@ else
     export VISUAL="vim"
 fi
 
-# Add user-local binaries to PATH
-export PATH="$HOME/.local/bin:$PATH"
-
 # Suppress MESA Vulkan driver development warnings (harmless FINISHME notices)
 export MESA_DEBUG=silent
-
-# Add TeX Live to PATH if installed
-if [ -d /usr/local/texlive ]; then
-    # Find the latest year directory
-    TEXLIVE_YEAR=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
-    if [ -n "$TEXLIVE_YEAR" ]; then
-        # Auto-detect architecture
-        if [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux" ]; then
-            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux:$PATH"
-        elif [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux" ]; then
-            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux:$PATH"
-        fi
-    fi
-fi
 
 ###############################################################################
 ### History configuration
@@ -178,11 +187,6 @@ fi
 # Initialize fnm (Node.js version manager) if installed
 if command -v fnm &> /dev/null; then
     eval "$(fnm env --use-on-cd)"
-fi
-
-# Add Cargo (Rust) to PATH
-if [ -f "$HOME/.cargo/env" ]; then
-    source "$HOME/.cargo/env"
 fi
 
 ###############################################################################
