@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Fontconfig
 # @description: Font fallback config for Nerd Font symbols
-# @depends: firacode.sh, symbols.sh
+# @depends: nerd_fonts.sh
 # @locks: fonts
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

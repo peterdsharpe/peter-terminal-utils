@@ -1,7 +1,7 @@
 #!/bin/bash
 # @name: Interface Settings
 # @description: Theme, animations, clock, fonts, and display preferences
-# @depends: firacode.sh
+# @depends: nerd_fonts.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
