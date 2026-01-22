@@ -2,19 +2,14 @@
 # @name: NVIDIA Driver
 # @description: Install proprietary NVIDIA drivers for systems with NVIDIA GPUs
 # @requires: sudo
-# @headless: skip
 # @depends: bootstrap.sh
 # @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-skip_if_headless "NVIDIA driver"
-
 # WSL uses GPU passthrough from Windows host - installing Linux drivers breaks this
-if is_wsl; then
-    print_skip "NVIDIA driver (WSL uses host drivers)"
-    exit 0
-fi
+# Note: NOT using skip_if_headless because headless GPU servers need drivers
+skip_if_wsl "NVIDIA driver"
 
 # Check if NVIDIA hardware is present
 has_nvidia_gpu() {

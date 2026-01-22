@@ -9,12 +9,6 @@ standalone_init
 
 skip_if_headless "Virt Manager"
 
-# WSL: use Windows virtualization tools instead
-if is_wsl; then
-    print_skip "Virt Manager (use Windows virtualization tools in WSL)"
-    exit 0
-fi
-
 # Check if already installed (native or flatpak)
 if command -v virt-manager &>/dev/null; then
     print_skip "Virt Manager already installed"

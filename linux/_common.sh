@@ -249,12 +249,28 @@ step_end() {
 ### Helper Functions
 ###############################################################################
 
-### Skip script entirely if running in headless mode
+### Skip script entirely if running in headless mode or WSL
+### WSL is treated as headless since GUI apps should use Windows host versions
 ### Usage: skip_if_headless "Script Name"
 skip_if_headless() {
     local name="$1"
     if [[ "$HEADLESS" == "Y" ]]; then
         print_skip "$name (headless mode)"
+        exit 0
+    fi
+    if is_wsl; then
+        print_skip "$name (WSL - use Windows version)"
+        exit 0
+    fi
+}
+
+### Skip script entirely if running in WSL (but allow headless)
+### Use this for scripts that work on headless servers but not WSL (e.g., NVIDIA drivers)
+### Usage: skip_if_wsl "Script Name"
+skip_if_wsl() {
+    local name="$1"
+    if is_wsl; then
+        print_skip "$name (WSL - use Windows version)"
         exit 0
     fi
 }

@@ -9,12 +9,6 @@ standalone_init
 
 skip_if_headless "Cursor IDE"
 
-# WSL uses Cursor installed on Windows host - don't install Linux version
-if is_wsl; then
-    print_skip "Cursor IDE (use Windows installation in WSL)"
-    exit 0
-fi
-
 LINUX_DIR=$(get_linux_dir "${BASH_SOURCE[0]}")
 CURSOR_CONFIG_SRC="$LINUX_DIR/dotfiles/cursor-config"
 CURSOR_CONFIG_DEST="$HOME/.config/Cursor/User"

@@ -10,12 +10,6 @@ standalone_init
 
 skip_if_headless "TLP"
 
-# TLP is for laptops/systems with batteries - skip on WSL
-if is_wsl; then
-    print_skip "TLP (not applicable in WSL)"
-    exit 0
-fi
-
 # Check if system has a battery (skip on desktops)
 has_battery() {
     [[ -d /sys/class/power_supply/BAT0 ]] || [[ -d /sys/class/power_supply/BAT1 ]]

@@ -9,12 +9,6 @@ standalone_init
 
 skip_if_headless "Zed"
 
-# WSL uses Zed installed on Windows host - don't install Linux version
-if is_wsl; then
-    print_skip "Zed (use Windows installation in WSL)"
-    exit 0
-fi
-
 # Zed install script handles both install and update
 if ! command -v zed &>/dev/null; then
     # Zed's installer requires SHELL to be set; ensure it's available
