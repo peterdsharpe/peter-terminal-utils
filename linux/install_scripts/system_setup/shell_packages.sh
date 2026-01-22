@@ -11,8 +11,7 @@ install_shell_packages() {
     local packages=(
         zsh      # Shell (oh-my-zsh, plugins depend on this)
         tmux     # Terminal multiplexer
-        vim      # Editor (fallback)
-        neovim   # Editor (primary - also installed from GitHub for latest)
+        vim      # Editor (fallback, neovim installed from GitHub in cli_tools/)
     )
 
     step_start "Installing shell packages"

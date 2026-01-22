@@ -14,8 +14,7 @@ install_utilities() {
         ncdu         # Disk usage analyzer
         cloc         # Count lines of code
         pv           # Pipe viewer (progress bars)
-        # System monitoring
-        htop         # Process viewer
+        # System monitoring (btop installed from GitHub in cli_tools/)
         nvtop        # GPU monitor
         powertop     # Power consumption
         lm-sensors   # Hardware sensors
@@ -26,8 +25,7 @@ install_utilities() {
         rclone       # Cloud storage sync
         # Document processing
         pandoc       # Universal document converter
-        # Media
-        vlc          # Media player
+        # Media (vlc installed in gnome_packages.sh)
         flameshot    # Screenshot tool
     )
 
