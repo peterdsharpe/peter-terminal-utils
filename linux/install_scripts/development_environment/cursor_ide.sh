@@ -429,18 +429,125 @@ fi
 #   - Machine-specific metadata
 #
 # Instead, we maintain extensions.txt with extension IDs.
-# Install extensions after first Cursor launch with:
-#   while read ext; do cursor --install-extension "$ext"; done < extensions.txt
-#
-# This approach ensures:
-#   ✓ Extensions work correctly on each platform
-#   ✓ No git noise from extension updates
-#   ✓ Fresh installs get the right platform-specific versions
+# This script installs missing extensions automatically via cursor CLI.
 
-if [[ -f "$CURSOR_CONFIG_SRC/extensions.txt" ]]; then
-    print_info "Extensions list available at: $CURSOR_CONFIG_SRC/extensions.txt"
-    print_info "Install after first Cursor launch with:"
-    print_info "  while read ext; do cursor --install-extension \"\$ext\"; done < $CURSOR_CONFIG_SRC/extensions.txt"
+EXTENSIONS_FILE="$CURSOR_CONFIG_SRC/extensions.txt"
+
+# Get list of installed extension IDs (lowercase for case-insensitive comparison)
+get_installed_extensions() {
+    cursor --list-extensions 2>/dev/null | tr '[:upper:]' '[:lower:]' || true
+}
+
+# Check if all extensions from extensions.txt are installed
+extensions_need_install() {
+    [[ ! -f "$EXTENSIONS_FILE" ]] && return 1  # No extensions file = nothing to install
+    
+    # cursor command must exist
+    if ! command -v cursor &>/dev/null; then
+        return 0  # Need to install (will show appropriate warning)
+    fi
+    
+    local installed
+    installed=$(get_installed_extensions)
+    
+    while IFS= read -r ext || [[ -n "$ext" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$ext" || "$ext" =~ ^[[:space:]]*# ]] && continue
+        
+        # Check if this extension is installed (case-insensitive)
+        local ext_lower="${ext,,}"
+        if ! echo "$installed" | grep -qxF "$ext_lower"; then
+            return 0  # At least one extension missing
+        fi
+    done < "$EXTENSIONS_FILE"
+    
+    return 1  # All extensions installed
+}
+
+# Install extensions from extensions.txt, skipping already-installed ones
+install_cursor_extensions() {
+    if [[ ! -f "$EXTENSIONS_FILE" ]]; then
+        echo "Extensions file not found: $EXTENSIONS_FILE"
+        return 1
+    fi
+    
+    # Check if cursor command is available
+    if ! command -v cursor &>/dev/null; then
+        echo "Cursor CLI not found in PATH. Ensure Cursor is installed and ~/.local/bin is in PATH."
+        echo "You may need to restart your shell or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        return 1
+    fi
+    
+    # Get currently installed extensions
+    local installed
+    installed=$(get_installed_extensions)
+    
+    local to_install=()
+    local already_installed=0
+    local total_in_file=0
+    
+    # Read extensions.txt and categorize
+    while IFS= read -r ext || [[ -n "$ext" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$ext" || "$ext" =~ ^[[:space:]]*# ]] && continue
+        ((total_in_file++))
+        
+        local ext_lower="${ext,,}"
+        if echo "$installed" | grep -qxF "$ext_lower"; then
+            ((already_installed++))
+        else
+            to_install+=("$ext")
+        fi
+    done < "$EXTENSIONS_FILE"
+    
+    if [[ ${#to_install[@]} -eq 0 ]]; then
+        echo "All $already_installed extensions already installed"
+        return 0
+    fi
+    
+    echo "Installing ${#to_install[@]} extensions ($already_installed already present)..."
+    
+    local failed=()
+    local succeeded=0
+    
+    for ext in "${to_install[@]}"; do
+        echo "  Installing: $ext"
+        # Capture output and exit code separately (pipe would mask exit code)
+        local output
+        output=$(cursor --install-extension "$ext" --force 2>&1)
+        local exit_code=$?
+        
+        # Show output indented
+        if [[ -n "$output" ]]; then
+            echo "$output" | sed 's/^/    /'
+        fi
+        
+        if [[ $exit_code -eq 0 ]]; then
+            ((succeeded++))
+        else
+            failed+=("$ext")
+            echo "    Warning: Failed to install $ext (exit code: $exit_code)"
+        fi
+    done
+    
+    echo "Installed $succeeded/${#to_install[@]} extensions"
+    
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        echo "Failed extensions: ${failed[*]}"
+        echo "These may be unavailable in the marketplace or require manual installation."
+        # Return success anyway - partial installation is acceptable
+        # The user can re-run the script later to retry
+    fi
+    
+    return 0
+}
+
+if [[ -f "$EXTENSIONS_FILE" ]]; then
+    if extensions_need_install; then
+        step "Installing Cursor extensions" install_cursor_extensions
+    else
+        print_skip "All Cursor extensions already installed"
+    fi
 fi
 
 print_success "Cursor IDE setup complete"
