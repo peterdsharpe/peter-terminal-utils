@@ -25,6 +25,10 @@ if schema_exists "org.nemo.preferences"; then
     run gsettings set org.nemo.preferences show-hidden-files true
     run gsettings set org.nemo.preferences default-folder-viewer 'list-view'
     run gsettings set org.nemo.preferences sort-directories-first true
+    run gsettings set org.nemo.preferences show-advanced-permissions true
+    run gsettings set org.nemo.preferences show-full-path-titles true
+    run gsettings set org.nemo.preferences executable-text-activation 'launch'
+    run gsettings set org.nemo.preferences ignore-view-metadata true
     step_end
 else
     print_skip "Nemo preferences (Nemo not installed)"
