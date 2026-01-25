@@ -1658,7 +1658,10 @@ def init_colors() -> dict[ColorName, int]:
     color_map: dict[ColorName, int] = {}
 
     # Initialize each theme color
-    for pair_num, (name, (rgb, color_256, color_ansi)) in enumerate(THEME_COLORS.items(), start=1):
+    for pair_num, (name, (rgb, color_256, color_ansi)) in enumerate(
+        THEME_COLORS.items(), start=1
+    ):
+        name: ColorName  # Explicit type for loop variable
         if use_true_color:
             # Create custom color with exact RGB
             # Start at index 20 to avoid conflicts with standard colors (0-15)
