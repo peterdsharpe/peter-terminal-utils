@@ -39,4 +39,4 @@ if ! groups | grep -q docker; then
 fi
 
 # Clean up unused images, containers, and build cache
-step "Pruning unused Docker resources" docker system prune -af
+step "Pruning unused Docker resources" sudo docker system prune -af
