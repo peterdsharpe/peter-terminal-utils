@@ -3649,6 +3649,13 @@ class ExecutionTUI(BaseTUI):
             self.viewing_idx = idx
             self.right_scroll.offset = 0  # Reset scroll when switching scripts
 
+    def _navigate_to_script(self, idx: int) -> None:
+        """Navigate to a script by index (user-initiated, disables follow mode)."""
+        if 0 <= idx < len(self.statuses):
+            self.viewing_idx = idx
+            self.right_scroll.offset = 0
+            self.following = False
+
     def _handle_mouse_during_execution(self) -> None:
         """Handle mouse events during execution for panel navigation and scrolling.
 
@@ -3677,10 +3684,7 @@ class ExecutionTUI(BaseTUI):
             if start_row <= my < start_row + visible_height:
                 if mx < list_width:
                     # Scroll left panel (script list)
-                    if self.viewing_idx > 0:
-                        self.viewing_idx -= 1
-                        self.right_scroll.offset = 0
-                        self.following = False
+                    self._navigate_to_script(self.viewing_idx - 1)
                 else:
                     # Scroll right panel (output)
                     self.right_scroll.scroll_up()
@@ -3690,10 +3694,7 @@ class ExecutionTUI(BaseTUI):
             if start_row <= my < start_row + visible_height:
                 if mx < list_width:
                     # Scroll left panel (script list)
-                    if self.viewing_idx < len(self.statuses) - 1:
-                        self.viewing_idx += 1
-                        self.right_scroll.offset = 0
-                        self.following = False
+                    self._navigate_to_script(self.viewing_idx + 1)
                 else:
                     # Scroll right panel (output)
                     self.right_scroll.scroll_down()
@@ -3770,9 +3771,9 @@ class ExecutionTUI(BaseTUI):
                 self.drag_state.start_y = my
             self.left_scroll.set_from_scrollbar_click(my, start_row, visible_height)
             # Update viewing_idx to match scroll position
-            self.viewing_idx = min(len(self.statuses) - 1, self.left_scroll.offset)
+            new_idx = min(len(self.statuses) - 1, self.left_scroll.offset)
+            self._navigate_to_script(new_idx)
             self.focus_panel = "left"
-            self.following = False
             return
 
         # Right scrollbar click
@@ -3790,11 +3791,8 @@ class ExecutionTUI(BaseTUI):
         # Left panel content click (select script)
         if mx < left_scrollbar_x and start_row <= my < start_row + visible_height:
             item_idx = self.left_scroll.offset + (my - start_row)
-            if 0 <= item_idx < len(self.statuses):
-                self.viewing_idx = item_idx
-                self.right_scroll.offset = 0
-                self.focus_panel = "left"
-                self.following = False
+            self._navigate_to_script(item_idx)
+            self.focus_panel = "left"
             return
 
         # Right panel content click (focus right panel)
@@ -3821,9 +3819,8 @@ class ExecutionTUI(BaseTUI):
         if key == ord("g"):
             if self._last_key == ord("g"):
                 if self.focus_panel == "left":
-                    self.viewing_idx = 0
+                    self._navigate_to_script(0)
                     self.left_scroll.go_top()
-                    self.following = False
                 else:
                     self.right_scroll.go_top()
                     self.following = False
@@ -3845,28 +3842,18 @@ class ExecutionTUI(BaseTUI):
         if self.focus_panel == "left":
             # Left panel: navigate script list
             if key in (ord("w"), ord("k"), curses.KEY_UP):
-                if self.viewing_idx > 0:
-                    self.viewing_idx -= 1
-                    self.right_scroll.offset = 0  # Reset scroll for new script
-                    self.following = False
-            el            if key in (ord("s"), ord("j"), curses.KEY_DOWN):
-                if self.viewing_idx < len(self.statuses) - 1:
-                    self.viewing_idx += 1
-                    self.right_scroll.offset = 0
-                    self.following = False
+                self._navigate_to_script(self.viewing_idx - 1)
+            elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+                self._navigate_to_script(self.viewing_idx + 1)
             elif key == curses.KEY_PPAGE:  # Page Up
-                self.viewing_idx = max(
-                    0, self.viewing_idx - max(1, self.left_scroll.visible - 1)
-                )
-                self.right_scroll.offset = 0
-                self.following = False
+                new_idx = max(0, self.viewing_idx - max(1, self.left_scroll.visible - 1))
+                self._navigate_to_script(new_idx)
             elif key == curses.KEY_NPAGE:  # Page Down
-                self.viewing_idx = min(
+                new_idx = min(
                     len(self.statuses) - 1,
                     self.viewing_idx + max(1, self.left_scroll.visible - 1),
                 )
-                self.right_scroll.offset = 0
-                self.following = False
+                self._navigate_to_script(new_idx)
             elif key == ord("G"):
                 # Jump to running script and resume following
                 self.viewing_idx = self.running_idx
