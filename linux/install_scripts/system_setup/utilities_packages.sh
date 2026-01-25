@@ -26,7 +26,6 @@ install_utilities() {
         # Document processing
         pandoc       # Universal document converter
         # Media (vlc installed in gnome_packages.sh)
-        flameshot    # Screenshot tool
     )
 
     step_start "Installing utility packages"
