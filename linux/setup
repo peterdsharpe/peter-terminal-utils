@@ -3680,7 +3680,7 @@ class ExecutionTUI(BaseTUI):
                     if self.viewing_idx > 0:
                         self.viewing_idx -= 1
                         self.right_scroll.offset = 0
-                        self.following = self.viewing_idx == self.running_idx
+                        self.following = False
                 else:
                     # Scroll right panel (output)
                     self.right_scroll.scroll_up()
@@ -3693,7 +3693,7 @@ class ExecutionTUI(BaseTUI):
                     if self.viewing_idx < len(self.statuses) - 1:
                         self.viewing_idx += 1
                         self.right_scroll.offset = 0
-                        self.following = self.viewing_idx == self.running_idx
+                        self.following = False
                 else:
                     # Scroll right panel (output)
                     self.right_scroll.scroll_down()
@@ -3794,8 +3794,7 @@ class ExecutionTUI(BaseTUI):
                 self.viewing_idx = item_idx
                 self.right_scroll.offset = 0
                 self.focus_panel = "left"
-                # Resume following if we clicked on the running script
-                self.following = item_idx == self.running_idx
+                self.following = False
             return
 
         # Right panel content click (focus right panel)
@@ -3850,13 +3849,11 @@ class ExecutionTUI(BaseTUI):
                     self.viewing_idx -= 1
                     self.right_scroll.offset = 0  # Reset scroll for new script
                     self.following = False
-            elif key in (ord("s"), ord("j"), curses.KEY_DOWN):
+            el            if key in (ord("s"), ord("j"), curses.KEY_DOWN):
                 if self.viewing_idx < len(self.statuses) - 1:
                     self.viewing_idx += 1
                     self.right_scroll.offset = 0
-                # Resume following if we've navigated back to running script
-                if self.viewing_idx == self.running_idx:
-                    self.following = True
+                    self.following = False
             elif key == curses.KEY_PPAGE:  # Page Up
                 self.viewing_idx = max(
                     0, self.viewing_idx - max(1, self.left_scroll.visible - 1)
@@ -3869,8 +3866,7 @@ class ExecutionTUI(BaseTUI):
                     self.viewing_idx + max(1, self.left_scroll.visible - 1),
                 )
                 self.right_scroll.offset = 0
-                if self.viewing_idx == self.running_idx:
-                    self.following = True
+                self.following = False
             elif key == ord("G"):
                 # Jump to running script and resume following
                 self.viewing_idx = self.running_idx
