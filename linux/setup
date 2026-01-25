@@ -1117,9 +1117,9 @@ class InstallLogger:
                     f.write(f"  Lock wait: {lock_wait:.2f}s (blocked by: {locks_str})\n")
             if status.exit_code is not None:
                 f.write(f"  Exit code: {status.exit_code}\n")
-            if status.output_lines:
+            if status.output:
                 f.write("  Output:\n")
-                for line in status.output_lines:
+                for line in status.output.raw:
                     clean_line = strip_ansi(line)
                     f.write(f"    {clean_line}\n")
             f.write("\n")
@@ -1321,7 +1321,7 @@ def run_scripts_parallel(
                                 for p in scheduler.completed_paths
                             )
                         ]
-                        status.output_lines.append(
+                        status.output.append(
                             f"Deadlock: unsatisfied dependencies: {unsatisfied}"
                         )
                         status.state = ScriptState.FAILED
@@ -3371,13 +3371,84 @@ class SelectionTUI(BaseTUI):
 
 
 @dataclass
+class ProcessedOutput:
+    """Script output with lazy incremental line wrapping for efficient display.
+
+    Caches wrapped output lines and only reprocesses when new lines are added
+    or the display width changes. This avoids O(n) processing on every draw
+    when scripts produce thousands of output lines.
+
+    Thread-safety: append() can be called from worker threads while get_wrapped()
+    is called from the main thread. The get_wrapped() method takes a snapshot
+    of the raw lines to avoid iteration over a mutating list.
+    """
+
+    _raw: list[str] = field(default_factory=list)
+    _wrapped: list[str] = field(default_factory=list)
+    _processed_count: int = 0
+    _last_width: int = 0
+
+    def append(self, line: str) -> None:
+        """Append a raw output line (thread-safe for single-writer)."""
+        self._raw.append(line)
+
+    def extend(self, lines: list[str]) -> None:
+        """Extend with multiple raw output lines."""
+        self._raw.extend(lines)
+
+    def get_wrapped(self, width: int) -> list[str]:
+        """Get wrapped lines for display, processing only new lines since last call.
+
+        Args:
+            width: Panel width for line wrapping.
+
+        Returns:
+            List of wrapped lines ready for display (ANSI stripped, wrapped).
+        """
+        # Take snapshot for thread safety - prevents iteration over mutating list
+        raw_snapshot = self._raw[:]
+
+        if width != self._last_width:
+            # Width changed - rebuild from scratch
+            self._wrapped.clear()
+            self._processed_count = 0
+            self._last_width = width
+
+        # Process only new lines (incremental)
+        for line in raw_snapshot[self._processed_count:]:
+            cleaned = strip_ansi(line).expandtabs(4).rstrip()
+            # Detect command prefix like "  $ " and align continuation after it
+            if match := re.match(r"^(\s*\$\s)", cleaned):
+                indent = len(match.group(1))
+            else:
+                indent = 2
+            self._wrapped.extend(wrap_line(cleaned, width, indent))
+
+        self._processed_count = len(raw_snapshot)
+        return self._wrapped
+
+    @property
+    def raw(self) -> list[str]:
+        """Read-only access to raw output lines (for logging/inspection)."""
+        return self._raw
+
+    def __len__(self) -> int:
+        """Return raw line count for compatibility."""
+        return len(self._raw)
+
+    def __bool__(self) -> bool:
+        """Return True if there are any output lines."""
+        return bool(self._raw)
+
+
+@dataclass
 class ScriptStatus:
     """Status of a script during execution."""
 
     section: Section
     script: Script
     state: ScriptState = ScriptState.PENDING
-    output_lines: list[str] = field(default_factory=list)
+    output: ProcessedOutput = field(default_factory=ProcessedOutput)
     exit_code: int | None = None
     start_time: float | None = None  # monotonic time when script started
     end_time: float | None = None  # monotonic time when script finished
@@ -3792,7 +3863,7 @@ class ExecutionTUI(BaseTUI):
         Uses a short timeout to allow multi-byte escape sequences (arrow keys)
         to be read correctly while remaining responsive.
         """
-        self.stdscr.timeout(50)  # 50ms timeout for escape sequences
+        self.stdscr.timeout(15)  # 15ms timeout for escape sequences
         while True:
             key = self.stdscr.getch()
             if key == -1:
@@ -4173,25 +4244,12 @@ class ExecutionTUI(BaseTUI):
         panel_height = height - 5
         scrollbar_x = width - 1
 
-        # Get viewed script's output
+        # Get wrapped output lines (incrementally cached by ProcessedOutput)
         if 0 <= self.viewing_idx < len(self.statuses):
             viewed = self.statuses[self.viewing_idx]
-            raw_lines = viewed.output_lines
+            wrapped_lines = viewed.output.get_wrapped(panel_width)
         else:
-            raw_lines = []
-
-        # Strip ANSI codes and wrap lines to panel width
-        # Command lines (starting with "$ ") get continuation aligned after the prefix
-        cleaned_lines = [strip_ansi(line) for line in raw_lines]
-        wrapped_lines = []
-        for line in cleaned_lines:
-            line = line.expandtabs(4).rstrip()
-            # Detect command prefix like "  $ " and align continuation after it
-            if match := re.match(r"^(\s*\$\s)", line):
-                indent = len(match.group(1))
-            else:
-                indent = 2
-            wrapped_lines.extend(wrap_line(line, panel_width, indent))
+            wrapped_lines = []
 
         # Update scroll state using wrapped line count
         self.right_scroll.total = len(wrapped_lines)
@@ -4437,7 +4495,7 @@ class ExecutionTUI(BaseTUI):
         script_path = self.scripts_dir / status.script.path
 
         if not script_path.exists() or not os.access(script_path, os.X_OK):
-            status.output_lines.append(
+            status.output.append(
                 f"Script not found or not executable: {script_path}"
             )
             status.end_time = time.monotonic()
@@ -4466,7 +4524,7 @@ class ExecutionTUI(BaseTUI):
                 # Read output incrementally (thread-safe append to list)
                 if process.stdout is not None:
                     for line in process.stdout:
-                        status.output_lines.append(line.rstrip())
+                        status.output.append(line.rstrip())
                 process.wait()
 
                 status.exit_code = process.returncode
@@ -4484,7 +4542,7 @@ class ExecutionTUI(BaseTUI):
                 os.close(slave_fd)
 
                 # Enable non-blocking keyboard input with short timeout for escape sequences
-                self.stdscr.timeout(50)  # 50ms allows arrow key sequences to be read
+                self.stdscr.timeout(15)  # 15ms allows arrow key sequences to be read
 
                 # Read output with non-blocking I/O
                 while True:
@@ -4503,7 +4561,7 @@ class ExecutionTUI(BaseTUI):
                                 text = data.decode("utf-8", errors="replace")
                                 for line in text.split("\n"):
                                     if line:
-                                        status.output_lines.append(line)
+                                        status.output.append(line)
                         except OSError:
                             break
 
@@ -4524,7 +4582,7 @@ class ExecutionTUI(BaseTUI):
                                     "utf-8", errors="replace"
                                 ).split("\n"):
                                     if line:
-                                        status.output_lines.append(line)
+                                        status.output.append(line)
                             except OSError:
                                 break
                         break
@@ -4543,7 +4601,7 @@ class ExecutionTUI(BaseTUI):
                 return False
 
         except Exception as e:
-            status.output_lines.append(
+            status.output.append(
                 f"Error executing {status.script.path}: {type(e).__name__}: {e}"
             )
             status.end_time = time.monotonic()
@@ -4690,7 +4748,7 @@ def _execute_cli_script(
     """Execute a script in CLI mode (non-TUI).
 
     Handles both verbose (streaming) and non-verbose (spinner) modes.
-    Updates status.state, status.exit_code, and status.output_lines.
+    Updates status.state, status.exit_code, and status.output.
 
     Args:
         status: ScriptStatus to execute and update.
@@ -4710,7 +4768,7 @@ def _execute_cli_script(
         status.end_time = time.monotonic()
         status.state = ScriptState.FAILED
         status.exit_code = 1
-        status.output_lines.append("Script not found or not executable")
+        status.output.append("Script not found or not executable")
         return False
 
     if verbose:
@@ -4731,7 +4789,7 @@ def _execute_cli_script(
             if process.stdout is not None:
                 for line in process.stdout:
                     print(f"    {line}", end="", flush=True)
-                    status.output_lines.append(line.rstrip())
+                    status.output.append(line.rstrip())
             process.wait()
             status.exit_code = process.returncode
 
@@ -4751,7 +4809,7 @@ def _execute_cli_script(
             status.end_time = time.monotonic()
             status.state = ScriptState.FAILED
             status.exit_code = 1
-            status.output_lines.append(str(e))
+            status.output.append(str(e))
             print(flush=True)
             return False
     else:
@@ -4763,9 +4821,9 @@ def _execute_cli_script(
             result = run_script_simple(script_path, scripts_dir, env)
             status.exit_code = result.returncode
             if result.stdout:
-                status.output_lines.extend(result.stdout.strip().split("\n"))
+                status.output.extend(result.stdout.strip().split("\n"))
             if result.stderr:
-                status.output_lines.extend(result.stderr.strip().split("\n"))
+                status.output.extend(result.stderr.strip().split("\n"))
 
             status.end_time = time.monotonic()
             if result.returncode == 0:
@@ -4785,7 +4843,7 @@ def _execute_cli_script(
             status.end_time = time.monotonic()
             status.state = ScriptState.FAILED
             status.exit_code = 1
-            status.output_lines.append(f"{type(e).__name__}: {e}")
+            status.output.append(f"{type(e).__name__}: {e}")
             return False
 
 
