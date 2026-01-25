@@ -434,8 +434,9 @@ fi
 EXTENSIONS_FILE="$CURSOR_CONFIG_SRC/extensions.txt"
 
 # Get list of installed extension IDs (lowercase for case-insensitive comparison)
+# Uses --profile to check the correct profile's extensions
 get_installed_extensions() {
-    cursor --list-extensions 2>/dev/null | tr '[:upper:]' '[:lower:]' || true
+    cursor --profile "$PROFILE_NAME" --list-extensions 2>/dev/null | tr '[:upper:]' '[:lower:]' || true
 }
 
 # Check if all extensions from extensions.txt are installed
@@ -513,8 +514,9 @@ install_cursor_extensions() {
     for ext in "${to_install[@]}"; do
         echo "  Installing: $ext"
         # Capture output and exit code separately (pipe would mask exit code)
+        # Use --profile to install to the correct profile
         local output
-        output=$(cursor --install-extension "$ext" --force 2>&1)
+        output=$(cursor --profile "$PROFILE_NAME" --install-extension "$ext" --force 2>&1)
         local exit_code=$?
         
         # Show output indented

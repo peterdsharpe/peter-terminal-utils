@@ -24,4 +24,4 @@ rafaelha.vscode-flamegraph
 github.vscode-pull-request-github
 ms-toolsai.jupyter-keymap
 rust-lang.rust-analyzer
-bernhard-42.ocp-cad-viewer
+lucien-martijn.parquet-visualizer
