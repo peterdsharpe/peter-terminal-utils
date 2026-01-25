@@ -47,6 +47,7 @@ install_flatpak_app() {
     fi
 }
 
+install_flatpak_app "io.github.flattool.Warehouse" "Warehouse"  # Flatpak management GUI
 install_flatpak_app "md.obsidian.Obsidian" "Obsidian"
 install_flatpak_app "org.zotero.Zotero" "Zotero"
 install_flatpak_app "com.visualstudio.code" "VS Code"
@@ -62,6 +63,12 @@ install_flatpak_app "com.prusa3d.PrusaSlicer" "PrusaSlicer"
 
 ### Update all Flatpak apps to latest versions
 step "Updating Flatpak applications" flatpak update -y --user
+
+### Cleanup: remove unused runtimes and clear cache
+step "Removing unused runtimes" flatpak uninstall -y --user --unused
+if [[ -d "$HOME/.cache/flatpak" ]]; then
+    step "Clearing Flatpak cache" rm -rf "$HOME/.cache/flatpak"
+fi
 
 ### Set Firefox as default browser
 if command -v xdg-settings &>/dev/null; then

@@ -16,3 +16,6 @@ fi
 
 # Always update to latest (uv has built-in self-update)
 step "Updating uv to latest version" uv self update
+
+# Clear cache to reclaim disk space
+step "Clearing uv cache" uv cache clean
