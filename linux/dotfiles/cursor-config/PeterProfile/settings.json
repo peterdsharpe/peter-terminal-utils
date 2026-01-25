@@ -41,6 +41,8 @@
     "explorer.confirmPasteNative": false,
     "explorer.compactFolders": false,
     "scm.compactFolders": false,
+    "scm.defaultViewMode": "tree",
+    "scm.showHistoryGraph": false,
     "workbench.tree.expandMode": "doubleClick",
     "editor.showFoldingControls": "always",
     "notebook.showFoldingControls": "always",
@@ -326,6 +328,10 @@
     "window.openFoldersInNewWindow": "on",
     "git.openDiffOnClick": false,
     "gitlens.views.remotes.files.layout": "tree",
+    "gitlens.views.commits.enabled": false,
+    "gitlens.views.fileHistory.enabled": false,
+    "gitlens.views.lineHistory.enabled": false,
+    "gitlens.views.tags.enabled": false,
     "window.titleBarStyle": "custom",
     "window.customMenuBarAltFocus": false,
     "window.enableMenuBarMnemonics": false,
@@ -377,7 +383,7 @@
     "window.title": "${rootName}",
     "window.titleSeparator": " | ",
     "workbench.colorTheme": "Monokai",
-    "workbench.tree.indent": 30,
+    "workbench.tree.indent": 16,
     "workbench.iconTheme": "material-icon-theme",
     "python.experiments.enabled": false,
     "debugpy.showPythonInlineValues": true,
@@ -396,5 +402,51 @@
     "editor.fontFamily": "'FiraCode Nerd Font', Consolas, 'Courier New', monospace",
     "editor.fontLigatures": false,
     "editor.fontSize": 13,
-    "terminal.integrated.defaultProfile.linux": "zsh"
+    "terminal.integrated.defaultProfile.linux": "zsh",
+    "git.confirmNoVerifyCommit": false,
+    "git.allowForcePush": true,
+    "gitlens.menus": {
+
+        "editor": {
+            "blame": false,
+            "clipboard": true,
+            "compare": true,
+            "history": false,
+            "remote": false
+        },
+        "editorGroup": {
+            "blame": true,
+            "compare": true
+        },
+        "editorTab": {
+            "clipboard": true,
+            "compare": true,
+            "history": true,
+            "remote": true
+        },
+        "explorer": {
+            "clipboard": true,
+            "compare": true,
+            "history": true,
+            "remote": true
+        },
+        "scm": {
+            "authors": true
+        },
+        "scmGroupInline": {
+            "stash": true
+        },
+        "scmGroup": {
+            "compare": true,
+            "openClose": true,
+            "stash": true
+        },
+        "scmItem": {
+            "clipboard": true,
+            "compare": true,
+            "history": true,
+            "remote": false,
+            "stash": true
+        }
+    }
 }
