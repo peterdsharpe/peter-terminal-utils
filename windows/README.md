@@ -116,3 +116,7 @@ After running the setup:
 4. **Docker Desktop**:
    - Log out and back in after installation
    - Start Docker Desktop manually
+
+5. [Activation](https://massgrave.dev)
+
+6. [Debloat](https://github.com/ChrisTitusTech/winutil)
