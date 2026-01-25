@@ -40,7 +40,8 @@ from typing import Callable, Literal, NamedTuple, Self
 # Type aliases for literal values
 SectionState = Literal["all", "none", "partial"]
 ColorName = Literal[
-    "green", "yellow", "cyan", "red", "blue", "header", "dim", "bold", "reverse"
+    "green", "yellow", "cyan", "red", "blue", "magenta", "white",
+    "header", "dim", "bold", "reverse", "default"
 ]
 
 
@@ -577,6 +578,15 @@ class Manifest:
             for script in section.scripts
             if script.enabled
         ]
+
+    def count_enabled(self) -> int:
+        """Count enabled scripts without building a list."""
+        return sum(1 for s in self.sections for _ in filter(lambda x: x.enabled, s.scripts))
+
+    @property
+    def total_scripts(self) -> int:
+        """Total number of scripts across all sections."""
+        return sum(len(s.scripts) for s in self.sections)
 
     def get_flat_items(self) -> list[Section | Script]:
         """Return flat list of sections and scripts for navigation."""
@@ -1251,11 +1261,12 @@ def run_scripts_parallel(
     max_workers = min((os.cpu_count() or 4) * 2, 16)
     scheduler = ParallelScheduler(statuses, max_workers)
 
-    # Pre-populate completed_paths with disabled scripts (assumed already run)
+    # Pre-populate completed sets with disabled scripts (assumed already run)
     for section in manifest.sections:
         for script in section.scripts:
             if not script.enabled:
                 scheduler.completed_paths.add(script.path)
+                scheduler.completed_names.add(script.name)
 
     try:
         with concurrent.futures.ThreadPoolExecutor(
@@ -1607,7 +1618,7 @@ def has_true_color() -> bool:
 # True color gives exact RGB. 256-color gives close approximations from the
 # 6x6x6 color cube. ANSI gives basic terminal colors (may vary by terminal theme).
 
-THEME_COLORS: dict[str, tuple[tuple[int, int, int], int, int]] = {
+THEME_COLORS: dict[ColorName, tuple[tuple[int, int, int], int, int]] = {
     # Semantic colors - soft pastel-ish palette with good contrast on black
     # RGB values are slightly desaturated and brightened for readability
     #                                    RGB (24-bit)      256   ANSI
@@ -1832,7 +1843,7 @@ RAINBOW_256 = [
 ]
 
 # Fallback 8-color rainbow for basic terminals
-RAINBOW_BASIC = ["red", "yellow", "green", "cyan", "blue", "magenta"]
+RAINBOW_BASIC: list[ColorName] = ["red", "yellow", "green", "cyan", "blue", "magenta"]
 
 
 def init_rainbow_colors(start_pair: int = 20) -> list[int]:
@@ -2475,11 +2486,17 @@ class SelectionTUI(BaseTUI):
     rainbow_pairs: list[int] = field(default_factory=list, init=False)
     # Toggle animation state: maps item key (script.path or section.name) to animation
     animations: dict[str, ToggleAnimation] = field(default_factory=dict, init=False)
+    # Cached values (manifest structure doesn't change during TUI session)
+    _flat_items: list[Section | Script] = field(default_factory=list, init=False)
+    _total_scripts: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         super().__post_init__()
         # Apply initial preset
         self.manifest.apply_preset(self.current_preset)
+        # Cache immutable values (structure doesn't change during TUI session)
+        self._flat_items = self.manifest.get_flat_items()
+        self._total_scripts = self.manifest.total_scripts
         # Initialize 256-color rainbow if available
         self.rainbow_pairs = init_rainbow_colors()
         # Spawn initial Gaussian wavelet with off-screen start for smooth entry
@@ -2756,7 +2773,7 @@ class SelectionTUI(BaseTUI):
 
     def draw_tree(self, height: int, width: int) -> None:
         """Draw the tree of sections and scripts."""
-        items = self.manifest.get_flat_items()
+        items = self._flat_items
         visible_height = self.get_visible_height()
 
         # Update scroll state
@@ -2919,9 +2936,10 @@ class SelectionTUI(BaseTUI):
             self.stdscr.addstr(footer_y + 2, 2, keys2[: width - 4], self.colors["cyan"])
 
         # Status line showing selected/total scripts and warning count
+        # Note: get_enabled_scripts() is needed for warning iteration anyway
         enabled_scripts = self.manifest.get_enabled_scripts()
         enabled_count = len(enabled_scripts)
-        total_count = sum(len(s.scripts) for s in self.manifest.sections)
+        total_count = self._total_scripts  # Cached at init
 
         # Count scripts with dependency warnings
         warning_count = sum(
@@ -3136,7 +3154,7 @@ class SelectionTUI(BaseTUI):
     def handle_input(self) -> Literal["execute", "quit"] | None:
         """Handle keyboard and mouse input. Returns 'execute' or 'quit' or None."""
         key = self.stdscr.getch()
-        items = self.manifest.get_flat_items()
+        items = self._flat_items
 
         # Timeout case - just redraw for animation, no input to process
         if key == -1:
@@ -3332,7 +3350,7 @@ class SelectionTUI(BaseTUI):
 
         Only works when the cursor is on a Script (not a Section).
         """
-        items = self.manifest.get_flat_items()
+        items = self._flat_items
         if self.cursor >= len(items):
             return
 
@@ -3469,19 +3487,13 @@ class ParallelScheduler:
     statuses: list["ScriptStatus"]
     max_workers: int
     completed_paths: set[str] = field(default_factory=set)
+    completed_names: set[str] = field(default_factory=set)  # O(1) dependency lookup
     held_locks: set[str] = field(default_factory=set)
 
     def deps_satisfied(self, status: ScriptStatus) -> bool:
         """Check if all dependencies have completed (success or failure)."""
-        for dep in status.script.dependencies:
-            # Dependencies are script names without .sh; completed_paths are full paths
-            # Check if any completed path ends with the dependency name
-            if not any(
-                p.endswith(f"/{dep}.sh") or p == f"{dep}.sh"
-                for p in self.completed_paths
-            ):
-                return False
-        return True
+        # O(1) lookup per dependency: check each against completed_names set
+        return all(dep in self.completed_names for dep in status.script.dependencies)
 
     def has_lock_conflict(self, status: ScriptStatus) -> bool:
         """Check if any required locks are currently held."""
@@ -3552,6 +3564,7 @@ class ParallelScheduler:
     def mark_complete(self, status: ScriptStatus) -> None:
         """Mark a script as completed for dependency tracking."""
         self.completed_paths.add(status.script.path)
+        self.completed_names.add(status.script.name)
 
 
 @dataclass
@@ -4066,9 +4079,22 @@ class ExecutionTUI(BaseTUI):
 
         return segments
 
+    def _count_states(self) -> dict[ScriptState, int]:
+        """Count scripts in each state in a single pass."""
+        counts: dict[ScriptState, int] = {state: 0 for state in ScriptState}
+        for status in self.statuses:
+            counts[status.state] += 1
+        return counts
+
     def draw_header(self, width: int) -> None:
         """Draw the header with btop-style tab, elapsed time, and sparkline."""
-        completed = sum(1 for s in self.statuses if s.state in COMPLETED_STATES)
+        # Single-pass count of all states
+        counts = self._count_states()
+        succeeded = counts[ScriptState.SUCCESS]
+        failed = counts[ScriptState.FAILED]
+        skipped = counts[ScriptState.SKIPPED]
+        running = counts[ScriptState.RUNNING]
+        completed = succeeded + failed + skipped
         total = len(self.statuses)
 
         # Determine title and color based on state
@@ -4076,9 +4102,6 @@ class ExecutionTUI(BaseTUI):
             title = "Installation Cancelled"
             title_color = self.colors["yellow"]
         elif completed == total:
-            failed = sum(1 for s in self.statuses if s.state == ScriptState.FAILED)
-            succeeded = sum(1 for s in self.statuses if s.state == ScriptState.SUCCESS)
-            skipped = sum(1 for s in self.statuses if s.state == ScriptState.SKIPPED)
             if failed > 0:
                 title = f"Complete - {succeeded} OK, {failed} Failed"
                 if skipped > 0:
@@ -4090,9 +4113,8 @@ class ExecutionTUI(BaseTUI):
                     title += f", {skipped} Skipped"
                 title_color = self.colors["green"]
         else:
-            running_count = sum(1 for s in self.statuses if s.state == ScriptState.RUNNING)
-            if running_count > 0:
-                title = f"Installing {completed}/{total} ({running_count} active)"
+            if running > 0:
+                title = f"Installing {completed}/{total} ({running} active)"
             else:
                 title = f"Installing {completed}/{total}"
             title_color = self.colors["cyan"]
@@ -4623,6 +4645,7 @@ class ExecutionTUI(BaseTUI):
 
         Returns (success_count, fail_count).
         """
+        assert self._logger is not None  # Always set in __post_init__
         self.stdscr.keypad(True)  # Enable arrow key recognition
 
         # Prepare environment
