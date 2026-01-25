@@ -13,6 +13,7 @@ install_flatpak() {
     pkg_install flatpak
 }
 
+FLATPAK_FRESHLY_INSTALLED=false
 if ! command -v flatpak &>/dev/null; then
     if [[ "$HAS_SUDO" == true ]]; then
         step "Installing Flatpak" install_flatpak
@@ -21,6 +22,7 @@ if ! command -v flatpak &>/dev/null; then
             print_error "Flatpak installation failed - check package manager output above"
             exit 1
         fi
+        FLATPAK_FRESHLY_INSTALLED=true
     else
         print_skip "Flatpak (requires sudo to install)"
         exit 0
@@ -70,4 +72,9 @@ if command -v xdg-settings &>/dev/null; then
     fi
     
     step "Setting Firefox as default browser" xdg-settings set default-web-browser org.mozilla.firefox.desktop
+fi
+
+### Warn about session restart if Flatpak was freshly installed
+if [[ "$FLATPAK_FRESHLY_INSTALLED" == true ]]; then
+    print_warning "Flatpak was installed during this session. Log out and back in for apps to appear in the application menu."
 fi
