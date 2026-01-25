@@ -8,9 +8,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 upgrade_system() {
-    step_start "Upgrading system packages"
-    run pkg_upgrade
-    step_end
+    step "Upgrading system packages" pkg_upgrade
+    step "Removing orphaned packages" pkg_autoremove
+    step "Clearing package cache" pkg_clean
 }
 
 require_sudo "System Upgrade" upgrade_system

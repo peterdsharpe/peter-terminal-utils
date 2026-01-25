@@ -800,8 +800,15 @@ _pkg_upgrade_impl() {
         zypper) sudo zypper update -y ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
+}
 
-    # Remove packages that were installed as dependencies but are no longer needed
+### Remove packages that were installed as dependencies but are no longer needed
+### Usage: pkg_autoremove
+pkg_autoremove() {
+    with_pkg_lock _pkg_autoremove_impl
+}
+
+_pkg_autoremove_impl() {
     case "$PKG_MANAGER" in
         apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
         dnf) sudo dnf autoremove -y ;;
@@ -821,6 +828,23 @@ _pkg_upgrade_impl() {
                 sudo zypper remove -y $unneeded
             fi
             ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
+    esac
+}
+
+### Clear the package manager cache to reclaim disk space
+### Usage: pkg_clean
+pkg_clean() {
+    with_pkg_lock _pkg_clean_impl
+}
+
+_pkg_clean_impl() {
+    case "$PKG_MANAGER" in
+        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" clean ;;
+        dnf) sudo dnf clean all ;;
+        pacman) sudo pacman -Sc --noconfirm ;;
+        zypper) sudo zypper clean --all ;;
+        *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
 
