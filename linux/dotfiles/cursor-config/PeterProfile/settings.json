@@ -448,5 +448,6 @@
             "remote": false,
             "stash": true
         }
-    }
+    },
+    "parquet-visualizer.defaultQuery": "SELECT *\nFROM data;"
 }
