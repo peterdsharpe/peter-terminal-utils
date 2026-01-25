@@ -190,6 +190,51 @@ if command -v fnm &> /dev/null; then
 fi
 
 ###############################################################################
+### LAN Discovery (requires avahi-utils)
+###############################################################################
+
+# List SSH hosts on local network via mDNS
+# Usage: lanhosts
+lanhosts() {
+    if ! command -v avahi-browse &> /dev/null; then
+        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
+        return 1
+    fi
+    echo "Discovering SSH hosts on LAN..."
+    avahi-browse -r -t _ssh._tcp 2>/dev/null | \
+        grep -E '^\s+(hostname|address)\s*=' | \
+        paste - - | \
+        sed 's/.*hostname = \[\([^]]*\)\].*address = \[\([^]]*\)\].*/\1 (\2)/' | \
+        sort -u
+}
+
+# Interactive SSH host selection with fzf
+# Usage: sshpick [user]
+sshpick() {
+    local user="${1:-$USER}"
+    if ! command -v avahi-browse &> /dev/null; then
+        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
+        return 1
+    fi
+    if ! command -v fzf &> /dev/null; then
+        echo "fzf not found. Install fzf first." >&2
+        return 1
+    fi
+    
+    local host
+    host=$(avahi-browse -r -t _ssh._tcp 2>/dev/null | \
+        grep -E '^\s+hostname\s*=' | \
+        sed 's/.*hostname = \[\([^]]*\)\].*/\1/' | \
+        sort -u | \
+        fzf --prompt="SSH to: " --height=40% --reverse)
+    
+    if [[ -n "$host" ]]; then
+        echo "Connecting to $user@$host..."
+        ssh "$user@$host"
+    fi
+}
+
+###############################################################################
 ### Powerlevel10k Configuration
 ###############################################################################
 
