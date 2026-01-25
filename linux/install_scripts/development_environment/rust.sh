@@ -17,3 +17,8 @@ fi
 
 # Always update toolchain (rustup has built-in update)
 step "Updating Rust toolchain" rustup update
+
+# Clean cargo registry cache (re-downloaded as needed)
+if [[ -d "$HOME/.cargo/registry/cache" || -d "$HOME/.cargo/registry/src" ]]; then
+    step "Clearing cargo registry cache" rm -rf "$HOME/.cargo/registry/cache" "$HOME/.cargo/registry/src"
+fi

@@ -37,3 +37,6 @@ fi
 if ! groups | grep -q docker; then
     print_warning "Log out and back in to use docker without sudo"
 fi
+
+# Clean up unused images, containers, and build cache
+step "Pruning unused Docker resources" docker system prune -af
