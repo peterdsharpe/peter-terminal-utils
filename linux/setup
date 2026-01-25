@@ -35,13 +35,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from itertools import batched, chain
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple, Self
+from typing import Callable, Literal, NamedTuple, Self, cast
 
 # Type aliases for literal values
 SectionState = Literal["all", "none", "partial"]
 ColorName = Literal[
-    "green", "yellow", "cyan", "red", "blue", "magenta", "white",
-    "header", "dim", "bold", "reverse", "default"
+    "green",
+    "yellow",
+    "cyan",
+    "red",
+    "blue",
+    "magenta",
+    "white",
+    "header",
+    "dim",
+    "bold",
+    "reverse",
+    "default",
 ]
 
 
@@ -581,7 +591,9 @@ class Manifest:
 
     def count_enabled(self) -> int:
         """Count enabled scripts without building a list."""
-        return sum(1 for s in self.sections for _ in filter(lambda x: x.enabled, s.scripts))
+        return sum(
+            1 for s in self.sections for _ in filter(lambda x: x.enabled, s.scripts)
+        )
 
     @property
     def total_scripts(self) -> int:
@@ -921,7 +933,9 @@ def prompt_sudo_if_needed(enabled_scripts: list[tuple[Section, Script]]) -> bool
             print(" ✓ Sudo credentials cached")
             return True
         else:
-            print(" ✗ Sudo authentication failed - scripts requiring sudo will be skipped")
+            print(
+                " ✗ Sudo authentication failed - scripts requiring sudo will be skipped"
+            )
             return True  # Continue anyway, scripts will skip
     except (KeyboardInterrupt, EOFError):
         print("\n Cancelled")
@@ -1124,7 +1138,9 @@ class InstallLogger:
                 lock_wait = status.start_time - status.ready_time
                 if lock_wait > 0.1:  # Avoid noise from scheduling jitter
                     locks_str = ", ".join(sorted(status.blocked_by_locks))
-                    f.write(f"  Lock wait: {lock_wait:.2f}s (blocked by: {locks_str})\n")
+                    f.write(
+                        f"  Lock wait: {lock_wait:.2f}s (blocked by: {locks_str})\n"
+                    )
             if status.exit_code is not None:
                 f.write(f"  Exit code: {status.exit_code}\n")
             if status.output:
@@ -1151,7 +1167,12 @@ class InstallLogger:
         ]
 
         if not intervals:
-            return {"peak_concurrency": 0, "sum_durations": 0.0, "wall_time": 0.0, "speedup": 1.0}
+            return {
+                "peak_concurrency": 0,
+                "sum_durations": 0.0,
+                "wall_time": 0.0,
+                "speedup": 1.0,
+            }
 
         # Sum of all script durations
         sum_durations = sum(end - start for start, end in intervals)
@@ -1165,8 +1186,8 @@ class InstallLogger:
         # Create events: +1 at start, -1 at end
         events: list[tuple[float, int]] = []
         for start, end in intervals:
-            events.append((start, 1))   # Script starts
-            events.append((end, -1))    # Script ends
+            events.append((start, 1))  # Script starts
+            events.append((end, -1))  # Script ends
 
         # Sort by time, with ends (-1) before starts (+1) at same time
         # This prevents counting a script that ends exactly when another starts
@@ -1269,9 +1290,7 @@ def run_scripts_parallel(
                 scheduler.completed_names.add(script.name)
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers
-        ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures: dict[concurrent.futures.Future[bool], ScriptStatus] = {}
 
             while True:
@@ -1313,16 +1332,12 @@ def run_scripts_parallel(
 
                 # Check if we're done
                 if not futures and not ready:
-                    all_done = all(
-                        s.state != ScriptState.PENDING for s in statuses
-                    )
+                    all_done = all(s.state != ScriptState.PENDING for s in statuses)
                     if all_done:
                         break
 
                     # Deadlock: pending scripts exist but none can start
-                    pending = [
-                        s for s in statuses if s.state == ScriptState.PENDING
-                    ]
+                    pending = [s for s in statuses if s.state == ScriptState.PENDING]
                     for status in pending:
                         unsatisfied = [
                             dep
@@ -1622,19 +1637,19 @@ THEME_COLORS: dict[ColorName, tuple[tuple[int, int, int], int, int]] = {
     # Semantic colors - soft pastel-ish palette with good contrast on black
     # RGB values are slightly desaturated and brightened for readability
     #                                    RGB (24-bit)      256   ANSI
-    "green":   ((134, 227, 172),  115, curses.COLOR_GREEN),   # Mint green (#86deac)
-    "yellow":  ((240, 220, 140),  222, curses.COLOR_YELLOW),  # Soft gold (#f0dc8c)
-    "cyan":    ((100, 190, 235),  117, curses.COLOR_CYAN),    # Sky blue (#64beeb)
-    "red":     ((255, 135, 155),  210, curses.COLOR_RED),     # Soft coral (#ff879b)
-    "blue":    ((120, 145, 255),  105, curses.COLOR_BLUE),    # Soft indigo (#7891ff)
-    "magenta": ((200, 160, 255),  183, curses.COLOR_MAGENTA), # Lavender (#c8a0ff)
-    "white":   ((250, 250, 245),  255, curses.COLOR_WHITE),   # Warm white (#fafaf5)
-    "dim":     ((160, 160, 150),  102, curses.COLOR_WHITE),   # Warm gray (#a0a096)
+    "green": ((134, 227, 172), 115, curses.COLOR_GREEN),  # Mint green (#86deac)
+    "yellow": ((240, 220, 140), 222, curses.COLOR_YELLOW),  # Soft gold (#f0dc8c)
+    "cyan": ((100, 190, 235), 117, curses.COLOR_CYAN),  # Sky blue (#64beeb)
+    "red": ((255, 135, 155), 210, curses.COLOR_RED),  # Soft coral (#ff879b)
+    "blue": ((120, 145, 255), 105, curses.COLOR_BLUE),  # Soft indigo (#7891ff)
+    "magenta": ((200, 160, 255), 183, curses.COLOR_MAGENTA),  # Lavender (#c8a0ff)
+    "white": ((250, 250, 245), 255, curses.COLOR_WHITE),  # Warm white (#fafaf5)
+    "dim": ((160, 160, 150), 102, curses.COLOR_WHITE),  # Warm gray (#a0a096)
 }
 
 # Background: true black for consistency
 THEME_BG_RGB = (0, 0, 0)  # True black
-THEME_BG_256 = 16         # True black in 256-color palette
+THEME_BG_256 = 16  # True black in 256-color palette
 
 
 def init_colors() -> dict[ColorName, int]:
@@ -1667,7 +1682,9 @@ def init_colors() -> dict[ColorName, int]:
             # and color 16 (true black used as background)
             color_idx = 20 + pair_num
             r, g, b = rgb
-            curses.init_color(color_idx, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+            curses.init_color(
+                color_idx, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255
+            )
             curses.init_pair(pair_num, color_idx, bg)
         elif curses.COLORS >= 256:
             # Use 256-color palette approximation
@@ -1676,7 +1693,7 @@ def init_colors() -> dict[ColorName, int]:
             # Fall back to basic ANSI colors
             curses.init_pair(pair_num, color_ansi, bg)
 
-        color_map[color_name] = curses.color_pair(pair_num)
+        color_map[cast(ColorName, color_name)] = curses.color_pair(pair_num)
 
     # Header bar (inverted colors for selection bar)
     header_pair = len(THEME_COLORS) + 1
@@ -1744,14 +1761,14 @@ def oklch_to_srgb(L: float, C: float, h_deg: float) -> tuple[int, int, int]:
     s_ = L - 0.0894841775 * a - 1.2914855480 * b
 
     # Cube the LMS values
-    l = l_ * l_ * l_
-    m = m_ * m_ * m_
-    s = s_ * s_ * s_
+    lms_l = l_ * l_ * l_
+    lms_m = m_ * m_ * m_
+    lms_s = s_ * s_ * s_
 
     # LMS to linear RGB
-    r_lin = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
-    g_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
-    b_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    r_lin = +4.0767416621 * lms_l - 3.3077115913 * lms_m + 0.2309699292 * lms_s
+    g_lin = -1.2684380046 * lms_l + 2.6097574011 * lms_m - 0.3413193965 * lms_s
+    b_lin = -0.0041960863 * lms_l - 0.7034186147 * lms_m + 1.7076147010 * lms_s
 
     # Linear RGB to sRGB (gamma correction)
     def linear_to_srgb(x: float) -> int:
@@ -1764,7 +1781,9 @@ def oklch_to_srgb(L: float, C: float, h_deg: float) -> tuple[int, int, int]:
     return linear_to_srgb(r_lin), linear_to_srgb(g_lin), linear_to_srgb(b_lin)
 
 
-def generate_oklch_rainbow(n_colors: int, L: float = 0.7, C: float = 0.15) -> list[tuple[int, int, int]]:
+def generate_oklch_rainbow(
+    n_colors: int, L: float = 0.7, C: float = 0.15
+) -> list[tuple[int, int, int]]:
     """Generate a perceptually uniform rainbow using OKLCH color space.
 
     Args:
@@ -1816,21 +1835,21 @@ RAINBOW_256 = [
     143,  # (3,3,1) hue= 60.0° lum=141.4 sat=0.67
     112,  # (2,4,0) hue= 90.0° lum=150.2 sat=1.00
     113,  # (2,4,1) hue=100.0° lum=156.1 sat=0.75
-    76,   # (1,4,0) hue=105.0° lum=135.0 sat=1.00
-    46,   # (0,5,0) hue=120.0° lum=149.7 sat=1.00
-    77,   # (1,4,1) hue=120.0° lum=140.8 sat=0.75
+    76,  # (1,4,0) hue=105.0° lum=135.0 sat=1.00
+    46,  # (0,5,0) hue=120.0° lum=149.7 sat=1.00
+    77,  # (1,4,1) hue=120.0° lum=140.8 sat=0.75
     114,  # (2,4,2) hue=120.0° lum=161.9 sat=0.50
-    47,   # (0,5,1) hue=132.0° lum=155.5 sat=1.00
-    78,   # (1,4,2) hue=140.0° lum=146.6 sat=0.75
-    48,   # (0,5,2) hue=144.0° lum=161.3 sat=1.00
-    42,   # (0,4,2) hue=150.0° lum=131.4 sat=1.00
-    79,   # (1,4,3) hue=160.0° lum=152.4 sat=0.75
-    43,   # (0,4,3) hue=165.0° lum=137.2 sat=1.00
-    44,   # (0,4,4) hue=180.0° lum=143.0 sat=1.00
-    80,   # (1,4,4) hue=180.0° lum=158.3 sat=0.75
-    45,   # (0,4,5) hue=192.0° lum=148.8 sat=1.00
-    74,   # (1,3,4) hue=200.0° lum=128.3 sat=0.75
-    75,   # (1,3,5) hue=210.0° lum=134.1 sat=0.80
+    47,  # (0,5,1) hue=132.0° lum=155.5 sat=1.00
+    78,  # (1,4,2) hue=140.0° lum=146.6 sat=0.75
+    48,  # (0,5,2) hue=144.0° lum=161.3 sat=1.00
+    42,  # (0,4,2) hue=150.0° lum=131.4 sat=1.00
+    79,  # (1,4,3) hue=160.0° lum=152.4 sat=0.75
+    43,  # (0,4,3) hue=165.0° lum=137.2 sat=1.00
+    44,  # (0,4,4) hue=180.0° lum=143.0 sat=1.00
+    80,  # (1,4,4) hue=180.0° lum=158.3 sat=0.75
+    45,  # (0,4,5) hue=192.0° lum=148.8 sat=1.00
+    74,  # (1,3,4) hue=200.0° lum=128.3 sat=0.75
+    75,  # (1,3,5) hue=210.0° lum=134.1 sat=0.80
     110,  # (2,3,4) hue=210.0° lum=143.6 sat=0.50
     111,  # (2,3,5) hue=220.0° lum=149.4 sat=0.60
     141,  # (3,2,5) hue=260.0° lum=134.7 sat=0.60
@@ -1876,7 +1895,9 @@ def init_rainbow_colors(start_pair: int = 20) -> list[int]:
 
             try:
                 # curses uses 0-1000 scale for RGB, not 0-255
-                curses.init_color(color_num, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+                curses.init_color(
+                    color_num, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255
+                )
                 curses.init_pair(pair_num, color_num, bg)
                 rainbow_pairs.append(curses.color_pair(pair_num))
             except curses.error:
@@ -1907,17 +1928,17 @@ def init_rainbow_colors(start_pair: int = 20) -> list[int]:
 
 # Wave physics constants
 # Gaussian wavelet constants (periodic waves)
-WAVE_SPEED = 12.0       # characters per second
-WAVE_SIGMA = 2.0        # width of gaussian envelope (characters)
-WAVE_AMPLITUDE = 0.40   # peak amplitude
+WAVE_SPEED = 12.0  # characters per second
+WAVE_SIGMA = 2.0  # width of gaussian envelope (characters)
+WAVE_AMPLITUDE = 0.40  # peak amplitude
 
 # Impulse wavelet constants (keypress waves)
-IMPULSE_SPEED = 22.0    # characters per second
-IMPULSE_TAU = 6.0       # decay time constant (characters)
-IMPULSE_AMPLITUDE = 0.4 # peak amplitude
+IMPULSE_SPEED = 22.0  # characters per second
+IMPULSE_TAU = 6.0  # decay time constant (characters)
+IMPULSE_AMPLITUDE = 0.4  # peak amplitude
 
 # Animation constants
-BOLD_THRESHOLD = 0.1    # amplitude to trigger bold text
+BOLD_THRESHOLD = 0.1  # amplitude to trigger bold text
 AUTO_SPAWN_INTERVAL = 2.0  # seconds between auto-spawned waves
 
 
@@ -2044,7 +2065,7 @@ def sum_amplitude(wavelets: list[Wavelet], x: float, t: float) -> float:
 # Braille dot bits for left and right columns, indexed by dot-row (0-3)
 # Left column: dots 1,2,3,7 (bits 0,1,2,6)
 # Right column: dots 4,5,6,8 (bits 3,4,5,7)
-DOT_ROW_LEFT = [0x01, 0x02, 0x04, 0x40]   # dots 1,2,3,7
+DOT_ROW_LEFT = [0x01, 0x02, 0x04, 0x40]  # dots 1,2,3,7
 DOT_ROW_RIGHT = [0x08, 0x10, 0x20, 0x80]  # dots 4,5,6,8
 
 
@@ -2642,9 +2663,7 @@ class SelectionTUI(BaseTUI):
 
         # Auto-spawn periodic Gaussian waves with off-screen start for smooth entry
         if t - self.last_auto_spawn >= AUTO_SPAWN_INTERVAL:
-            self.wavelets.append(
-                Wavelet(spawn_time=t, spawn_x=-3 * WAVE_SIGMA)
-            )
+            self.wavelets.append(Wavelet(spawn_time=t, spawn_x=-3 * WAVE_SIGMA))
             self.last_auto_spawn = t
 
         # Prune expired wavelets
@@ -2666,7 +2685,7 @@ class SelectionTUI(BaseTUI):
             Curses color attribute.
         """
         # Phase shift creates traveling rainbow effect (same as text but different rate)
-        phase = (x * 0.3 - t * 2.0)
+        phase = x * 0.3 - t * 2.0
 
         if self.rainbow_pairs:
             # 256-color mode: smooth gradient cycling through all 16 colors
@@ -2694,7 +2713,7 @@ class SelectionTUI(BaseTUI):
             Curses color attribute.
         """
         # Phase shift creates traveling rainbow effect
-        phase = (char_idx * 0.4 - t * 3.0)  # wave travels right
+        phase = char_idx * 0.4 - t * 3.0  # wave travels right
 
         if self.rainbow_pairs:
             idx = int(phase) % len(self.rainbow_pairs)
@@ -2717,8 +2736,7 @@ class SelectionTUI(BaseTUI):
 
         # Calculate title display width (accounting for wide characters like emoji)
         title_width = sum(
-            2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
-            for c in title
+            2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in title
         )
 
         # Calculate title centering based on display width
@@ -3057,8 +3075,13 @@ class SelectionTUI(BaseTUI):
                         item.toggle()
                         # Animate section if it changed between all/none
                         after_section_state = item.state
-                        if before_section_state != after_section_state and after_section_state != "partial":
-                            self._start_animation(item.name, after_section_state == "all")
+                        if (
+                            before_section_state != after_section_state
+                            and after_section_state != "partial"
+                        ):
+                            self._start_animation(
+                                item.name, after_section_state == "all"
+                            )
                         # Animate all children that changed
                         for script in item.scripts:
                             if script.enabled != before_states[script.path]:
@@ -3225,7 +3248,13 @@ class SelectionTUI(BaseTUI):
         if self.filtered_indices is not None:
             if key in (ord("w"), ord("k"), curses.KEY_UP, 16, ord("N")):  # 16 = Ctrl-p
                 self._goto_match(-1)
-            elif key in (ord("s"), ord("j"), curses.KEY_DOWN, 14, ord("n")):  # 14 = Ctrl-n
+            elif key in (
+                ord("s"),
+                ord("j"),
+                curses.KEY_DOWN,
+                14,
+                ord("n"),
+            ):  # 14 = Ctrl-n
                 self._goto_match(1)
             elif key == curses.KEY_PPAGE:  # Page Up
                 self._goto_match(-1)
@@ -3256,7 +3285,10 @@ class SelectionTUI(BaseTUI):
                 item.toggle()
                 # Animate section if it changed between all/none
                 after_section_state = item.state
-                if before_section_state != after_section_state and after_section_state != "partial":
+                if (
+                    before_section_state != after_section_state
+                    and after_section_state != "partial"
+                ):
                     self._start_animation(item.name, after_section_state == "all")
                 # Animate all children that changed
                 for script in item.scripts:
@@ -3288,7 +3320,10 @@ class SelectionTUI(BaseTUI):
             for section in self.manifest.sections:
                 # Animate section if it changed between all/none
                 after_state = section.state
-                if before_sections[section.name] != after_state and after_state != "partial":
+                if (
+                    before_sections[section.name] != after_state
+                    and after_state != "partial"
+                ):
                     self._start_animation(section.name, after_state == "all")
                 # Animate scripts that changed
                 for script in section.scripts:
@@ -3435,7 +3470,7 @@ class ProcessedOutput:
             self._last_width = width
 
         # Process only new lines (incremental)
-        for line in raw_snapshot[self._processed_count:]:
+        for line in raw_snapshot[self._processed_count :]:
             cleaned = strip_ansi(line).expandtabs(4).rstrip()
             # Detect command prefix like "  $ " and align continuation after it
             if match := re.match(r"^(\s*\$\s)", cleaned):
@@ -4519,9 +4554,7 @@ class ExecutionTUI(BaseTUI):
         script_path = self.scripts_dir / status.script.path
 
         if not script_path.exists() or not os.access(script_path, os.X_OK):
-            status.output.append(
-                f"Script not found or not executable: {script_path}"
-            )
+            status.output.append(f"Script not found or not executable: {script_path}")
             status.end_time = time.monotonic()
             status.state = ScriptState.FAILED
             status.exit_code = 1
@@ -4825,7 +4858,10 @@ def _execute_cli_script(
                 print(flush=True)
                 return True
             else:
-                print(f"✗ {script.display_name} failed (exit code {process.returncode})", flush=True)
+                print(
+                    f"✗ {script.display_name} failed (exit code {process.returncode})",
+                    flush=True,
+                )
                 status.state = ScriptState.FAILED
                 print(flush=True)
                 return False
