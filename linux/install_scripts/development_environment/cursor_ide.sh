@@ -30,7 +30,8 @@ get_cursor_info() {
     local platform="linux-x64"
     [[ "$ARCH" == "arm64" ]] && platform="linux-arm64"
     
-    _CURSOR_API_CACHE=$(curl -sL "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" 2>/dev/null)
+    _CURSOR_API_CACHE=$(curl -sL --connect-timeout 30 --max-time 60 \
+        "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" 2>/dev/null)
     echo "$_CURSOR_API_CACHE"
 }
 
@@ -81,7 +82,8 @@ install_cursor_appimage() {
     mkdir -p "$install_dir" || return 1
     
     echo "Downloading Cursor $version..."
-    curl -L "$download_url" -o "$appimage_path" || return 1
+    curl -fL --connect-timeout 30 --max-time 3600 --progress-bar \
+        "$download_url" -o "$appimage_path" || return 1
     chmod +x "$appimage_path" || return 1
     
     # Create symlink in ~/.local/bin
@@ -113,7 +115,8 @@ install_cursor_deb() {
     tmp_deb=$(mktemp --suffix=.deb) || return 1
     
     echo "Downloading Cursor $version..."
-    curl -L "$deb_url" -o "$tmp_deb" || { rm -f "$tmp_deb"; return 1; }
+    curl -fL --connect-timeout 30 --max-time 3600 --progress-bar \
+        "$deb_url" -o "$tmp_deb" || { rm -f "$tmp_deb"; return 1; }
     
     pkg_install_local "$tmp_deb"
     local result=$?

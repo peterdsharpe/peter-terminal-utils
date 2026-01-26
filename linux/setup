@@ -970,6 +970,8 @@ def prepare_script_env(
     env["GIT_NAME"] = env.get("GIT_NAME", DEFAULT_GIT_NAME)
     env["GIT_EMAIL"] = env.get("GIT_EMAIL", DEFAULT_GIT_EMAIL)
     env["STREAM_OUTPUT"] = "true" if stream_output else "false"
+    # Prevent apt/dpkg from prompting for user input (e.g., conffile conflicts)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
     return env
 
 
@@ -1007,6 +1009,7 @@ def run_script_simple(
         ["bash", "-c", bash_cmd],
         env=env,
         cwd=scripts_dir.parent,
+        stdin=subprocess.DEVNULL,  # Prevent hangs on sudo/apt prompts
         capture_output=True,
         text=True,
     )
@@ -1392,6 +1395,71 @@ def run_scripts_parallel(
                 logger.append_result(status)
 
     return success_count, fail_count
+
+
+###############################################################################
+### Sudo Credential Keepalive
+###############################################################################
+
+
+class SudoKeepalive:
+    """Background thread that refreshes sudo credentials during long installations.
+
+    Sudo credentials typically expire after 5-15 minutes. For installations with
+    large downloads (e.g., Cursor IDE at 150MB+), the download phase can exceed
+    this timeout, causing subsequent sudo calls to hang waiting for password input
+    (which never comes since stdin is /dev/null).
+
+    This class runs `sudo -v` every 60 seconds in a background thread to keep
+    credentials fresh throughout the installation process.
+
+    Usage:
+        with SudoKeepalive():
+            run_scripts_parallel(...)
+    """
+
+    def __init__(self, interval: int = 60):
+        """Initialize keepalive with refresh interval in seconds."""
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _keepalive_loop(self) -> None:
+        """Background thread: refresh sudo credentials periodically."""
+        while not self._stop_event.wait(self.interval):
+            try:
+                # Refresh sudo timestamp without running a command
+                # Use short timeout to avoid blocking if sudo is broken
+                subprocess.run(
+                    ["sudo", "-v"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                # sudo not available or timed out - stop trying
+                break
+
+    def start(self) -> None:
+        """Start the keepalive background thread."""
+        if not check_sudo_available():
+            return  # No sudo credentials to keep alive
+        self._thread = threading.Thread(target=self._keepalive_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the keepalive background thread."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+
+    def __enter__(self) -> "SudoKeepalive":
+        self.start()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.stop()
 
 
 ###############################################################################
@@ -4555,6 +4623,7 @@ class ExecutionTUI(BaseTUI):
                     ["bash", "-c", bash_cmd],
                     env=env,
                     cwd=self.scripts_dir.parent,
+                    stdin=subprocess.DEVNULL,  # Prevent hangs on sudo/apt prompts
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
@@ -4699,18 +4768,19 @@ class ExecutionTUI(BaseTUI):
             """Check if user cancelled execution."""
             return self.cancelled
 
-        # Run the parallel scheduler
-        success_count, fail_count = run_scripts_parallel(
-            statuses=self.statuses,
-            manifest=self.manifest,
-            scripts_dir=self.scripts_dir,
-            env=env,
-            logger=self._logger,
-            run_live=run_live,
-            run_silent=run_silent,
-            on_update=on_update,
-            is_cancelled=is_cancelled,
-        )
+        # Run the parallel scheduler with sudo keepalive
+        with SudoKeepalive():
+            success_count, fail_count = run_scripts_parallel(
+                statuses=self.statuses,
+                manifest=self.manifest,
+                scripts_dir=self.scripts_dir,
+                env=env,
+                logger=self._logger,
+                run_live=run_live,
+                run_silent=run_silent,
+                on_update=on_update,
+                is_cancelled=is_cancelled,
+            )
 
         # Freeze elapsed time at completion and write log summary
         self.end_time = time.monotonic()
@@ -4822,6 +4892,7 @@ def _execute_cli_script(
                 ["bash", "-c", bash_cmd],
                 env=env,
                 cwd=scripts_dir.parent,
+                stdin=subprocess.DEVNULL,  # Prevent hangs on sudo/apt prompts
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -4950,19 +5021,20 @@ def run_non_interactive(
         """Run a parallel script silently (captured output)."""
         return _execute_cli_script(status, scripts_dir, env, verbose=False)
 
-    # Run the parallel scheduler (write_header called inside)
+    # Run the parallel scheduler with sudo keepalive
     logger.write_header()
-    success_count, fail_count = run_scripts_parallel(
-        statuses=statuses,
-        manifest=manifest,
-        scripts_dir=scripts_dir,
-        env=env,
-        logger=logger,
-        run_live=run_live,
-        run_silent=run_silent,
-        on_update=None,  # CLI doesn't need periodic updates
-        is_cancelled=None,  # CLI doesn't support cancellation
-    )
+    with SudoKeepalive():
+        success_count, fail_count = run_scripts_parallel(
+            statuses=statuses,
+            manifest=manifest,
+            scripts_dir=scripts_dir,
+            env=env,
+            logger=logger,
+            run_live=run_live,
+            run_silent=run_silent,
+            on_update=None,  # CLI doesn't need periodic updates
+            is_cancelled=None,  # CLI doesn't support cancellation
+        )
 
     # Write summary
     end_time = time.monotonic()

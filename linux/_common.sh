@@ -1030,7 +1030,8 @@ install_github_binary() {
         fi
 
         mkdir -p "$HOME/.local/bin"
-        if ! curl -fsSL -o "$HOME/.local/bin/$binary" "$raw_url"; then
+        if ! curl -fL --connect-timeout 30 --max-time 600 --progress-bar \
+                -o "$HOME/.local/bin/$binary" "$raw_url"; then
             _cleanup_tmpdir
             trap - EXIT TERM INT
             return 1
@@ -1078,7 +1079,8 @@ install_github_binary() {
 
     # Download archive
     local archive_file="$tmpdir/archive"
-    if ! curl -fsSL -o "$archive_file" "$archive_url"; then
+    if ! curl -fL --connect-timeout 30 --max-time 600 --progress-bar \
+            -o "$archive_file" "$archive_url"; then
         return 1
     fi
 
