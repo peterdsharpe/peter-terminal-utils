@@ -640,20 +640,26 @@ generate_code_profile() {
         ) || extensions_array="[]"
     fi
     
+    # Build settings/keybindings in the .code-profile format:
+    # Outer JSON has .settings as a string, that string contains {"settings":"<content>"}
+    # Process: read raw -> wrap in object -> stringify (gives correct escaping levels)
+    local settings_inner keybindings_inner
+    settings_inner=$(jq -Rsc '{settings: .} | tojson' "$settings_file") || return 1
+    keybindings_inner=$(jq -Rsc '{keybindings: .} | tojson' "$keybindings_file") || return 1
+    
     # Build the complete profile JSON
-    # Use --rawfile to read settings/keybindings and properly escape for JSON
-    jq -n \
+    jq -cn \
         --arg name "$PROFILE_NAME" \
         --arg icon "rocket" \
-        --rawfile settings "$settings_file" \
-        --rawfile keybindings "$keybindings_file" \
+        --argjson settings "$settings_inner" \
+        --argjson keybindings "$keybindings_inner" \
         --argjson extensions "$extensions_array" \
         '{
             name: $name,
             icon: $icon,
             settings: $settings,
             keybindings: $keybindings,
-            extensions: $extensions,
+            extensions: ($extensions | tojson),
             globalState: "{}"
         }' > "$output_file" || return 1
     
