@@ -618,14 +618,6 @@ generate_code_profile() {
         return 1
     fi
     
-    # Read and format settings: {"settings": "<escaped content>"}
-    local settings_content
-    settings_content=$(jq -Rs '{"settings": .}' "$settings_file") || return 1
-    
-    # Read and format keybindings: {"keybindings": "<escaped content>"}
-    local keybindings_content
-    keybindings_content=$(jq -Rs '{"keybindings": .}' "$keybindings_file") || return 1
-    
     # Build extensions array from installed extensions
     local extensions_array="[]"
     local extensions_dir="$HOME/.cursor/extensions"
@@ -649,17 +641,18 @@ generate_code_profile() {
     fi
     
     # Build the complete profile JSON
+    # Use --rawfile to read settings/keybindings and properly escape for JSON
     jq -n \
         --arg name "$PROFILE_NAME" \
         --arg icon "rocket" \
-        --argjson settings "$settings_content" \
-        --argjson keybindings "$keybindings_content" \
+        --rawfile settings "$settings_file" \
+        --rawfile keybindings "$keybindings_file" \
         --argjson extensions "$extensions_array" \
         '{
             name: $name,
             icon: $icon,
-            settings: ($settings | tojson),
-            keybindings: ($keybindings | tojson),
+            settings: $settings,
+            keybindings: $keybindings,
             extensions: $extensions,
             globalState: "{}"
         }' > "$output_file" || return 1
