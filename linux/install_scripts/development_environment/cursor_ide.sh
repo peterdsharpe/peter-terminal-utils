@@ -555,4 +555,120 @@ if [[ -f "$EXTENSIONS_FILE" ]]; then
     fi
 fi
 
+###############################################################################
+### Export Extensions (bidirectional sync)
+###############################################################################
+
+# Export all installed extensions back to extensions.txt
+# This ensures the file stays in sync with what's actually installed
+export_extensions() {
+    if ! command -v cursor &>/dev/null; then
+        echo "Cursor CLI not available, skipping extension export"
+        return 0
+    fi
+    
+    local installed
+    installed=$(cursor --profile "$PROFILE_NAME" --list-extensions 2>/dev/null | sort -f)
+    
+    if [[ -z "$installed" ]]; then
+        echo "No extensions installed or failed to query"
+        return 0
+    fi
+    
+    local count
+    count=$(echo "$installed" | wc -l)
+    
+    # Check if file would change
+    if [[ -f "$EXTENSIONS_FILE" ]]; then
+        local current
+        current=$(sort -f "$EXTENSIONS_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#')
+        if [[ "$installed" == "$current" ]]; then
+            echo "extensions.txt already up to date ($count extensions)"
+            return 0
+        fi
+    fi
+    
+    # Write the new file
+    echo "$installed" > "$EXTENSIONS_FILE"
+    echo "Exported $count extensions to extensions.txt"
+}
+
+# Always export after install to keep extensions.txt in sync
+step "Syncing extensions.txt" export_extensions
+
+###############################################################################
+### Generate Portable Profile Export
+###############################################################################
+
+# Generate PeterProfile.code-profile from source files
+# This creates a portable export that can be imported via Cursor's UI
+generate_code_profile() {
+    local src_dir="$CURSOR_CONFIG_SRC/$PROFILE_NAME"
+    local output_file="$CURSOR_CONFIG_SRC/PeterProfile.code-profile"
+    local settings_file="$src_dir/settings.json"
+    local keybindings_file="$src_dir/keybindings.json"
+    
+    # Verify source files exist
+    if [[ ! -f "$settings_file" ]]; then
+        echo "Settings file not found: $settings_file"
+        return 1
+    fi
+    if [[ ! -f "$keybindings_file" ]]; then
+        echo "Keybindings file not found: $keybindings_file"
+        return 1
+    fi
+    
+    # Read and format settings: {"settings": "<escaped content>"}
+    local settings_content
+    settings_content=$(jq -Rs '{"settings": .}' "$settings_file") || return 1
+    
+    # Read and format keybindings: {"keybindings": "<escaped content>"}
+    local keybindings_content
+    keybindings_content=$(jq -Rs '{"keybindings": .}' "$keybindings_file") || return 1
+    
+    # Build extensions array from installed extensions
+    local extensions_array="[]"
+    local extensions_dir="$HOME/.cursor/extensions"
+    
+    if [[ -d "$extensions_dir" ]]; then
+        # Build array from extension package.json files
+        extensions_array=$(
+            for ext_dir in "$extensions_dir"/*/; do
+                [[ -d "$ext_dir" ]] || continue
+                local pkg="$ext_dir/package.json"
+                [[ -f "$pkg" ]] || continue
+                
+                # Extract extension ID and display name
+                jq -c '{
+                    identifier: {id: "\(.publisher).\(.name)"},
+                    displayName: .displayName,
+                    applicationScoped: false
+                }' "$pkg" 2>/dev/null
+            done | jq -s 'unique_by(.identifier.id) | sort_by(.identifier.id)'
+        ) || extensions_array="[]"
+    fi
+    
+    # Build the complete profile JSON
+    jq -n \
+        --arg name "$PROFILE_NAME" \
+        --arg icon "rocket" \
+        --argjson settings "$settings_content" \
+        --argjson keybindings "$keybindings_content" \
+        --argjson extensions "$extensions_array" \
+        '{
+            name: $name,
+            icon: $icon,
+            settings: ($settings | tojson),
+            keybindings: ($keybindings | tojson),
+            extensions: $extensions,
+            globalState: "{}"
+        }' > "$output_file" || return 1
+    
+    local ext_count
+    ext_count=$(echo "$extensions_array" | jq 'length')
+    echo "Generated PeterProfile.code-profile with $ext_count extensions"
+}
+
+step "Generating portable profile export" generate_code_profile
+
 print_success "Cursor IDE setup complete"
