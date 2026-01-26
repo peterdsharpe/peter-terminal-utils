@@ -11,6 +11,7 @@ install_build_tools() {
     # Packages requiring name mapping
     local mapped_packages=(
         build-essential  # gcc, make, etc. for compiling
+        python3-dev      # Python headers for compiling C extensions
         p7zip-full       # 7z support
         xz-utils         # xz compression (for .tar.xz archives)
         bzip2            # bzip2 compression (for .tar.bz2 archives)

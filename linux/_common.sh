@@ -883,6 +883,7 @@ pkg_name() {
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh-server" ;;
                 p7zip-full) echo "p7zip p7zip-plugins" ;;
+                python3-dev) echo "python3-devel" ;;
                 gnome-shell-extension-manager) echo "gnome-extensions-app" ;;
                 *) echo "$apt_name" ;;
             esac ;;
@@ -897,6 +898,7 @@ pkg_name() {
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh" ;;
                 p7zip-full) echo "p7zip" ;;
+                python3-dev) echo "python" ;;
                 gnome-shell-extension-manager) echo "extension-manager" ;;
                 gnome-tweaks) echo "gnome-tweaks" ;;
                 vlc) echo "vlc" ;;
@@ -906,6 +908,7 @@ pkg_name() {
             case "$apt_name" in
                 build-essential) echo "gcc gcc-c++ make" ;;
                 p7zip-full) echo "p7zip" ;;
+                python3-dev) echo "python3-devel" ;;
                 *) echo "$apt_name" ;;
             esac ;;
         *) echo "$apt_name" ;;
