@@ -16,6 +16,26 @@ if command -v nemo &>/dev/null; then
     step "Setting Nemo as default file manager" xdg-mime default nemo.desktop inode/directory application/x-gnome-saved-search
 fi
 
+### Configure D-Bus FileManager1 service to use Nemo
+# This makes Electron apps (Cursor, VS Code, etc.) use Nemo for "Open Containing Folder"
+# The D-Bus interface is separate from xdg-mime and requires its own configuration
+setup_dbus_filemanager1() {
+    local dbus_services_dir="$HOME/.local/share/dbus-1/services"
+    local service_file="$dbus_services_dir/org.freedesktop.FileManager1.service"
+    
+    mkdir -p "$dbus_services_dir" || return 1
+    
+    cat > "$service_file" << 'EOF'
+[D-BUS Service]
+Name=org.freedesktop.FileManager1
+Exec=/usr/bin/nemo --no-default-window
+EOF
+}
+
+if command -v nemo &>/dev/null; then
+    step "Configuring D-Bus FileManager1 to use Nemo" setup_dbus_filemanager1
+fi
+
 ### Nemo preferences (only if schema exists)
 if schema_exists "org.nemo.preferences"; then
     step_start "Configuring Nemo file manager"

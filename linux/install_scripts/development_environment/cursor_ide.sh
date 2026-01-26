@@ -181,7 +181,7 @@ Exec=$HOME/.local/share/cursor/cursor.AppImage --no-sandbox %F
 Icon=cursor
 Type=Application
 Categories=Development;IDE;TextEditor;
-MimeType=text/plain;inode/directory;
+MimeType=text/plain;
 StartupNotify=true
 StartupWMClass=Cursor
 EOF
