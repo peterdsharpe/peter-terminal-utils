@@ -925,7 +925,7 @@ get_release_arch() {
     local tool="$1"
     case "$tool" in
         # Standard Rust musl/gnu builds (most tools)
-        bat|fd|delta|eza|bottom|zoxide)
+        bat|fd|ripgrep|delta|eza|bottom|zoxide)
             case "$ARCH" in
                 x86_64) echo "x86_64-unknown-linux-musl" ;;
                 arm64)  echo "aarch64-unknown-linux-gnu" ;;
