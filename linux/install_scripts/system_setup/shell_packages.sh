@@ -1,6 +1,6 @@
 #!/bin/bash
 # @name: Shell Packages
-# @description: Shell and terminal environment (zsh, tmux, vim, neovim)
+# @description: Shell and terminal environment (zsh, tmux, vim, clipboard)
 # @requires: sudo
 # @depends: bootstrap.sh
 # @locks: pkg
@@ -9,9 +9,11 @@ standalone_init
 
 install_shell_packages() {
     local packages=(
-        zsh      # Shell (oh-my-zsh, plugins depend on this)
-        tmux     # Terminal multiplexer
-        vim      # Editor (fallback, neovim installed from GitHub in cli_tools/)
+        zsh           # Shell (oh-my-zsh, plugins depend on this)
+        tmux          # Terminal multiplexer
+        vim           # Editor (fallback, neovim installed from GitHub in cli_tools/)
+        xclip         # Clipboard provider for X11 (neovim, etc.)
+        wl-clipboard  # Clipboard provider for Wayland (neovim, etc.)
     )
 
     step_start "Installing shell packages"
