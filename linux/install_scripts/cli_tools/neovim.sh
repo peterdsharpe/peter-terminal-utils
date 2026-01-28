@@ -10,6 +10,7 @@ standalone_init
 REPO="neovim/neovim"
 
 # Neovim installs to ~/local/nvim with symlink to ~/.local/bin/nvim
+# (custom install path, can't use ensure_github_tool)
 install_neovim() {
     local version nvim_arch nvim_dir tmpdir
     version=$(github_latest_version "$REPO") || return 1
@@ -28,23 +29,7 @@ install_neovim() {
     rm -rf "$tmpdir"
 }
 
-# Version-aware install: check if update needed
-if command -v nvim &>/dev/null; then
-    installed=$(get_installed_version nvim) || installed=""
-    latest=$(github_latest_version "$REPO") || {
-        print_warning "Cannot check neovim version (network?)"
-        exit 0
-    }
-
-    if [[ -n "$installed" ]]; then
-        semver_compare "$installed" "$latest"
-        case $? in
-            0) print_skip "neovim at latest ($installed)"; exit 0 ;;
-            2) print_skip "neovim newer than release ($installed > $latest)"; exit 0 ;;
-            1) print_info "neovim: $installed -> $latest" ;;
-        esac
-    fi
-fi
-
+# Check version and install/update if needed
+needs_github_update "$REPO" "neovim" "nvim" || exit 0
 step "Installing neovim" install_neovim
 
