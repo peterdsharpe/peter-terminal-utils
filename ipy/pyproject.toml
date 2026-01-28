@@ -30,8 +30,8 @@ dependencies = [
     "scipy>=1.15.2",
     "sympy>=1.13.3",
     "torch>=2.9.1",
-    "jax[cuda13]; sys_platform != 'darwin'",
-    "jax; sys_platform == 'darwin'",
+    "jax[cuda13]; sys_platform == 'linux'",
+    "jax; sys_platform != 'linux'",
 ]
 
 [project.urls]
