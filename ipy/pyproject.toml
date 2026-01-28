@@ -8,7 +8,7 @@ license = "MIT"
 authors = [
     { name = "Peter Sharpe", email = "peterdsharpe@gmail.com" },
 ]
-keywords = ["ipython", "scientific-computing", "numpy", "scipy", "torch"]
+keywords = ["ipython", "scientific-computing", "numpy", "scipy", "torch", "jax"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -30,6 +30,8 @@ dependencies = [
     "scipy>=1.15.2",
     "sympy>=1.13.3",
     "torch>=2.9.1",
+    "jax[cuda13]; sys_platform != 'darwin'",
+    "jax; sys_platform == 'darwin'",
 ]
 
 [project.urls]
