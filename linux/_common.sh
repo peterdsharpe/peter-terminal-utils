@@ -297,16 +297,19 @@ ensure_command() {
 
 ### Install/update a tool from GitHub releases with version checking
 ### Compares installed version against latest GitHub release, updates if outdated
-### Usage: ensure_github_tool "owner/repo" "tool_name" [binary_name] [strip_components]
+### Usage: ensure_github_tool "owner/repo" "tool_name" [binary_name] [strip_components] [installed_name]
+###   - installed_name: Name of installed command (defaults to binary_name)
+###     Use when archive binary name differs from desired command name (e.g., gdu_linux_amd64 -> gdu)
 ensure_github_tool() {
     local repo="$1"
     local tool="$2"
     local binary="${3:-$tool}"
     local strip="${4:-1}"
+    local installed_name="${5:-$binary}"
 
-    if command -v "$binary" &>/dev/null; then
+    if command -v "$installed_name" &>/dev/null; then
         local installed latest
-        installed=$(get_installed_version "$binary") || installed=""
+        installed=$(get_installed_version "$installed_name") || installed=""
         latest=$(github_latest_version "$repo") || {
             print_warning "Cannot check $tool version (network?)"
             return 0
@@ -322,7 +325,7 @@ ensure_github_tool() {
         fi
     fi
 
-    step "Installing $tool" install_github_binary "$repo" "$tool" "$binary" "$strip"
+    step "Installing $tool" install_github_binary "$repo" "$tool" "$binary" "$strip" "auto" "$installed_name"
 }
 
 ### Clone a git repo if missing, pull if exists
@@ -966,6 +969,12 @@ get_release_arch() {
                 x86_64) echo "linux-x86_64" ;;
                 arm64)  echo "linux-arm64" ;;
             esac ;;
+        # gdu uses linux_arch format
+        gdu)
+            case "$ARCH" in
+                x86_64) echo "linux_amd64" ;;
+                arm64)  echo "linux_arm64" ;;
+            esac ;;
         *)
             echo "Unknown tool for arch mapping: $tool" >&2
             return 1 ;;
@@ -977,7 +986,7 @@ get_release_arch() {
 ###############################################################################
 
 # Install a binary from GitHub releases
-# Usage: install_github_binary "owner/repo" "tool_name" [binary_name] [strip_components] [type]
+# Usage: install_github_binary "owner/repo" "tool_name" [binary_name] [strip_components] [type] [installed_name]
 #   - owner/repo: GitHub repository (e.g., "sharkdp/bat")
 #   - tool_name: Tool name for arch lookup and tarball naming
 #   - binary_name: Name of binary inside archive (defaults to tool_name)
@@ -985,12 +994,15 @@ get_release_arch() {
 #       Use 0 for flat archives where the binary is at the archive root
 #       Use 1 for archives with a single top-level directory (most common)
 #   - type: "auto" (default) tries archives, "raw" downloads raw binary (e.g., tealdeer)
+#   - installed_name: Name to install binary as (defaults to binary_name)
+#       Use when archive binary name differs from desired command name (e.g., gdu_linux_amd64 -> gdu)
 install_github_binary() {
     local repo="$1"
     local tool="$2"
     local binary="${3:-$tool}"
     local strip="${4:-1}"
     local dl_type="${5:-auto}"
+    local installed_name="${6:-$binary}"
 
     local version arch_suffix tmpdir archive_url
 
@@ -1031,12 +1043,12 @@ install_github_binary() {
 
         mkdir -p "$HOME/.local/bin"
         if ! curl -fL --connect-timeout 30 --max-time 600 --progress-bar \
-                -o "$HOME/.local/bin/$binary" "$raw_url"; then
+                -o "$HOME/.local/bin/$installed_name" "$raw_url"; then
             _cleanup_tmpdir
             trap - EXIT TERM INT
             return 1
         fi
-        chmod +x "$HOME/.local/bin/$binary"
+        chmod +x "$HOME/.local/bin/$installed_name"
 
         _cleanup_tmpdir
         trap - EXIT TERM INT
@@ -1055,6 +1067,8 @@ install_github_binary() {
         "$base_url/v${version}/${tool}_${version}_${arch_suffix}.tar.gz"
         # eza style: eza_x86_64-unknown-linux-musl.tar.gz (no version in filename)
         "$base_url/v${version}/${tool}_${arch_suffix}.tar.gz"
+        # gdu style: gdu_linux_amd64.tgz (no version in filename, .tgz extension)
+        "$base_url/v${version}/${tool}_${arch_suffix}.tgz"
         # bottom style (no v-prefix): bottom_x86_64-unknown-linux-musl.tar.gz
         "$base_url/${version}/${tool}_${arch_suffix}.tar.gz"
         # btop style: btop-x86_64-linux-musl.tbz
@@ -1122,7 +1136,7 @@ install_github_binary() {
         return 1
     fi
 
-    install -m 755 "$found_binary" "$HOME/.local/bin/$binary"
+    install -m 755 "$found_binary" "$HOME/.local/bin/$installed_name"
 
     # Cleanup and clear trap on success
     _cleanup_tmpdir
