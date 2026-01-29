@@ -8,8 +8,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 # tealdeer releases raw binaries (not tarballs), use raw download mode
-# Binary is named "tealdeer" in release but we install as "tldr"
-ensure_github_tool "tealdeer-rs/tealdeer" "tealdeer" "tldr" 1 "raw"
+# Binary in release is "tealdeer-linux-{arch}-musl", install as "tldr"
+ensure_github_tool "tealdeer-rs/tealdeer" "tealdeer" "tealdeer" 1 "tldr" "raw"
 
 # Update the tldr page cache after install/update
 if command -v tldr &>/dev/null; then

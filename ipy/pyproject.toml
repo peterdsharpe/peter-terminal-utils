@@ -8,7 +8,7 @@ license = "MIT"
 authors = [
     { name = "Peter Sharpe", email = "peterdsharpe@gmail.com" },
 ]
-keywords = ["ipython", "scientific-computing", "numpy", "scipy", "torch"]
+keywords = ["ipython", "scientific-computing", "numpy", "scipy", "torch", "jax"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -30,6 +30,8 @@ dependencies = [
     "scipy>=1.15.2",
     "sympy>=1.13.3",
     "torch>=2.9.1",
+    "jax[cuda13]; sys_platform == 'linux'",
+    "jax; sys_platform != 'linux'",
 ]
 
 [project.urls]
@@ -40,3 +42,19 @@ environments = [
     "platform_machine == 'x86_64'",
     "platform_machine == 'aarch64'",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
