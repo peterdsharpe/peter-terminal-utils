@@ -23,22 +23,21 @@ skip_if_headless "GVFS backends"
 
 install_gvfs_backends() {
     local packages=(
-        gvfs-backends    # SFTP, FTP, WebDAV, etc.
+        gvfs-backends    # SFTP, FTP, WebDAV, SMB, etc.
     )
     
-    # gvfs-smb for Samba/Windows share browsing (optional but useful)
-    # This lets you browse SMB shares in the Network folder
+    # On Ubuntu 24.04+, SMB support is built into gvfs-backends.
+    # On older systems or other distros, a separate package may be needed.
     case "$PKG_MANAGER" in
-        apt)
-            packages+=(gvfs-smb)
-            ;;
         dnf)
-            # Fedora includes SMB support in gvfs
+            # Fedora has separate gvfs-smb package
             packages+=(gvfs-smb)
             ;;
         pacman)
+            # Arch has separate gvfs-smb package
             packages+=(gvfs-smb)
             ;;
+        # apt: gvfs-backends includes SMB support (no separate package)
     esac
 
     step_start "Installing GVFS backends for remote filesystem browsing"
