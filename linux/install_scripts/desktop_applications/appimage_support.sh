@@ -185,9 +185,11 @@ install_appimagelauncher() {
     
     step_end
     
-    # Clean up trap
+    # Clean up
     rm -rf "$tmpdir"
     trap - EXIT
+    
+    return "$(step_result)"
 }
 
 # Only supported on apt-based distros (AppImageLauncher provides .deb packages)

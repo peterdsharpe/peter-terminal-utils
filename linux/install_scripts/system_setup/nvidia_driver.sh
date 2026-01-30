@@ -52,6 +52,8 @@ install_nvidia_driver() {
     step_end
     
     print_warn "Reboot required for NVIDIA driver to take effect"
+    
+    return "$(step_result)"
 }
 
 require_sudo "NVIDIA driver" install_nvidia_driver

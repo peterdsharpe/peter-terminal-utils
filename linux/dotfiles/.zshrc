@@ -251,3 +251,7 @@ if [[ -n $CURSOR_TRACE_ID ]]; then
   precmd() { print -Pn "\e]133;D;%?\a" }
   preexec() { print -Pn "\e]133;C;\a" }
 fi
+# Added by LM Studio CLI (lms)
+export PATH="$PATH:/home/peter/.lmstudio/bin"
+# End of LM Studio CLI section
+

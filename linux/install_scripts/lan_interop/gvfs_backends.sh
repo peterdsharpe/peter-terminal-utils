@@ -48,6 +48,8 @@ install_gvfs_backends() {
     
     print_info "Nemo can now browse remote filesystems via SFTP"
     print_info "Use Ctrl+L and enter: sftp://user@hostname.local"
+    
+    return "$(step_result)"
 }
 
 require_sudo "GVFS backends" install_gvfs_backends

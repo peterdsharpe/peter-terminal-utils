@@ -52,6 +52,8 @@ install_tlp() {
     
     # Show current status
     print_info "TLP is now managing power. Run 'sudo tlp-stat -s' to see status."
+    
+    return "$(step_result)"
 }
 
 require_sudo "TLP" install_tlp
