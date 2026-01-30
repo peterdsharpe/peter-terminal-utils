@@ -247,10 +247,9 @@ step_end() {
 
 ### Return the result of the last step_start/run/step_end group
 ### Use after step_end when cleanup code follows
-### Usage: step_end; cleanup; return $(step_result)
+### Usage: step_end; cleanup; return "$(step_result)"
 step_result() {
-    [[ "$STEP_FAILED" == true ]] && return 1
-    return 0
+    [[ "$STEP_FAILED" == true ]] && echo 1 || echo 0
 }
 
 ###############################################################################
