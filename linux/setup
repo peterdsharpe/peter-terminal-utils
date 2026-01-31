@@ -1779,6 +1779,64 @@ def init_colors() -> dict[ColorName, int]:
         curses.init_pair(default_pair, curses.COLOR_WHITE, bg)
     color_map["default"] = curses.color_pair(default_pair)
 
+    ### Scrollbar color pairs: fg=thumb, bg=track
+    # Single source of truth for scrollbar colors - one color pair per focus state.
+    # The pair's foreground is the thumb color, background is the track color.
+    # Rendering uses:
+    #   - Space " " to show track (background)
+    #   - Full block "█" to show thumb (foreground)
+    #   - Partial blocks to show proportional blend
+    #
+    # Color definitions:
+    #   Track: very dark gray for subtle background
+    #   Thumb focused: bright cyan for visibility
+    #   Thumb unfocused: light gray
+    track_rgb = (45, 50, 55)  # Very dark blue-gray
+    thumb_focused_rgb = (80, 220, 255)  # Bright cyan
+    thumb_unfocused_rgb = (160, 165, 170)  # Light gray
+
+    # 256-color approximations
+    track_256 = 236  # Dark gray (#303030)
+    thumb_focused_256 = 87  # Bright cyan
+    thumb_unfocused_256 = 249  # Light gray
+
+    # ANSI fallbacks
+    track_ansi = curses.COLOR_BLACK
+    thumb_focused_ansi = curses.COLOR_CYAN
+    thumb_unfocused_ansi = curses.COLOR_WHITE
+
+    # Create color indices for scrollbar colors (starting after theme colors)
+    # Color indices: 20 + 1-8 used by theme colors, so start at 30
+    scrollbar_color_base = 30
+    next_pair = len(THEME_COLORS) + 3
+
+    if use_true_color:
+        # Initialize custom colors for scrollbar
+        for i, rgb in enumerate([track_rgb, thumb_focused_rgb, thumb_unfocused_rgb]):
+            color_idx = scrollbar_color_base + i
+            r, g, b = rgb
+            curses.init_color(
+                color_idx, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255
+            )
+        track_idx = scrollbar_color_base
+        thumb_focused_idx = scrollbar_color_base + 1
+        thumb_unfocused_idx = scrollbar_color_base + 2
+    else:
+        track_idx = track_256 if curses.COLORS >= 256 else track_ansi
+        thumb_focused_idx = thumb_focused_256 if curses.COLORS >= 256 else thumb_focused_ansi
+        thumb_unfocused_idx = (
+            thumb_unfocused_256 if curses.COLORS >= 256 else thumb_unfocused_ansi
+        )
+
+    # Focused scrollbar: bright cyan thumb on dark track
+    curses.init_pair(next_pair, thumb_focused_idx, track_idx)
+    color_map["scrollbar_edge"] = curses.color_pair(next_pair)
+    next_pair += 1
+
+    # Unfocused scrollbar: light gray thumb on dark track
+    curses.init_pair(next_pair, thumb_unfocused_idx, track_idx)
+    color_map["scrollbar_edge_unfocused"] = curses.color_pair(next_pair)
+
     # Text attributes (not color pairs)
     color_map["bold"] = curses.A_BOLD
     color_map["reverse"] = curses.A_REVERSE
@@ -2209,16 +2267,29 @@ def enable_mouse() -> None:
     curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
 
 
+### Scrollbar eighth-block characters for sub-character precision
+# Lower blocks fill from bottom (for top edge of thumb entering a cell)
+LOWER_EIGHTHS = " ▁▂▃▄▅▆▇█"  # indices 0-8: 0/8 to 8/8 fill from bottom
+# Upper blocks fill from top (for bottom edge of thumb exiting a cell)
+# Includes Unicode 13.0 characters from Symbols for Legacy Computing (U+1FB82-1FB86)
+UPPER_EIGHTHS = " ▔🮂🮃▀🮄🮅🮆█"  # indices 0-8: 0/8 to 8/8 fill from top
+
+
 def draw_scrollbar(
     stdscr: curses.window,
     x: int,
     y_start: int,
     height: int,
     scroll: ScrollState,
-    color: int,
+    colors: dict[str, int],
     focused: bool = True,
 ) -> None:
-    """Draw a vertical scrollbar showing position in content.
+    """Draw a vertical scrollbar with sub-character precision positioning.
+
+    Uses Unicode eighth-block characters to render the thumb position with 8x
+    finer granularity than integer cell positions. Edge cells use a blended
+    color pair (fg=thumb, bg=track) so partial blocks seamlessly transition
+    between track and thumb colors with no visual gap.
 
     Args:
         stdscr: Curses window to draw on.
@@ -2226,32 +2297,64 @@ def draw_scrollbar(
         y_start: First row of the scrollbar.
         height: Height of the scrollbar area.
         scroll: Current scroll state.
-        color: Color attribute for the scrollbar.
-        focused: Whether the parent panel is focused (affects thumb style).
+        colors: Color map containing scrollbar color entries.
+        focused: Whether the parent panel is focused (affects thumb brightness).
     """
     if height < 2 or scroll.total <= scroll.visible:
         # No scrollbar needed if everything fits
         return
 
-    # Calculate thumb size and position
-    # Thumb size proportional to visible/total ratio, minimum 1 char
-    thumb_size = max(1, int(height * scroll.visible / scroll.total))
-    # Thumb position based on scroll offset
-    max_offset = max(1, scroll.total - scroll.visible)
-    thumb_pos = int((height - thumb_size) * scroll.offset / max_offset)
+    ### Select colors based on focus state
+    # scrollbar_color has fg=thumb, bg=track - single source of truth for both colors
+    # Full thumb cells: render █ (shows fg=thumb)
+    # Full track cells: render space (shows bg=track)
+    # Edge cells: render partial blocks (shows fg=thumb filled, bg=track unfilled)
+    if focused:
+        scrollbar_color = colors["scrollbar_edge"]
+    else:
+        scrollbar_color = colors["scrollbar_edge_unfocused"]
 
-    # Use different characters based on focus state
-    thumb_char = "█" if focused else "▓"
-    track_char = "░"
+    ### Calculate floating-point thumb geometry for sub-character precision
+    thumb_size_float = max(1.0, height * scroll.visible / scroll.total)
+    max_offset = max(1, scroll.total - scroll.visible)
+    thumb_pos_float = (height - thumb_size_float) * scroll.offset / max_offset
+    thumb_top = thumb_pos_float
+    thumb_bottom = thumb_pos_float + thumb_size_float
 
     for i in range(height):
         y = y_start + i
-        if thumb_pos <= i < thumb_pos + thumb_size:
-            char = thumb_char
+        cell_top = float(i)
+        cell_bottom = float(i + 1)
+
+        ### Determine cell coverage by the thumb and select character
+        # All cells use the same color pair; character choice determines visual:
+        # - Space " " shows background (track color)
+        # - Full block "█" shows foreground (thumb color)
+        # - Partial blocks show proportional blend
+        if thumb_bottom <= cell_top or thumb_top >= cell_bottom:
+            # No overlap with thumb - track cell (show background)
+            char = " "
+        elif thumb_top <= cell_top and thumb_bottom >= cell_bottom:
+            # Cell is fully inside thumb (show foreground)
+            char = "█"
+        elif thumb_top > cell_top and thumb_bottom < cell_bottom:
+            # Thumb is entirely within this single cell (very small thumb)
+            coverage = thumb_bottom - thumb_top
+            eighths = max(1, min(8, round(coverage * 8)))
+            char = LOWER_EIGHTHS[eighths]
+        elif thumb_top > cell_top:
+            # Top edge of thumb is in this cell (thumb enters from above)
+            coverage = cell_bottom - thumb_top
+            eighths = max(1, min(8, round(coverage * 8)))
+            char = LOWER_EIGHTHS[eighths]
         else:
-            char = track_char
+            # Bottom edge of thumb is in this cell (thumb exits downward)
+            coverage = thumb_bottom - cell_top
+            eighths = max(1, min(8, round(coverage * 8)))
+            char = UPPER_EIGHTHS[eighths]
+
         try:
-            stdscr.addstr(y, x, char, color)
+            stdscr.addstr(y, x, char, scrollbar_color)
         except curses.error:
             pass
 
@@ -2486,7 +2589,7 @@ class BaseTUI:
                 content_start_y,
                 content_height,
                 scroll,
-                self.colors["cyan"],
+                self.colors,
             )
 
             # Footer hint
@@ -2888,7 +2991,7 @@ class SelectionTUI(BaseTUI):
             y_start=3,
             height=visible_height,
             scroll=self.scroll,
-            color=self.colors["cyan"],
+            colors=self.colors,
         )
 
     def draw_item(
@@ -4278,14 +4381,13 @@ class ExecutionTUI(BaseTUI):
 
         # Draw scrollbar with focus-aware styling
         left_focused = self.focus_panel == "left"
-        scrollbar_color = self.colors["cyan"] if left_focused else self.colors["dim"]
         draw_scrollbar(
             self.stdscr,
             x=scrollbar_x,
             y_start=start_row,
             height=visible_height,
             scroll=self.left_scroll,
-            color=scrollbar_color,
+            colors=self.colors,
             focused=left_focused,
         )
 
@@ -4386,14 +4488,13 @@ class ExecutionTUI(BaseTUI):
 
         # Draw scrollbar with focus-aware styling
         right_focused = self.focus_panel == "right"
-        scrollbar_color = self.colors["cyan"] if right_focused else self.colors["dim"]
         draw_scrollbar(
             self.stdscr,
             x=scrollbar_x,
             y_start=start_row,
             height=panel_height,
             scroll=self.right_scroll,
-            color=scrollbar_color,
+            colors=self.colors,
             focused=right_focused,
         )
 
@@ -4523,7 +4624,7 @@ class ExecutionTUI(BaseTUI):
                 content_start_y,
                 content_height,
                 scroll,
-                self.colors["cyan"],
+                self.colors,
             )
 
             self.stdscr.refresh()
