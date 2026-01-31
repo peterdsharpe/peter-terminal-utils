@@ -31,7 +31,7 @@ get_cursor_info() {
     [[ "$ARCH" == "arm64" ]] && platform="linux-arm64"
     
     _CURSOR_API_CACHE=$(curl -sL --connect-timeout 30 --max-time 60 \
-        "https://cursor.com/api/download?platform=${platform}&releaseTrack=stable" 2>/dev/null)
+        "https://cursor.com/api/download?platform=${platform}&releaseTrack=latest" 2>/dev/null)
     echo "$_CURSOR_API_CACHE"
 }
 
@@ -101,14 +101,20 @@ WRAPPER
 
 # Install via deb package (apt-based distros, system-wide)
 install_cursor_deb() {
-    local info deb_url version
+    local info deb_url version commit_sha
     info=$(get_cursor_info) || return 1
-    deb_url=$(echo "$info" | jq -r '.debUrl') || return 1
+    deb_url=$(echo "$info" | jq -r '.debUrl // empty')
     version=$(echo "$info" | jq -r '.version') || return 1
+    commit_sha=$(echo "$info" | jq -r '.commitSha') || return 1
     
-    if [[ -z "$deb_url" || "$deb_url" == "null" ]]; then
-        echo "Failed to get deb URL from Cursor API" >&2
-        return 1
+    # Construct deb URL if not provided (latest track only has AppImage URL)
+    if [[ -z "$deb_url" ]]; then
+        local arch_dir="x64" arch_deb="amd64"
+        if [[ "$ARCH" == "arm64" ]]; then
+            arch_dir="arm64"
+            arch_deb="arm64"
+        fi
+        deb_url="https://downloads.cursor.com/production/${commit_sha}/linux/${arch_dir}/deb/${arch_deb}/deb/cursor_${version}_${arch_deb}.deb"
     fi
     
     local tmp_deb
@@ -146,11 +152,16 @@ check_and_install_cursor() {
     
     if [[ -z "$installed_version" ]]; then
         step "Installing Cursor IDE ($latest_version)" install_cursor_smart
-    elif [[ "$installed_version" == "$latest_version" ]]; then
-        print_skip "Cursor IDE already at latest version ($installed_version)"
-    else
-        step "Updating Cursor IDE ($installed_version -> $latest_version)" install_cursor_smart
+        return
     fi
+    
+    # Compare versions using _common.sh semver_compare (returns 2 if $1 > $2)
+    semver_compare "$latest_version" "$installed_version"
+    case $? in
+        0) print_skip "Cursor IDE already at latest version ($installed_version)" ;;
+        2) step "Updating Cursor IDE ($installed_version -> $latest_version)" install_cursor_smart ;;
+        *) print_skip "Cursor IDE at newer version ($installed_version) than latest ($latest_version)" ;;
+    esac
 }
 
 check_and_install_cursor
