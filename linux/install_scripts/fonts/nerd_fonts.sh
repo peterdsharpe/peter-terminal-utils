@@ -47,6 +47,7 @@ install_nerd_font() {
     step_end
     
     rm -rf "$tmpdir"
+    return "$(step_result)"
 }
 
 # Install fonts

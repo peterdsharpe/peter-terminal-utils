@@ -83,6 +83,8 @@ install_rustdesk() {
         step "Disabling RustDesk service (start manually when needed)" \
             sudo systemctl disable --now rustdesk.service
     fi
+    
+    return "$(step_result)"
 }
 
 require_sudo "RustDesk" install_rustdesk
