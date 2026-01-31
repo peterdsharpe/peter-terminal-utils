@@ -68,11 +68,15 @@ get_installed_version() {
 install_cursor_appimage() {
     local info download_url version
     info=$(get_cursor_info) || return 1
-    download_url=$(echo "$info" | jq -r '.downloadUrl') || return 1
-    version=$(echo "$info" | jq -r '.version') || return 1
+    download_url=$(echo "$info" | jq -r '.downloadUrl // empty')
+    version=$(echo "$info" | jq -r '.version // empty')
     
-    if [[ -z "$download_url" || "$download_url" == "null" ]]; then
-        echo "Failed to get download URL from Cursor API" >&2
+    if [[ -z "$download_url" ]]; then
+        echo "Cursor API did not return downloadUrl field" >&2
+        return 1
+    fi
+    if [[ -z "$version" ]]; then
+        echo "Cursor API did not return version field" >&2
         return 1
     fi
     
@@ -104,11 +108,20 @@ install_cursor_deb() {
     local info deb_url version commit_sha
     info=$(get_cursor_info) || return 1
     deb_url=$(echo "$info" | jq -r '.debUrl // empty')
-    version=$(echo "$info" | jq -r '.version') || return 1
-    commit_sha=$(echo "$info" | jq -r '.commitSha') || return 1
+    version=$(echo "$info" | jq -r '.version // empty')
+    commit_sha=$(echo "$info" | jq -r '.commitSha // empty')
+    
+    if [[ -z "$version" ]]; then
+        echo "Cursor API did not return version field" >&2
+        return 1
+    fi
     
     # Construct deb URL if not provided (latest track only has AppImage URL)
     if [[ -z "$deb_url" ]]; then
+        if [[ -z "$commit_sha" ]]; then
+            echo "Cursor API did not return commitSha (needed to construct deb URL)" >&2
+            return 1
+        fi
         local arch_dir="x64" arch_deb="amd64"
         if [[ "$ARCH" == "arm64" ]]; then
             arch_dir="arm64"
