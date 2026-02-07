@@ -789,7 +789,7 @@ pkg_install() {
 
 _pkg_install_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -yq "$@" ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -yq "$@" ;;
         dnf) sudo dnf install -y "$@" ;;
         pacman) sudo pacman -S --noconfirm "$@" ;;
         zypper) sudo zypper install -y "$@" ;;
@@ -806,7 +806,7 @@ pkg_update() {
 
 _pkg_update_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update -qq ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update -qq ;;
         dnf) sudo dnf check-update || true ;;  # Returns 100 if updates available
         pacman) sudo pacman -Sy ;;
         zypper) sudo zypper refresh ;;
@@ -823,7 +823,7 @@ pkg_upgrade() {
 
 _pkg_upgrade_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" upgrade -yq ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" upgrade -yq ;;
         dnf) sudo dnf upgrade -y ;;
         pacman) sudo pacman -Su --noconfirm ;;
         zypper) sudo zypper update -y ;;
@@ -839,7 +839,7 @@ pkg_autoremove() {
 
 _pkg_autoremove_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
         dnf) sudo dnf autoremove -y ;;
         pacman)
             # Remove orphaned packages if any exist
@@ -869,7 +869,7 @@ pkg_clean() {
 
 _pkg_clean_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" clean ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" clean ;;
         dnf) sudo dnf clean all ;;
         pacman) sudo pacman -Sc --noconfirm ;;
         zypper) sudo zypper clean --all ;;
@@ -887,7 +887,7 @@ pkg_install_local() {
 _pkg_install_local_impl() {
     local pkg_path="$1"
     case "$PKG_MANAGER" in
-        apt) sudo apt -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y "$pkg_path" ;;
+        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y "$pkg_path" ;;
         dnf) sudo dnf install -y "$pkg_path" ;;
         pacman) sudo pacman -U --noconfirm "$pkg_path" ;;
         zypper) sudo zypper install -y --allow-unsigned-rpm "$pkg_path" ;;
