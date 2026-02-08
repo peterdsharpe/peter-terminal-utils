@@ -60,6 +60,8 @@ install_flatpak_app "org.gimp.GIMP" "GIMP"
 install_flatpak_app "org.blender.Blender" "Blender"
 install_flatpak_app "com.transmissionbt.Transmission" "Transmission"
 install_flatpak_app "com.prusa3d.PrusaSlicer" "PrusaSlicer"
+install_flatpak_app "page.codeberg.libre_menu_editor.LibreMenuEditor" "LibreMenuEditor"
+install_flatpak_app "com.github.tchx84.Flatseal" "Flatseal"
 
 ### Update all Flatpak apps to latest versions
 step "Updating Flatpak applications" flatpak update -y --user
