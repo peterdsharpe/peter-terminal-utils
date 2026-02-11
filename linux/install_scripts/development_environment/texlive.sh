@@ -80,24 +80,25 @@ EOF
         texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
         if [ -d "$texlive_bin" ]; then
             # Add to .bashrc for bash non-login shells
-            if ! grep -q "texlive" "$HOME/.bashrc" 2>/dev/null; then
+            # Skip if .bashrc is a symlink (managed by dotfiles with auto-detection)
+            if [ ! -L "$HOME/.bashrc" ] && ! grep -q "texlive" "$HOME/.bashrc" 2>/dev/null; then
                 echo "" >> "$HOME/.bashrc"
                 echo "# TeX Live" >> "$HOME/.bashrc"
                 echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.bashrc"
             fi
             # Add to .profile for bash login shells
-            if ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
+            if [ ! -L "$HOME/.profile" ] && ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
                 echo "" >> "$HOME/.profile"
                 echo "# TeX Live" >> "$HOME/.profile"
                 echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.profile"
             fi
             # Add to .zprofile for zsh login shells (zsh doesn't source .profile)
-            if ! grep -q "texlive" "$HOME/.zprofile" 2>/dev/null; then
+            if [ ! -L "$HOME/.zprofile" ] && ! grep -q "texlive" "$HOME/.zprofile" 2>/dev/null; then
                 echo "" >> "$HOME/.zprofile"
                 echo "# TeX Live" >> "$HOME/.zprofile"
                 echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.zprofile"
             fi
-            # Note: .zshrc is managed via dotfiles symlink and has auto-detection built-in
+            # Note: .zshrc/.bashrc are managed via dotfiles symlinks with auto-detection
         fi
     fi
 }

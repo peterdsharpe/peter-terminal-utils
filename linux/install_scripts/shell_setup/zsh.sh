@@ -56,8 +56,12 @@ if [ -d "$HOME/local/bin" ] && [[ ":$PATH:" != *":$HOME/local/bin:"* ]]; then
 fi
 
 ### Add ~/local/bin to .bashrc PATH (for sudo-less installs to be discoverable)
+### Skips if .bashrc is a symlink (managed by dotfiles - .shell_common handles this path)
 add_local_to_bashrc_path() {
     local bashrc="$HOME/.bashrc"
+    if [ -L "$bashrc" ]; then
+        return 0  # Managed by dotfiles; .shell_common includes ~/local/bin
+    fi
     local path_line='export PATH="$HOME/local/bin:$PATH"'
     if [ -f "$bashrc" ] && ! grep -qF 'HOME/local/bin' "$bashrc"; then
         echo "" >> "$bashrc"

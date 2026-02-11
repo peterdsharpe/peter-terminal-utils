@@ -1,0 +1,215 @@
+# shellcheck shell=bash
+# Peter's shared shell configuration
+# Sourced by both .bashrc and .zshrc
+# Managed by peter-terminal-utils - do not edit directly
+
+###############################################################################
+### PATH setup
+###############################################################################
+
+# Add user-local binaries to PATH
+export PATH="$HOME/.local/bin:$PATH"
+
+# Add ~/local/bin if present (for tools compiled from source without sudo)
+if [ -d "$HOME/local/bin" ]; then
+    export PATH="$HOME/local/bin:$PATH"
+fi
+
+# Add Cargo (Rust) to PATH
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+# Add TeX Live to PATH if installed (auto-detects year and architecture)
+if [ -d /usr/local/texlive ]; then
+    _texlive_year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
+    if [ -n "$_texlive_year" ]; then
+        if [ -d "/usr/local/texlive/$_texlive_year/bin/x86_64-linux" ]; then
+            export PATH="/usr/local/texlive/$_texlive_year/bin/x86_64-linux:$PATH"
+        elif [ -d "/usr/local/texlive/$_texlive_year/bin/aarch64-linux" ]; then
+            export PATH="/usr/local/texlive/$_texlive_year/bin/aarch64-linux:$PATH"
+        fi
+    fi
+    unset _texlive_year
+fi
+
+###############################################################################
+### Modern CLI aliases
+###############################################################################
+
+# eza (ls replacement)
+if command -v eza &> /dev/null; then
+    alias ls="eza --icons"
+    alias ll="eza -la --icons"
+fi
+
+# bat (cat replacement) - named 'batcat' on Debian/Ubuntu, 'bat' elsewhere
+if command -v batcat &> /dev/null; then
+    alias cat="batcat"
+elif command -v bat &> /dev/null; then
+    alias cat="bat"
+fi
+
+# fd (find replacement) - named 'fdfind' on Debian/Ubuntu, 'fd' elsewhere
+if command -v fdfind &> /dev/null; then
+    alias fd="fdfind"
+fi
+
+# nvim (vim replacement)
+if command -v nvim &> /dev/null; then
+    alias vim="nvim"
+    alias vi="nvim"
+fi
+
+# xdg-open (open files with default application)
+alias o="xdg-open"
+
+###############################################################################
+### Git aliases
+###############################################################################
+
+alias gs="git status"
+alias gd="git diff"
+alias ga="git add"
+alias gc="git commit"
+alias gp="git push"
+alias gl="git log --oneline -20"
+
+###############################################################################
+### Navigation
+###############################################################################
+
+alias ..="cd .."
+alias ...="cd ../.."
+alias ....="cd ../../.."
+alias .....="cd ../../../.."
+
+###############################################################################
+### Environment variables
+###############################################################################
+
+# Set editor (prefer nvim if available, fall back to vim)
+if command -v nvim &> /dev/null; then
+    export EDITOR="nvim"
+    export VISUAL="nvim"
+else
+    export EDITOR="vim"
+    export VISUAL="vim"
+fi
+
+# Suppress MESA Vulkan driver development warnings (harmless FINISHME notices)
+export MESA_DEBUG=silent
+
+###############################################################################
+### Tool initializations
+###############################################################################
+
+# Initialize zoxide (smarter cd)
+if command -v zoxide &> /dev/null; then
+    if [ -n "$BASH_VERSION" ]; then
+        eval "$(zoxide init bash)"
+    elif [ -n "$ZSH_VERSION" ]; then
+        eval "$(zoxide init zsh)"
+    fi
+fi
+
+# Initialize fzf (fuzzy finder) - Ctrl+R for history, Ctrl+T for files, Alt+C for cd
+if command -v fzf &> /dev/null; then
+    # Modern fzf (0.48+): single command for keybindings + completion
+    # Falls back to sourcing individual scripts for older versions
+    _fzf_init=""
+    if [ -n "$BASH_VERSION" ]; then
+        _fzf_init=$(fzf --bash 2>/dev/null) || true
+    elif [ -n "$ZSH_VERSION" ]; then
+        _fzf_init=$(fzf --zsh 2>/dev/null) || true
+    fi
+
+    if [ -n "$_fzf_init" ]; then
+        eval "$_fzf_init"
+    else
+        # Fallback for fzf < 0.48: source individual keybinding/completion scripts
+        if [ -n "$BASH_VERSION" ]; then _fzf_shell=bash; else _fzf_shell=zsh; fi
+        for _fzf_dir in /usr/share/doc/fzf/examples "$HOME/.fzf/shell"; do
+            [ -f "$_fzf_dir/key-bindings.$_fzf_shell" ] && . "$_fzf_dir/key-bindings.$_fzf_shell"
+            [ -f "$_fzf_dir/completion.$_fzf_shell" ] && . "$_fzf_dir/completion.$_fzf_shell"
+        done
+        unset _fzf_shell _fzf_dir
+    fi
+    unset _fzf_init
+
+    # Use fd for fzf if available (faster, respects .gitignore)
+    # Handle both 'fdfind' (Debian/Ubuntu) and 'fd' (direct install) names
+    if command -v fdfind &> /dev/null; then
+        export FZF_DEFAULT_COMMAND='fdfind --type f --hidden --follow --exclude .git'
+        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+        export FZF_ALT_C_COMMAND='fdfind --type d --hidden --follow --exclude .git'
+    elif command -v fd &> /dev/null; then
+        export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+        export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+    fi
+fi
+
+# Initialize fnm (Node.js version manager) if installed
+if command -v fnm &> /dev/null; then
+    if [ -n "$BASH_VERSION" ]; then
+        eval "$(fnm env --use-on-cd --shell bash)"
+    elif [ -n "$ZSH_VERSION" ]; then
+        eval "$(fnm env --use-on-cd --shell zsh)"
+    fi
+fi
+
+###############################################################################
+### LAN Discovery (requires avahi-utils)
+###############################################################################
+
+# List SSH hosts on local network via mDNS
+# Usage: lanhosts
+lanhosts() {
+    if ! command -v avahi-browse &> /dev/null; then
+        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
+        return 1
+    fi
+    echo "Discovering SSH hosts on LAN..."
+    avahi-browse -r -t _ssh._tcp 2>/dev/null | \
+        grep -E '^\s+(hostname|address)\s*=' | \
+        paste - - | \
+        sed 's/.*hostname = \[\([^]]*\)\].*address = \[\([^]]*\)\].*/\1 (\2)/' | \
+        sort -u
+}
+
+# Interactive SSH host selection with fzf
+# Usage: sshpick [user]
+sshpick() {
+    local user="${1:-$USER}"
+    if ! command -v avahi-browse &> /dev/null; then
+        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
+        return 1
+    fi
+    if ! command -v fzf &> /dev/null; then
+        echo "fzf not found. Install fzf first." >&2
+        return 1
+    fi
+
+    local host
+    host=$(avahi-browse -r -t _ssh._tcp 2>/dev/null | \
+        grep -E '^\s+hostname\s*=' | \
+        sed 's/.*hostname = \[\([^]]*\)\].*/\1/' | \
+        sort -u | \
+        fzf --prompt="SSH to: " --height=40% --reverse)
+
+    if [ -n "$host" ]; then
+        echo "Connecting to $user@$host..."
+        ssh "$user@$host"
+    fi
+}
+
+###############################################################################
+### Local overrides
+###############################################################################
+
+# Source machine-specific config (module loads, conda init, etc.)
+# Create this file for any per-machine customization that shouldn't be tracked
+if [ -f "$HOME/.shell_common.local" ]; then
+    . "$HOME/.shell_common.local"
+fi

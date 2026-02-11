@@ -43,9 +43,10 @@ All installed from GitHub releases for latest versions:
 - **neovim** - Text editor
 
 ### Shell Setup
-- **Oh My Zsh** with plugins (zsh-autosuggestions, zsh-syntax-highlighting, fzf-tab)
-- **Powerlevel10k** prompt theme
-- Custom `.zshrc` with aliases and functions
+- **Zsh**: Oh My Zsh with plugins (zsh-autosuggestions, zsh-syntax-highlighting), Powerlevel10k prompt theme
+- **Bash**: Colored prompt with git branch, bash-completion, sensible defaults
+- Shared `.shell_common` config (aliases, PATH, tool inits) sourced by both shells
+- Each shell config supports `.local` override files for machine-specific customization
 
 ### Development Tools
 - **uv** - Fast Python package manager
@@ -80,7 +81,12 @@ linux/
 │   ├── gnome_extensions/
 │   ├── desktop_apps/
 │   └── manifest.conf  # Script ordering and grouping
-└── dotfiles/          # Configuration files (.zshrc, etc.)
+└── dotfiles/          # Configuration files
+    ├── .shell_common  # Shared config (aliases, PATH, tool inits)
+    ├── .zshrc         # Zsh-specific (Oh My Zsh, Powerlevel10k)
+    ├── .bashrc        # Bash-specific (prompt, options, completions)
+    ├── .p10k.zsh      # Powerlevel10k theme config
+    └── init.vim       # Neovim config
 ```
 
 ### Adding New Distro Support

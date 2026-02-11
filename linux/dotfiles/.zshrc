@@ -46,100 +46,16 @@ fi
 source $ZSH/oh-my-zsh.sh
 
 ###############################################################################
-### PATH setup (must be before command-v checks below)
+### Shared shell configuration
 ###############################################################################
 
-# Add user-local binaries to PATH
-export PATH="$HOME/.local/bin:$PATH"
-
-# Add Cargo (Rust) to PATH
-if [ -f "$HOME/.cargo/env" ]; then
-    source "$HOME/.cargo/env"
-fi
-
-# Add TeX Live to PATH if installed
-if [ -d /usr/local/texlive ]; then
-    # Find the latest year directory
-    TEXLIVE_YEAR=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
-    if [ -n "$TEXLIVE_YEAR" ]; then
-        # Auto-detect architecture
-        if [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux" ]; then
-            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/x86_64-linux:$PATH"
-        elif [ -d "/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux" ]; then
-            export PATH="/usr/local/texlive/$TEXLIVE_YEAR/bin/aarch64-linux:$PATH"
-        fi
-    fi
+# Common aliases, PATH, env vars, tool inits, functions
+if [[ -f "$HOME/.shell_common" ]]; then
+    source "$HOME/.shell_common"
 fi
 
 ###############################################################################
-### Modern CLI aliases
-###############################################################################
-
-# eza (ls replacement)
-if command -v eza &> /dev/null; then
-    alias ls="eza --icons"
-    alias ll="eza -la --icons"
-fi
-
-# bat (cat replacement) - named 'batcat' on Debian/Ubuntu, 'bat' elsewhere
-if command -v batcat &> /dev/null; then
-    alias cat="batcat"
-elif command -v bat &> /dev/null; then
-    alias cat="bat"
-fi
-
-# fd (find replacement) - named 'fdfind' on Debian/Ubuntu, 'fd' elsewhere
-if command -v fdfind &> /dev/null; then
-    alias fd="fdfind"
-fi
-
-# nvim (vim replacement)
-if command -v nvim &> /dev/null; then
-    alias vim="nvim"
-    alias vi="nvim"
-fi
-
-# xdg-open (open files with default application)
-alias o="xdg-open"
-
-###############################################################################
-### Git aliases
-###############################################################################
-
-alias gs="git status"
-alias gd="git diff"
-alias ga="git add"
-alias gc="git commit"
-alias gp="git push"
-alias gl="git log --oneline -20"
-
-###############################################################################
-### Navigation
-###############################################################################
-
-alias ..="cd .."
-alias ...="cd ../.."
-alias ....="cd ../../.."
-alias .....="cd ../../../.."
-
-###############################################################################
-### Environment variables
-###############################################################################
-
-# Set editor (prefer nvim if available, fall back to vim)
-if command -v nvim &> /dev/null; then
-    export EDITOR="nvim"
-    export VISUAL="nvim"
-else
-    export EDITOR="vim"
-    export VISUAL="vim"
-fi
-
-# Suppress MESA Vulkan driver development warnings (harmless FINISHME notices)
-export MESA_DEBUG=silent
-
-###############################################################################
-### History configuration
+### Zsh history configuration
 ###############################################################################
 
 HISTSIZE=50000
@@ -148,91 +64,6 @@ setopt HIST_IGNORE_DUPS      # Don't record duplicate commands
 setopt HIST_IGNORE_SPACE     # Don't record commands starting with space
 setopt SHARE_HISTORY         # Share history between sessions
 setopt EXTENDED_HISTORY      # Record timestamp with history
-
-###############################################################################
-### Tool initializations
-###############################################################################
-
-# Initialize zoxide (smarter cd)
-if command -v zoxide &> /dev/null; then
-    eval "$(zoxide init zsh)"
-fi
-
-# Initialize fzf (fuzzy finder) - Ctrl+R for history, Ctrl+T for files
-if command -v fzf &> /dev/null; then
-    # Source fzf keybindings - check multiple locations
-    if [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]; then
-        source /usr/share/doc/fzf/examples/key-bindings.zsh
-    elif [ -f ~/.fzf/shell/key-bindings.zsh ]; then
-        source ~/.fzf/shell/key-bindings.zsh
-    fi
-    if [ -f /usr/share/doc/fzf/examples/completion.zsh ]; then
-        source /usr/share/doc/fzf/examples/completion.zsh
-    elif [ -f ~/.fzf/shell/completion.zsh ]; then
-        source ~/.fzf/shell/completion.zsh
-    fi
-    # Use fd for fzf if available (faster, respects .gitignore)
-    # Handle both 'fdfind' (Debian/Ubuntu) and 'fd' (direct install) names
-    if command -v fdfind &> /dev/null; then
-        export FZF_DEFAULT_COMMAND='fdfind --type f --hidden --follow --exclude .git'
-        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-        export FZF_ALT_C_COMMAND='fdfind --type d --hidden --follow --exclude .git'
-    elif command -v fd &> /dev/null; then
-        export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
-        export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-        export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
-    fi
-fi
-
-# Initialize fnm (Node.js version manager) if installed
-if command -v fnm &> /dev/null; then
-    eval "$(fnm env --use-on-cd)"
-fi
-
-###############################################################################
-### LAN Discovery (requires avahi-utils)
-###############################################################################
-
-# List SSH hosts on local network via mDNS
-# Usage: lanhosts
-lanhosts() {
-    if ! command -v avahi-browse &> /dev/null; then
-        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
-        return 1
-    fi
-    echo "Discovering SSH hosts on LAN..."
-    avahi-browse -r -t _ssh._tcp 2>/dev/null | \
-        grep -E '^\s+(hostname|address)\s*=' | \
-        paste - - | \
-        sed 's/.*hostname = \[\([^]]*\)\].*address = \[\([^]]*\)\].*/\1 (\2)/' | \
-        sort -u
-}
-
-# Interactive SSH host selection with fzf
-# Usage: sshpick [user]
-sshpick() {
-    local user="${1:-$USER}"
-    if ! command -v avahi-browse &> /dev/null; then
-        echo "avahi-browse not found. Install with: sudo apt install avahi-utils" >&2
-        return 1
-    fi
-    if ! command -v fzf &> /dev/null; then
-        echo "fzf not found. Install fzf first." >&2
-        return 1
-    fi
-    
-    local host
-    host=$(avahi-browse -r -t _ssh._tcp 2>/dev/null | \
-        grep -E '^\s+hostname\s*=' | \
-        sed 's/.*hostname = \[\([^]]*\)\].*/\1/' | \
-        sort -u | \
-        fzf --prompt="SSH to: " --height=40% --reverse)
-    
-    if [[ -n "$host" ]]; then
-        echo "Connecting to $user@$host..."
-        ssh "$user@$host"
-    fi
-}
 
 ###############################################################################
 ### Powerlevel10k Configuration
@@ -251,7 +82,10 @@ if [[ -n $CURSOR_TRACE_ID ]]; then
   precmd() { print -Pn "\e]133;D;%?\a" }
   preexec() { print -Pn "\e]133;C;\a" }
 fi
-# Added by LM Studio CLI (lms)
-export PATH="$PATH:/home/peter/.lmstudio/bin"
-# End of LM Studio CLI section
 
+###############################################################################
+### Local overrides
+###############################################################################
+
+# Source machine-specific config that shouldn't be tracked
+[[ -f "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"
