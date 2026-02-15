@@ -25,6 +25,7 @@ ms-toolsai.vscode-jupyter-slideshow
 ms-vscode.makefile-tools
 natizyskunk.sftp
 oijusti.eol-converter
+openai.chatgpt
 pkief.material-icon-theme
 rafaelha.vscode-flamegraph
 rust-lang.rust-analyzer
