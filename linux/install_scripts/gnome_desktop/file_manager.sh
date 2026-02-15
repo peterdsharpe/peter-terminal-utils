@@ -6,6 +6,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
+skip_if_headless "File manager configuration"
+skip_if_not_gnome "File manager configuration"
+
 ### Helper to check if a gsettings schema exists
 schema_exists() {
     gsettings list-schemas 2>/dev/null | grep -q "^$1$"

@@ -10,7 +10,7 @@ if [ ! -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then
     # Fresh install: use official installer (sets up structure correctly)
     install_ohmyzsh() {
         rm -rf "$HOME/.oh-my-zsh"
-        RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+        RUNZSH=no CHSH=no sh -c "$(fetch -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
     }
     step "Installing Oh My Zsh" install_ohmyzsh
 elif [ -d "$HOME/.oh-my-zsh/.git" ]; then

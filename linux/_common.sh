@@ -391,7 +391,7 @@ ensure_gnome_extension() {
         return 1
     }
 
-    api_resp=$(curl -sf --connect-timeout 10 \
+    api_resp=$(fetch -sf \
         "https://extensions.gnome.org/extension-info/?uuid=$uuid&shell_version=$shell_ver") || {
         print_warning "Cannot fetch $name info from extensions.gnome.org"
         return 1
@@ -404,7 +404,7 @@ ensure_gnome_extension() {
     }
 
     tmpzip=$(mktemp --suffix=.zip)
-    if ! curl -sfL "https://extensions.gnome.org$download_url" -o "$tmpzip"; then
+    if ! fetch -sfL "https://extensions.gnome.org$download_url" -o "$tmpzip"; then
         rm -f "$tmpzip"
         return 1
     fi
@@ -639,6 +639,20 @@ github_latest_version() {
         return 1
     }
     echo "$version"
+}
+
+###############################################################################
+### Network Helpers
+###############################################################################
+
+### Fetch a URL with retry and timeout defaults
+### Wraps curl with --retry 3 --connect-timeout 10 for resilience against
+### transient network issues during long installation runs.
+### Usage: fetch [curl_options...] URL
+###   fetch -o /tmp/file.tar.gz https://example.com/file.tar.gz
+###   fetch -fsSL https://example.com/script.sh | bash
+fetch() {
+    curl --retry 3 --retry-delay 2 --connect-timeout 10 "$@"
 }
 
 ###############################################################################
@@ -1014,6 +1028,50 @@ get_release_arch() {
 }
 
 ###############################################################################
+### Known GitHub Release URL Patterns
+###############################################################################
+
+### Return the direct download URL for tools with known release naming conventions.
+### Avoids sequential HEAD probes by mapping tool names to their exact URL format.
+### Returns empty string for unknown tools (falls back to pattern probing).
+### Usage: url=$(_get_known_release_url "tool" "base_url" "version" "arch_suffix")
+_get_known_release_url() {
+    local tool="$1" base="$2" ver="$3" arch="$4"
+    case "$tool" in
+        # Rust tools: {tool}-v{ver}-{arch}.tar.gz
+        bat|fd|ripgrep|delta)
+            echo "${base}/v${ver}/${tool}-v${ver}-${arch}.tar.gz" ;;
+        # zoxide uses same format but without v in filename
+        zoxide)
+            echo "${base}/v${ver}/${tool}-${ver}-${arch}.tar.gz" ;;
+        # eza: {tool}_{arch}.tar.gz (no version in filename)
+        eza)
+            echo "${base}/v${ver}/${tool}_${arch}.tar.gz" ;;
+        # lazygit: {tool}_{ver}_{arch}.tar.gz
+        lazygit)
+            echo "${base}/v${ver}/${tool}_${ver}_${arch}.tar.gz" ;;
+        # gdu: {tool}_{arch}.tgz
+        gdu)
+            echo "${base}/v${ver}/${tool}_${arch}.tgz" ;;
+        # btop: {tool}-{arch}.tbz
+        btop)
+            echo "${base}/v${ver}/${tool}-${arch}.tbz" ;;
+        # shellcheck: {tool}-v{ver}.{arch}.tar.xz
+        shellcheck)
+            echo "${base}/v${ver}/${tool}-v${ver}.${arch}.tar.xz" ;;
+        # gh: {tool}_{ver}_{arch}.tar.gz
+        gh)
+            echo "${base}/v${ver}/${tool}_${ver}_${arch}.tar.gz" ;;
+        # tealdeer raw binary: {tool}-{arch}
+        tealdeer)
+            echo "${base}/v${ver}/${tool}-${arch}" ;;
+        # Unknown tool: return empty to trigger pattern probing
+        *)
+            echo "" ;;
+    esac
+}
+
+###############################################################################
 ### Generic GitHub Binary Installer
 ###############################################################################
 
@@ -1051,20 +1109,25 @@ install_github_binary() {
 
     # Handle raw binary downloads (e.g., tealdeer releases raw executables, not archives)
     if [[ "$dl_type" == "raw" ]]; then
-        local raw_patterns=(
-            # tealdeer style: tealdeer-linux-x86_64-musl
-            "$base_url/v${version}/${tool}-${arch_suffix}"
-            # Alternative without v prefix
-            "$base_url/${version}/${tool}-${arch_suffix}"
-        )
-
+        # Try known URL first, then fall back to pattern probing
         local raw_url=""
-        for pattern in "${raw_patterns[@]}"; do
-            if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
-                raw_url="$pattern"
-                break
-            fi
-        done
+        raw_url=$(_get_known_release_url "$tool" "$base_url" "$version" "$arch_suffix")
+
+        if [[ -z "$raw_url" ]]; then
+            local raw_patterns=(
+                # tealdeer style: tealdeer-linux-x86_64-musl
+                "$base_url/v${version}/${tool}-${arch_suffix}"
+                # Alternative without v prefix
+                "$base_url/${version}/${tool}-${arch_suffix}"
+            )
+
+            for pattern in "${raw_patterns[@]}"; do
+                if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
+                    raw_url="$pattern"
+                    break
+                fi
+            done
+        fi
 
         if [[ -z "$raw_url" ]]; then
             echo "Could not find raw binary URL for $tool v$version" >&2
@@ -1074,7 +1137,7 @@ install_github_binary() {
         fi
 
         mkdir -p "$HOME/.local/bin"
-        if ! curl -fL --connect-timeout 30 --max-time 600 --progress-bar \
+        if ! fetch -fL --max-time 600 --progress-bar \
                 -o "$HOME/.local/bin/$installed_name" "$raw_url"; then
             _cleanup_tmpdir
             trap - EXIT TERM INT
@@ -1087,36 +1150,40 @@ install_github_binary() {
         return 0
     fi
 
-    # Archive download: try different naming conventions
-    local patterns=(
-        # v-prefixed tag, v-prefixed filename: bat-v0.24.0-x86_64-...
-        "$base_url/v${version}/${tool}-v${version}-${arch_suffix}.tar.gz"
-        # v-prefixed tag, no v in filename: some tools
-        "$base_url/v${version}/${tool}-${version}-${arch_suffix}.tar.gz"
-        # No v-prefix in tag, no v in filename: delta-0.18.2-x86_64-...
-        "$base_url/${version}/${tool}-${version}-${arch_suffix}.tar.gz"
-        # lazygit style: lazygit_0.44.1_Linux_x86_64.tar.gz
-        "$base_url/v${version}/${tool}_${version}_${arch_suffix}.tar.gz"
-        # eza style: eza_x86_64-unknown-linux-musl.tar.gz (no version in filename)
-        "$base_url/v${version}/${tool}_${arch_suffix}.tar.gz"
-        # gdu style: gdu_linux_amd64.tgz (no version in filename, .tgz extension)
-        "$base_url/v${version}/${tool}_${arch_suffix}.tgz"
-        # bottom style (no v-prefix): bottom_x86_64-unknown-linux-musl.tar.gz
-        "$base_url/${version}/${tool}_${arch_suffix}.tar.gz"
-        # btop style: btop-x86_64-linux-musl.tbz
-        "$base_url/v${version}/${tool}-${arch_suffix}.tbz"
-        # shellcheck style: shellcheck-v0.10.0.linux.x86_64.tar.xz
-        "$base_url/v${version}/${tool}-v${version}.${arch_suffix}.tar.xz"
-    )
+    # Try known URL first to avoid sequential HEAD probes
+    archive_url=$(_get_known_release_url "$tool" "$base_url" "$version" "$arch_suffix")
 
-    archive_url=""
-    for pattern in "${patterns[@]}"; do
-        # Use short timeout for HEAD requests to fail fast on non-existent URLs
-        if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
-            archive_url="$pattern"
-            break
-        fi
-    done
+    # Fall back to pattern probing for unknown tools
+    if [[ -z "$archive_url" ]]; then
+        local patterns=(
+            # v-prefixed tag, v-prefixed filename: bat-v0.24.0-x86_64-...
+            "$base_url/v${version}/${tool}-v${version}-${arch_suffix}.tar.gz"
+            # v-prefixed tag, no v in filename: some tools
+            "$base_url/v${version}/${tool}-${version}-${arch_suffix}.tar.gz"
+            # No v-prefix in tag, no v in filename: delta-0.18.2-x86_64-...
+            "$base_url/${version}/${tool}-${version}-${arch_suffix}.tar.gz"
+            # lazygit style: lazygit_0.44.1_Linux_x86_64.tar.gz
+            "$base_url/v${version}/${tool}_${version}_${arch_suffix}.tar.gz"
+            # eza style: eza_x86_64-unknown-linux-musl.tar.gz (no version in filename)
+            "$base_url/v${version}/${tool}_${arch_suffix}.tar.gz"
+            # gdu style: gdu_linux_amd64.tgz (no version in filename, .tgz extension)
+            "$base_url/v${version}/${tool}_${arch_suffix}.tgz"
+            # bottom style (no v-prefix): bottom_x86_64-unknown-linux-musl.tar.gz
+            "$base_url/${version}/${tool}_${arch_suffix}.tar.gz"
+            # btop style: btop-x86_64-linux-musl.tbz
+            "$base_url/v${version}/${tool}-${arch_suffix}.tbz"
+            # shellcheck style: shellcheck-v0.10.0.linux.x86_64.tar.xz
+            "$base_url/v${version}/${tool}-v${version}.${arch_suffix}.tar.xz"
+        )
+
+        for pattern in "${patterns[@]}"; do
+            # Use short timeout for HEAD requests to fail fast on non-existent URLs
+            if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
+                archive_url="$pattern"
+                break
+            fi
+        done
+    fi
 
     if [ -z "$archive_url" ]; then
         echo "Could not find release URL for $tool v$version" >&2
@@ -1125,7 +1192,7 @@ install_github_binary() {
 
     # Download archive
     local archive_file="$tmpdir/archive"
-    if ! curl -fL --connect-timeout 30 --max-time 600 --progress-bar \
+    if ! fetch -fL --max-time 600 --progress-bar \
             -o "$archive_file" "$archive_url"; then
         return 1
     fi

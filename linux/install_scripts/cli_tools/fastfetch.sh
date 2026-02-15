@@ -26,7 +26,7 @@ install_fastfetch() {
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
 
-    curl -fsSL -o "$tmpdir/fastfetch.tar.gz" "$tarball_url" || return 1
+    fetch -fsSL -o "$tmpdir/fastfetch.tar.gz" "$tarball_url" || return 1
     tar xzf "$tmpdir/fastfetch.tar.gz" -C "$tmpdir" || return 1
 
     mkdir -p "$HOME/.local/bin"

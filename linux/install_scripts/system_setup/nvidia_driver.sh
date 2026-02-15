@@ -51,7 +51,7 @@ install_nvidia_driver() {
     run sudo ubuntu-drivers install
     step_end
     
-    print_warn "Reboot required for NVIDIA driver to take effect"
+    print_warning "Reboot required for NVIDIA driver to take effect"
     
     return "$(step_result)"
 }

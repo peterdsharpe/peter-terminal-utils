@@ -41,34 +41,27 @@ install_croc() {
         fi
     fi
 
-    step_start "Installing croc file transfer tool"
-    
     # croc provides an install script that handles architecture detection
     # and installs to /usr/local/bin (requires sudo) or ~/.local/bin
     local install_dir="$HOME/.local/bin"
     mkdir -p "$install_dir"
-    
+
     # Download and run the official install script
     # The script detects OS/arch and downloads the appropriate binary
     local tmp_script
     tmp_script=$(mktemp)
-    
-    if curl -fsSL "https://getcroc.schollz.com" -o "$tmp_script"; then
-        # Run with INSTALL_DIR to install to user directory (no sudo needed)
-        CROC_INSTALL_DIR="$install_dir" bash "$tmp_script"
-        local result=$?
-        rm -f "$tmp_script"
-        
-        if [[ $result -eq 0 ]]; then
-            step_end
-            print_info "Usage: croc send <file>  |  croc <code-phrase>"
-            return 0
-        fi
-    fi
-    
-    rm -f "$tmp_script"
+
+    step_start "Installing croc file transfer tool"
+    run fetch -fsSL "https://getcroc.schollz.com" -o "$tmp_script"
+    run bash "$tmp_script"
     step_end
-    return 1
+    local result=$?
+    rm -f "$tmp_script"
+
+    if [[ $result -eq 0 ]]; then
+        print_info "Usage: croc send <file>  |  croc <code-phrase>"
+    fi
+    return $result
 }
 
 install_croc

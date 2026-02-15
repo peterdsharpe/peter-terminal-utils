@@ -12,7 +12,7 @@ skip_if_headless "Zed"
 # Zed install script handles both install and update
 if ! command -v zed &>/dev/null; then
     # Zed's installer requires SHELL to be set; ensure it's available
-    step "Installing Zed" bash -c 'SHELL="${SHELL:-$(command -v bash)}" curl -f https://zed.dev/install.sh | sh'
+    step "Installing Zed" bash -c 'export SHELL="${SHELL:-$(command -v bash)}"; curl -f https://zed.dev/install.sh | sh'
 else
     print_skip "Zed already installed"
 fi

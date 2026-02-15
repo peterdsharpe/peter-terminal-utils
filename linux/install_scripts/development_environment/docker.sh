@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 install_docker() {
-    curl -fsSL https://get.docker.com | sh || return 1
+    fetch -fsSL https://get.docker.com | sh || return 1
     # Add current user to docker group
     local current_user
     current_user="$(whoami)"

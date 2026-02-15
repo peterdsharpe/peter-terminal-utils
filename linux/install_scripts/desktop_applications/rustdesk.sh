@@ -69,7 +69,7 @@ install_rustdesk() {
     step_start "Installing RustDesk ${version}"
     
     # Download package
-    run curl -fsSL -o "${tmpdir}/${pkg_name}" "$pkg_url"
+    run fetch -fsSL -o "${tmpdir}/${pkg_name}" "$pkg_url"
     
     # Install local package file
     run pkg_install_local "${tmpdir}/${pkg_name}"
