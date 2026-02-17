@@ -16,24 +16,29 @@ install_zsh_from_source() {
     mkdir -p "$HOME/local" || return 1
     
     # Fetch latest version from zsh.org
-    local version tmpdir
-    version=$(curl -s https://www.zsh.org/pub/ | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -V | tail -1) || return 1
+    local version tmpdir oldpwd
+    version=$(curl -sL https://www.zsh.org/pub/ \
+        | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?(?=\.tar\.xz")' \
+        | sort -V | tail -1) || return 1
     [ -n "$version" ] || { echo "Could not determine latest zsh version" >&2; return 1; }
     
     # Download and extract to tmpdir
     tmpdir=$(mktemp -d) || return 1
+    echo "Building zsh $version in $tmpdir ..."
     curl -Lo "$tmpdir/zsh.tar.xz" "https://www.zsh.org/pub/zsh-${version}.tar.xz" || { rm -rf "$tmpdir"; return 1; }
     tar xf "$tmpdir/zsh.tar.xz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    cd "$tmpdir/zsh-${version}" || { rm -rf "$tmpdir"; return 1; }
     
     # Configure, build, install to ~/local
-    ./configure --prefix="$HOME/local" --without-tcsetpgrp || { rm -rf "$tmpdir"; return 1; }
-    make -j"$(nproc)" || { rm -rf "$tmpdir"; return 1; }
-    make install || { rm -rf "$tmpdir"; return 1; }
+    oldpwd=$PWD
+    cd "$tmpdir/zsh-${version}" || { rm -rf "$tmpdir"; return 1; }
+    ./configure --prefix="$HOME/local" || { cd "$oldpwd"; rm -rf "$tmpdir"; return 1; }
+    make -j"$(nproc)" || { cd "$oldpwd"; rm -rf "$tmpdir"; return 1; }
+    make install || { cd "$oldpwd"; rm -rf "$tmpdir"; return 1; }
     
     # Cleanup
-    cd /
+    cd "$oldpwd"
     rm -rf "$tmpdir"
+    echo "zsh $version installed to $HOME/local/bin/zsh"
 }
 
 if command -v zsh &>/dev/null || [ -x "$HOME/local/bin/zsh" ]; then
