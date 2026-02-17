@@ -1,0 +1,16 @@
+{
+    "$help": "Reference settings fragment for Windows Terminal. Applied by install_scripts/shell_setup/windows_terminal.ps1",
+    "profiles": {
+        "defaults": {
+            "font": {
+                "face": "FiraCode Nerd Font Mono",
+                "size": 11
+            },
+            "colorScheme": "One Half Dark",
+            "cursorShape": "bar",
+            "scrollbarState": "visible",
+            "historySize": 10000,
+            "padding": "8, 8, 8, 8"
+        }
+    }
+}

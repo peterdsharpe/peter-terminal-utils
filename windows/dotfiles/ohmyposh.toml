@@ -1,0 +1,73 @@
+# Peter's Oh My Posh theme
+# Equivalent of Powerlevel10k classic powerline config
+# Left: directory, git status | Right: exit code, execution time
+
+"$schema" = "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json"
+version = 2
+final_space = true
+
+[[blocks]]
+type = "prompt"
+alignment = "left"
+
+  [[blocks.segments]]
+  type = "path"
+  style = "powerline"
+  powerline_symbol = ""
+  foreground = "#ffffff"
+  background = "#61AFEF"
+    [blocks.segments.properties]
+    style = "full"
+
+  [[blocks.segments]]
+  type = "git"
+  style = "powerline"
+  powerline_symbol = ""
+  foreground = "#011627"
+  background = "#98C379"
+    [blocks.segments.properties]
+    branch_icon = " "
+    fetch_status = true
+    fetch_stash_count = true
+    [blocks.segments.template]
+
+  [[blocks.segments]]
+  type = "text"
+  style = "powerline"
+  powerline_symbol = ""
+  foreground = "#ffffff"
+  background = "transparent"
+  template = " "
+
+[[blocks]]
+type = "rprompt"
+alignment = "right"
+
+  [[blocks.segments]]
+  type = "status"
+  style = "plain"
+  foreground = "#E06C75"
+  template = " {{ .Code }}"
+    [blocks.segments.properties]
+    always_enabled = false
+
+  [[blocks.segments]]
+  type = "executiontime"
+  style = "plain"
+  foreground = "#ABB2BF"
+  template = " {{ .FormattedMs }}"
+    [blocks.segments.properties]
+    threshold = 2000
+
+[[blocks]]
+type = "prompt"
+alignment = "left"
+newline = true
+
+  [[blocks.segments]]
+  type = "text"
+  style = "plain"
+  foreground_templates = [
+    "{{ if gt .Code 0 }}#E06C75{{ else }}#98C379{{ end }}"
+  ]
+  template = "$ "
