@@ -15,6 +15,7 @@ run uv tool install yt-dlp      # Video downloader
 run uv tool install rich-cli    # Pretty terminal output (rich command)
 run uv tool install docling     # PDF to text/markdown for LLM input
 run uv tool install jupyterlab  # Jupyter notebooks
+run uv tool install turm        # TUI for Slurm job management
 run uv tool upgrade --all       # Upgrade all tools to latest
 step_end
 
