@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Croc File Transfer
 # @description: Install croc for secure ad-hoc file transfers between computers
+# @requires: sudo
 # @depends: bootstrap.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

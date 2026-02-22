@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: nodejs
 # @description: Node.js JavaScript runtime and npm package manager
+# @requires: sudo
 # @depends: bootstrap.sh
 # @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
