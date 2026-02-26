@@ -20,6 +20,11 @@ if [ -f "$HOME/.cargo/env" ]; then
     . "$HOME/.cargo/env"
 fi
 
+# Add Snaps to PATH
+if [ -d "/snap/bin" ]; then
+    export PATH="/snap/bin:$PATH"
+fi
+
 # Add TeX Live to PATH if installed (auto-detects year and architecture)
 if [ -d /usr/local/texlive ]; then
     _texlive_year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
