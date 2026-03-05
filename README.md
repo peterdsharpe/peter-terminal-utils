@@ -1,6 +1,6 @@
 # Peter's Terminal Utils
 
-My opinionated and personal set of cross-platform scripts for setting up a development environment from scratch on Linux and Windows. Includes shell configuration, CLI tools, dev toolchains, desktop apps, and a custom IPython environment for scientific computing.
+My opinionated and personal set of cross-platform scripts for setting up a development environment from scratch on Linux and Windows. Includes dotfiles, shell configuration, CLI tools, dev toolchains, desktop apps, and a custom IPython environment for scientific computing.
 
 <p align="center">
   <img src="assets/cli.png" alt="Linux setup TUI" width="700">
