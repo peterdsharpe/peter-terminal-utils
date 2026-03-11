@@ -1,6 +1,6 @@
 #!/bin/bash
 # @name: Dotfiles
-# @description: Symlink shell configs (.shell_common, .zshrc, .bashrc), nvim config, .p10k.zsh
+# @description: Symlink shell configs (.shell_common, .zshrc, .bashrc, .p10k.zsh) and nvim config
 # @depends: ohmyzsh.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
@@ -44,17 +44,12 @@ setup_nvim_config() {
 }
 step "Symlinking neovim config" setup_nvim_config
 
-### Copy Powerlevel10k config if it doesn't exist (or prompt to overwrite)
-if [ ! -f "$HOME/.p10k.zsh" ]; then
-    step "Copying Powerlevel10k config" cp "$LINUX_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-else
-    # In orchestrated mode, skip overwrite prompt
-    if [[ "${ORCHESTRATED:-}" == "true" ]]; then
-        print_skip "Keeping existing Powerlevel10k config"
-    elif prompt_yn "Powerlevel10k config already exists. Overwrite with saved config? [y/N]" "N"; then
-        step "Overwriting Powerlevel10k config" cp "$LINUX_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
-    else
-        print_skip "Keeping existing Powerlevel10k config"
+### Symlink Powerlevel10k config from dotfiles
+setup_p10k() {
+    if [ -f "$HOME/.p10k.zsh" ] && [ ! -L "$HOME/.p10k.zsh" ]; then
+        mv "$HOME/.p10k.zsh" "$HOME/.p10k.zsh.backup.$(date +%Y%m%d_%H%M%S)" || return 1
     fi
-fi
+    ln -sf "$LINUX_DIR/dotfiles/.p10k.zsh" "$HOME/.p10k.zsh"
+}
+step "Symlinking Powerlevel10k config" setup_p10k
 
