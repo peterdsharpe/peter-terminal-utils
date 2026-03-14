@@ -11,9 +11,10 @@ standalone_init
 skip_if_headless "Vocalinux"
 
 _install_vocalinux() {
-    local installer="/tmp/vocalinux-install.sh"
+    local installer
+    installer=$(mktemp) || return 1
     fetch -fsSL "https://raw.githubusercontent.com/jatinkrmalik/vocalinux/main/install.sh" \
-        -o "$installer" || return 1
+        -o "$installer" || { rm -f "$installer"; return 1; }
     bash "$installer" --auto
     local rc=$?
     rm -f "$installer"
