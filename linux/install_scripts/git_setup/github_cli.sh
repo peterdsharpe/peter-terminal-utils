@@ -3,7 +3,6 @@
 # @description: GitHub's official CLI for managing repos, PRs, and issues
 # @repo: cli/cli
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

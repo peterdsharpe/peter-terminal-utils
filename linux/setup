@@ -501,16 +501,6 @@ class Script:
         locks_str = self.metadata.get("locks", "")
         return {lock.strip() for lock in locks_str.split(",") if lock.strip()}
 
-    @property
-    def resource_type(self) -> str:
-        """Resource type affecting concurrency (from @resource metadata).
-
-        - 'network': I/O bound, allows high concurrency
-        - 'cpu': Compute bound, limited to CPU count
-        - 'mixed' (default): Moderate concurrency
-        """
-        return self.metadata.get("resource", "mixed")
-
     @staticmethod
     def parse_metadata(script_path: Path) -> dict[str, str]:
         """Extract @key: value metadata from script header comments.

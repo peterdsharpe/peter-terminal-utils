@@ -2,7 +2,6 @@
 # @name: Nerd Fonts
 # @description: Programming fonts with ligatures and icons (Fira Code + Symbols)
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

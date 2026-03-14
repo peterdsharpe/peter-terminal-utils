@@ -3,7 +3,6 @@
 # @description: Count lines of code in source files
 # @repo: AlDanial/cloc
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

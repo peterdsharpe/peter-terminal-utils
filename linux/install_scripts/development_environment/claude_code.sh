@@ -2,7 +2,6 @@
 # @name: claude-code
 # @description: Anthropic's terminal-based AI coding assistant
 # @depends: bootstrap.sh, nodejs.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

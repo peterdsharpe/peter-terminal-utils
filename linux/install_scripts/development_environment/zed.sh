@@ -3,7 +3,6 @@
 # @description: High-performance code editor from the creators of Atom
 # @depends: bootstrap.sh
 # @headless: skip
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

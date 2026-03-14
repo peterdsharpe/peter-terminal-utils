@@ -3,7 +3,6 @@
 # @description: Fast recursive grep alternative with gitignore support
 # @repo: BurntSushi/ripgrep
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

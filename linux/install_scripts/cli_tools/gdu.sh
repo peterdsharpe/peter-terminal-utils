@@ -3,7 +3,6 @@
 # @description: Fast disk usage analyzer with console interface
 # @repo: dundee/gdu
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

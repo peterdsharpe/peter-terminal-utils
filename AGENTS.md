@@ -32,14 +32,13 @@ Every install script must start with metadata comments in the first 10 lines:
 # @repo: owner/repo                # Optional: GitHub repository
 # @depends: bootstrap.sh, other.sh # Optional: comma-separated dependencies
 # @requires: sudo                  # Optional: "sudo" if elevated access needed
-# @resource: network               # Optional: "network", "cpu", or "mixed"
 # @locks: pkg                      # Optional: exclusive locks (pkg, gitconfig, fonts)
 # @parallel: true                  # Optional: can run concurrently (default: false)
 # @headless: skip                  # Optional: "skip" to skip in headless/WSL mode
 ```
 
 **Required fields:** `@name`, `@description`
-**Recommended fields:** `@depends` (at minimum `bootstrap.sh`), `@resource`
+**Recommended fields:** `@depends` (at minimum `bootstrap.sh`)
 
 ## Manifest Rules (`manifest.conf`)
 
@@ -58,7 +57,6 @@ Every install script must start with metadata comments in the first 10 lines:
 # @description: What this tool does
 # @repo: owner/repo
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
@@ -93,7 +91,6 @@ require_sudo "Tool Name" install_tool
 # @name: tool-name
 # @description: What this tool does
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

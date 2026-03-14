@@ -3,7 +3,6 @@
 # @description: Syntax-highlighting pager for git, diff, and grep output
 # @repo: dandavison/delta
 # @depends: bootstrap.sh
-# @resource: network
 # @locks: gitconfig
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

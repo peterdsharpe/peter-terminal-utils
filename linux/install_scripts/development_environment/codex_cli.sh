@@ -3,7 +3,6 @@
 # @description: OpenAI's terminal-based AI coding agent
 # @depends: bootstrap.sh, nodejs.sh
 # @requires: sudo
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

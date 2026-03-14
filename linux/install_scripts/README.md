@@ -30,7 +30,6 @@ Each script includes metadata in header comments that controls execution behavio
 | `@repo` | GitHub repository (for reference) | `owner/repo` | `@repo: sharkdp/bat` |
 | `@depends` | Scripts that must run first | Comma-separated `.sh` filenames | `@depends: bootstrap.sh, ohmyzsh.sh` |
 | `@requires` | System requirements | `sudo` | `@requires: sudo` |
-| `@resource` | Resource type for concurrency tuning | `network`, `cpu`, `mixed` | `@resource: network` |
 | `@locks` | Exclusive resource locks | `pkg`, `gitconfig`, `fonts`, etc. | `@locks: pkg` |
 | `@parallel` | Whether script can run in parallel | `true` (default), `false` | `@parallel: false` |
 | `@headless` | Behavior in headless/WSL mode | `skip` | `@headless: skip` |
@@ -62,12 +61,6 @@ setup_function() {
 require_sudo "Script Name" setup_function
 ```
 
-#### `@resource`
-Hints to the orchestrator about what resource the script primarily uses:
-- `network` - Downloads from the internet (high parallelism OK)
-- `cpu` - CPU-intensive compilation (limited to core count)
-- `mixed` - Default, moderate parallelism
-
 #### `@locks`
 Prevents scripts with the same lock from running simultaneously. Common locks:
 - `pkg` - Package manager operations (apt, dnf, etc.)
@@ -97,7 +90,6 @@ New scripts should follow this template:
 # @description: Brief description of what this installs
 # @repo: owner/repo (if GitHub-hosted)
 # @depends: bootstrap.sh
-# @resource: network
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
