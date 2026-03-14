@@ -24,6 +24,11 @@ install_texlive() {
         [ -n "$install_dir" ] && [ -d "$install_dir" ] || { echo "TexLive installer directory not found" >&2; exit 1; }
         cd "$install_dir" || exit 1
         
+        # Detect the TeX Live release year from the installer
+        local tl_year
+        tl_year=$(perl ./install-tl --version 2>&1 | sed -n 's/.*version \([0-9]\{4\}\).*/\1/p')
+        [ -n "$tl_year" ] || { echo "Could not determine TeX Live release year from installer; check that install-tl is valid" >&2; exit 1; }
+        
         # Create installation profile to disable GUI apps and documentation
         profile_file="$tmpdir/texlive.profile"
         
@@ -40,10 +45,10 @@ install_texlive() {
 # Installs medium scheme (common packages) without GUI apps, desktop entries, or documentation
 # Use 'tlmgr install <package>' to add missing packages as needed
 selected_scheme scheme-medium
-TEXDIR /usr/local/texlive/2026
+TEXDIR /usr/local/texlive/$tl_year
 TEXMFLOCAL /usr/local/texlive/texmf-local
-TEXMFSYSCONFIG /usr/local/texlive/2026/texmf-config
-TEXMFSYSVAR /usr/local/texlive/2026/texmf-var
+TEXMFSYSCONFIG /usr/local/texlive/$tl_year/texmf-config
+TEXMFSYSVAR /usr/local/texlive/$tl_year/texmf-var
 $binary_arch 1
 instopt_adjustpath 0
 tlpdbopt_autobackup 1
@@ -73,6 +78,9 @@ EOF
     # Determine install path and add to shell profiles
     year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
     if [ -n "$year" ]; then
+        # Transfer ownership so tlmgr works without sudo (sudo may not have tlmgr in PATH)
+        sudo chown -R "$(id -un):$(id -gn)" "/usr/local/texlive/${year}/"
+        
         case "$ARCH" in
             x86_64) arch_dir="x86_64-linux" ;;
             arm64) arch_dir="aarch64-linux" ;;
