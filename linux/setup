@@ -965,18 +965,24 @@ def prepare_script_env(
     return env
 
 
-def build_script_command(scripts_dir: Path, script_path: Path) -> str:
+def build_script_command(scripts_dir: Path) -> str:
     """Build bash command that sources _common.sh then executes a script.
+
+    The script path is read from the ``_SETUP_SCRIPT`` environment variable
+    rather than embedded in the ``bash -c`` cmdline.  This keeps script
+    filenames out of ``/proc/pid/cmdline``, preventing false positives from
+    tools that use ``pgrep -f`` to match running processes by name.
+
+    Callers must set ``env["_SETUP_SCRIPT"]`` before spawning the process.
 
     Args:
         scripts_dir: Directory containing install scripts (install_scripts/).
-        script_path: Full path to the script to execute.
 
     Returns:
-        Bash command string suitable for `bash -c`.
+        Bash command string suitable for ``bash -c``.
     """
     common_sh = scripts_dir.parent / "_common.sh"
-    return f'source "{common_sh}" && source "{script_path}"'
+    return f'source "{common_sh}" && source "$_SETUP_SCRIPT"'
 
 
 def run_script_simple(
@@ -994,7 +1000,8 @@ def run_script_simple(
     Returns:
         CompletedProcess with captured stdout/stderr.
     """
-    bash_cmd = build_script_command(scripts_dir, script_path)
+    bash_cmd = build_script_command(scripts_dir)
+    env = {**env, "_SETUP_SCRIPT": str(script_path)}
     return subprocess.run(
         ["bash", "-c", bash_cmd],
         env=env,
@@ -1023,7 +1030,8 @@ def run_script_streaming(
     Returns:
         Exit code from the script.
     """
-    bash_cmd = build_script_command(scripts_dir, script_path)
+    bash_cmd = build_script_command(scripts_dir)
+    env = {**env, "_SETUP_SCRIPT": str(script_path)}
     process = subprocess.Popen(
         ["bash", "-c", bash_cmd],
         env=env,
@@ -4704,7 +4712,8 @@ class ExecutionTUI(BaseTUI):
 
         # Enable streaming output for TUI display (live output in right panel)
         env = prepare_script_env(self.dry_run, self.headless, stream_output=True)
-        bash_cmd = build_script_command(self.scripts_dir, script_path)
+        env["_SETUP_SCRIPT"] = str(script_path)
+        bash_cmd = build_script_command(self.scripts_dir)
 
         try:
             if silent:
@@ -4978,7 +4987,8 @@ def _execute_cli_script(
         print(f"▶ {section.name} / {script.display_name}", flush=True)
         print("─" * 60, flush=True)
         try:
-            bash_cmd = build_script_command(scripts_dir, script_path)
+            bash_cmd = build_script_command(scripts_dir)
+            env = {**env, "_SETUP_SCRIPT": str(script_path)}
             process = subprocess.Popen(
                 ["bash", "-c", bash_cmd],
                 env=env,
