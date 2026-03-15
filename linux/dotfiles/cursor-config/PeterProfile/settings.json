@@ -449,5 +449,6 @@
             "stash": true
         }
     },
-    "parquet-visualizer.defaultQuery": "SELECT *\nFROM data;"
+    "parquet-visualizer.defaultQuery": "SELECT *\nFROM data;",
+    "claudeCode.selectedModel": "opus[1m]"
 }
