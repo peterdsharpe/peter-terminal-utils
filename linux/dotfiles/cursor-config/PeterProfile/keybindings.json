@@ -171,5 +171,10 @@
     {
         "key": "ctrl+p",
         "command": "-workbench.action.quickOpen"
+    },
+    {
+        "key": "ctrl+alt+s",
+        "command": "workbench.action.toggleUnifiedSidebarFromKeyboard",
+        "when": "cursor.agentIdeUnification.enabled == true && !isAuxiliaryWindowFocusedContext"
     }
 ]

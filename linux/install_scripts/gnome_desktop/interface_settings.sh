@@ -25,3 +25,4 @@ step "Enabling locate pointer with Ctrl" gsettings set org.gnome.desktop.interfa
 ### Top bar display
 step "Enabling battery percentage display" gsettings set org.gnome.desktop.interface show-battery-percentage true
 step "Enabling weekday in clock" gsettings set org.gnome.desktop.interface clock-show-weekday true
+step "Enabling seconds in clock" gsettings set org.gnome.desktop.interface clock-show-seconds true
