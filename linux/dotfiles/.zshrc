@@ -88,7 +88,7 @@ fi
 ###############################################################################
 
 # Source machine-specific config that shouldn't be tracked
-[[ -f "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"
+if [[ -f "$HOME/.zshrc.local" ]]; then
+    source "$HOME/.zshrc.local"
+fi
 
-# To customize prompt, run `p10k configure` or edit ~/gh/peter-terminal-utils/linux/dotfiles/.p10k.zsh.
-[[ ! -f ~/gh/peter-terminal-utils/linux/dotfiles/.p10k.zsh ]] || source ~/gh/peter-terminal-utils/linux/dotfiles/.p10k.zsh
