@@ -8,6 +8,7 @@ linux/
 ├── setup               # Python 3 curses TUI orchestrator
 ├── _common.sh          # Shared bash utilities (source this in every script)
 ├── config.toml         # User config (git name/email, presets)
+├── pins.conf           # Pinned versions for git-cloned repos (SHAs or tags)
 ├── install_scripts/
 │   ├── manifest.conf   # Script execution order and grouping
 │   └── <category>/     # One directory per manifest section
@@ -108,7 +109,7 @@ fi
 | Function | Purpose |
 |----------|---------|
 | `ensure_github_tool REPO TOOL [BINARY] [STRIP] [INSTALLED_NAME] [DL_TYPE]` | Install/update from GitHub releases with version checking |
-| `ensure_git_repo URL DEST [NAME]` | Clone or pull a git repository |
+| `ensure_git_repo URL DEST [NAME]` | Clone or pull a git repository; reads `pins.conf` for version pinning |
 | `ensure_command NAME CMD INSTALL_FUNC [sudo]` | Install non-GitHub tool if missing |
 | `ensure_gnome_extension UUID [NAME]` | Install/update GNOME Shell extension |
 | `pkg_install PACKAGES...` | Cross-distro package install (apt/dnf/pacman/zypper) |

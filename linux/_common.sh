@@ -354,20 +354,104 @@ ensure_github_tool() {
     step "Installing $tool" install_github_binary "$repo" "$tool" "$binary" "$strip" "$dl_type" "$installed_name"
 }
 
-### Clone a git repo if missing, pull if exists
+### Read a pinned ref (commit SHA or tag) from linux/pins.conf
+### Returns the ref on stdout, or empty string if not pinned
+_read_pin() {
+    local key="$1"
+    local pins_file
+    pins_file="$(dirname "${BASH_SOURCE[0]}")/pins.conf"
+    [[ -f "$pins_file" ]] || return 0
+    grep -E "^${key}\s*=" "$pins_file" 2>/dev/null \
+        | head -1 \
+        | sed 's/^[^=]*=[[:space:]]*//' \
+        | sed 's/[[:space:]]*#.*//' \
+        | sed 's/[[:space:]]*$//'
+}
+
+### Check if a git repo's HEAD matches a given ref (SHA or tag)
+_is_at_ref() {
+    local dest="$1" ref="$2"
+    local current
+    current=$(git -C "$dest" rev-parse HEAD 2>/dev/null) || return 1
+    [[ "$current" == "$ref"* || "$ref" == "$current"* ]] && return 0
+    local tag
+    tag=$(git -C "$dest" describe --tags --exact-match HEAD 2>/dev/null) || return 1
+    [[ "$tag" == "$ref" ]]
+}
+
+### Warn if a pinned repo has newer versions upstream
+### Tries GitHub releases first (via github_latest_version), falls back to
+### comparing against remote HEAD. Silently skips on network failure.
+_check_pin_staleness() {
+    local url="$1" name="$2" ref="$3"
+
+    local repo
+    repo=$(echo "$url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')
+    [[ -z "$repo" || "$repo" == "$url" ]] && return 0
+
+    local latest_release
+    if latest_release=$(github_latest_version "$repo" 2>/dev/null); then
+        if [[ "$ref" =~ ^v?[0-9] ]]; then
+            semver_compare "$ref" "$latest_release"
+            case $? in
+                1) print_warning "$name: pinned to $ref, latest release is $latest_release — review and update in linux/pins.conf" ;;
+            esac
+        else
+            print_warning "$name: pinned to commit ${ref:0:12}, latest release is $latest_release — review and update in linux/pins.conf"
+        fi
+        return 0
+    fi
+
+    # No releases — compare against remote HEAD
+    local remote_head
+    remote_head=$(git ls-remote "$url" HEAD 2>/dev/null | cut -f1) || return 0
+    [[ -z "$remote_head" ]] && return 0
+
+    if [[ "$ref" =~ ^[0-9a-f]{40}$ && "$remote_head" != "$ref" ]]; then
+        print_warning "$name: pinned to ${ref:0:12}, upstream HEAD is ${remote_head:0:12} — review and update in linux/pins.conf"
+    fi
+}
+
+### Clone or update a git repo, with optional version pinning via pins.conf
 ### For tools installed via git clone (oh-my-zsh, zsh plugins, powerlevel10k)
 ### Usage: ensure_git_repo "https://github.com/user/repo.git" "/dest/path" [name]
+### Pin versions by adding entries to linux/pins.conf (see that file for format)
 ensure_git_repo() {
     local url="$1"
     local dest="$2"
     local name="${3:-$(basename "$url" .git)}"
 
+    local pin_key ref
+    pin_key=$(basename "$url" .git)
+    ref=$(_read_pin "$pin_key")
+
     if [[ -d "$dest/.git" ]]; then
-        step "Updating $name" git -C "$dest" pull --ff-only
+        if [[ -n "$ref" ]]; then
+            if _is_at_ref "$dest" "$ref"; then
+                print_skip "$name already at pinned version"
+                _check_pin_staleness "$url" "$name" "$ref"
+                return 0
+            fi
+            step_start "Pinning $name to ${ref:0:12}"
+            run git -C "$dest" fetch --depth=1 origin "$ref"
+            run git -C "$dest" checkout FETCH_HEAD
+            step_end
+            _check_pin_staleness "$url" "$name" "$ref"
+        else
+            step "Updating $name" git -C "$dest" pull --ff-only
+        fi
     else
-        # Remove incomplete clone if present
         rm -rf "$dest"
-        step "Cloning $name" git clone --depth=1 "$url" "$dest"
+        if [[ -n "$ref" ]]; then
+            step_start "Cloning $name (pinned to ${ref:0:12})"
+            run git clone --depth=1 "$url" "$dest"
+            run git -C "$dest" fetch --depth=1 origin "$ref"
+            run git -C "$dest" checkout FETCH_HEAD
+            step_end
+            _check_pin_staleness "$url" "$name" "$ref"
+        else
+            step "Cloning $name" git clone --depth=1 "$url" "$dest"
+        fi
     fi
 }
 

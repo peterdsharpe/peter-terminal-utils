@@ -111,7 +111,7 @@ The `_common.sh` file provides helpers for common installation patterns:
 |--------|---------|
 | `ensure_github_tool` | Install/update from GitHub releases with version checking |
 | `needs_github_update` | Check if GitHub tool needs install/update (for custom installers) |
-| `ensure_git_repo` | Clone or update a git repository |
+| `ensure_git_repo` | Clone or update a git repository; reads `pins.conf` for version pinning |
 | `ensure_gnome_extension` | Install/update GNOME Shell extension |
 | `ensure_command` | Install if command not present (for non-GitHub tools) |
 | `pkg_install` | Cross-distro package installation |
