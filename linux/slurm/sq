@@ -93,6 +93,12 @@ Filter options (can be combined with scope options):
 Other options:
   --help, -h     Display this help message
 
+Cluster status (all partitions):
+  - 2D table: one row per partition, columns for each node state
+  - Partitions sorted by total node count; GPU count shown as suffix
+  - Empty partitions (0 nodes) are hidden
+  - $(tput setaf 1)red$(tput sgr0)=alloc, $(tput setaf 2)green$(tput sgr0)=idle, $(tput setaf 3)yellow$(tput sgr0)=mixed, $(tput setaf 4)blue$(tput sgr0)=completing, $(tput dim)dim$(tput sgr0)=unavailable (drain/maint/resv/down)
+
 sshare output features:
   - $(tput bold)Bold text$(tput sgr0) highlights your user (${CURRENT_USER}) and group (${SLURM_GROUP})
   - Users and groups colored by RawUsage:
@@ -134,6 +140,145 @@ esac
 if [[ "$RUNNING_ONLY" == true ]]; then
     SQUEUE_STATE="-t R"
 fi
+
+### Cluster status (all partitions)
+sinfo --format="%P %t %D %G" --noheader 2>/dev/null | awk '
+BEGIN {
+    RED    = "\033[31m"
+    GREEN  = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE   = "\033[34m"
+    DIM    = "\033[2m"
+    BOLD   = "\033[1m"
+    RESET  = "\033[0m"
+
+    NC = 9
+    col_name[1] = "nodes"; col_clr[1] = BOLD
+    col_name[2] = "alloc"; col_clr[2] = RED
+    col_name[3] = "idle";  col_clr[3] = GREEN
+    col_name[4] = "mixed"; col_clr[4] = YELLOW
+    col_name[5] = "comp";  col_clr[5] = BLUE
+    col_name[6] = "drain"; col_clr[6] = DIM
+    col_name[7] = "maint"; col_clr[7] = DIM
+    col_name[8] = "resv";  col_clr[8] = DIM
+    col_name[9] = "down";  col_clr[9] = DIM
+
+    for (c = 1; c <= NC; c++) col_w[c] = length(col_name[c])
+}
+{
+    part = $1; sub(/\*$/, "", part)
+    state = $2; count = $3 + 0
+
+    # Track partition order of first appearance
+    if (!(part in part_total)) {
+        np++
+        part_idx[np] = part
+    }
+
+    # Aggregate into state categories
+    if      (state == "alloc")  data[part, "alloc"] += count
+    else if (state == "idle")   data[part, "idle"]  += count
+    else if (state == "mix")    data[part, "mixed"] += count
+    else if (state == "comp")   data[part, "comp"]  += count
+    else if (state ~ /^drain/)  data[part, "drain"] += count
+    else if (state == "maint")  data[part, "maint"] += count
+    else if (state == "resv")   data[part, "resv"]  += count
+    else if (state ~ /^down/)   data[part, "down"]  += count
+
+    part_total[part] += count
+
+    # Parse GPUs/node from GRES field (e.g. "gpu:4(S:0-1)")
+    if (!(part in gpn) && $4 ~ /^gpu:/) {
+        g = $4; sub(/^gpu:/, "", g); sub(/\(.*/, "", g)
+        gpn[part] = g + 0
+    }
+}
+END {
+    if (np == 0) exit
+
+    # Sort partitions by total node count descending (insertion sort)
+    for (i = 2; i <= np; i++) {
+        key = part_idx[i]
+        j = i - 1
+        while (j >= 1 && part_total[part_idx[j]] < part_total[key]) {
+            part_idx[j + 1] = part_idx[j]
+            j--
+        }
+        part_idx[j + 1] = key
+    }
+
+    # Remove partitions with zero nodes
+    j = 0
+    for (i = 1; i <= np; i++) {
+        if (part_total[part_idx[i]] > 0) {
+            j++
+            part_idx[j] = part_idx[i]
+        }
+    }
+    np = j
+    if (np == 0) exit
+
+    # Build display names (append GPU count) and find partition column width
+    pw = 0
+    for (i = 1; i <= np; i++) {
+        p = part_idx[i]
+        if (gpn[p] > 0)
+            pdsp[p] = p " (" gpn[p] " gpu/node)"
+        else
+            pdsp[p] = p
+        if (length(pdsp[p]) > pw) pw = length(pdsp[p])
+    }
+
+    # Map column index to data key (col 1 = total, handled separately)
+    dk[2] = "alloc"; dk[3] = "idle";  dk[4] = "mixed"
+    dk[5] = "comp";  dk[6] = "drain"; dk[7] = "maint"
+    dk[8] = "resv";  dk[9] = "down"
+
+    # Compute column widths from data values
+    for (i = 1; i <= np; i++) {
+        p = part_idx[i]
+        w = length(sprintf("%d", part_total[p]))
+        if (w > col_w[1]) col_w[1] = w
+        for (c = 2; c <= NC; c++) {
+            v = data[p, dk[c]] + 0
+            if (v > 0) {
+                w = length(sprintf("%d", v))
+                if (w > col_w[c]) col_w[c] = w
+            }
+        }
+    }
+
+    # Print title
+    printf "%sCluster Status:%s\n", BOLD, RESET
+
+    # Print column headers
+    printf "  %-*s", pw, ""
+    for (c = 1; c <= NC; c++)
+        printf "  %s%*s%s", col_clr[c], col_w[c], col_name[c], RESET
+    printf "\n"
+
+    # Print one row per partition
+    for (i = 1; i <= np; i++) {
+        p = part_idx[i]
+        printf "  %-*s", pw, pdsp[p]
+
+        # "nodes" column (total)
+        printf "  %s%*d%s", col_clr[1], col_w[1], part_total[p], RESET
+
+        # State columns
+        for (c = 2; c <= NC; c++) {
+            v = data[p, dk[c]] + 0
+            if (v > 0)
+                printf "  %s%*d%s", col_clr[c], col_w[c], v, RESET
+            else
+                printf "  %s%*s%s", DIM, col_w[c], "-", RESET
+        }
+        printf "\n"
+    }
+}
+'
+
+echo ""
 
 ### Process sshare output
 sshare $SSHARE_ACCOUNT $SSHARE_SCOPE --format="Account%50,User%30,RawShares,NormShares,RawUsage,NormUsage,EffectvUsage,FairShare,LevelFS" | awk -v current_user="${CURRENT_USER}" -v slurm_group="${SLURM_GROUP}" '
