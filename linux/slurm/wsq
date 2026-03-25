@@ -15,6 +15,7 @@ import argparse
 import curses
 import datetime
 import functools
+import math
 import os
 import re
 import subprocess
@@ -71,37 +72,45 @@ SINFO_STATE_MAP = {
     "down*": "down",
 }
 
-### Usage color thresholds (RawUsage -> ANSI code)
-USAGE_THRESHOLDS = [
-    (10_000, BLUE),
-    (50_000, CYAN),
-    (200_000, GREEN),
-    (1_000_000, YELLOW),
-    (5_000_000, ORANGE),
+### Continuous heat-map gradient (blue → cyan → green → yellow → orange → red)
+GRADIENT_STOPS = [
+    (0.0, (80, 130, 255)),
+    (0.2, (0, 210, 220)),
+    (0.4, (50, 205, 80)),
+    (0.6, (230, 210, 0)),
+    (0.8, (255, 150, 0)),
+    (1.0, (255, 70, 60)),
 ]
 
-### Node count -> ANSI color for running jobs
-NODE_COLOR_THRESHOLDS = [
-    (1, BLUE),
-    (3, CYAN),
-    (7, GREEN),
-    (15, YELLOW),
-    (31, ORANGE),
-]
+
+def _gradient_rgb(t: float) -> tuple[int, int, int]:
+    """Interpolate the heat gradient at position t in [0, 1]."""
+    t = max(0.0, min(1.0, t))
+    for i in range(len(GRADIENT_STOPS) - 1):
+        t0, (r0, g0, b0) = GRADIENT_STOPS[i]
+        t1, (r1, g1, b1) = GRADIENT_STOPS[i + 1]
+        if t <= t1:
+            f = (t - t0) / (t1 - t0)
+            return (int(r0 + (r1 - r0) * f), int(g0 + (g1 - g0) * f), int(b0 + (b1 - b0) * f))
+    return GRADIENT_STOPS[-1][1]
+
+
+def _gradient_ansi(t: float) -> str:
+    """ANSI true color escape for gradient position t."""
+    r, g, b = _gradient_rgb(t)
+    return f"\033[38;2;{r};{g};{b}m"
 
 
 def usage_color(raw_usage: int) -> str:
-    for threshold, color in USAGE_THRESHOLDS:
-        if raw_usage < threshold:
-            return color
-    return RED
+    """Continuous gradient for RawUsage on a log10 scale (1 → blue, 100M → red)."""
+    t = math.log10(max(1, raw_usage)) / 8.0
+    return _gradient_ansi(t)
 
 
 def node_color(nodes: int) -> str:
-    for threshold, color in NODE_COLOR_THRESHOLDS:
-        if nodes <= threshold:
-            return color
-    return RED
+    """Continuous gradient for node count on a log2 scale (1 → blue, 1024 → red)."""
+    t = math.log2(max(1, nodes)) / 10.0
+    return _gradient_ansi(t)
 
 
 ###############################################################################
@@ -933,8 +942,10 @@ def run_static(args: argparse.Namespace) -> None:
 
 ANSI_RE = re.compile(r"\033\[([0-9;]*)m")
 
-### Scrollbar color pair index and Unicode eighth-block characters
+### Scrollbar and gradient color pair indices
 C_SCROLLBAR = 7
+GRADIENT_STEPS = 64
+C_GRADIENT_BASE = 10
 LOWER_EIGHTHS = " ▁▂▃▄▅▆▇█"
 UPPER_EIGHTHS = " ▔🮂🮃▀🮄🮅🮆█"
 
@@ -973,8 +984,13 @@ class ScrollState:
         self.offset = max(0, self.total - self.visible)
 
 
+def _rgb_to_256(r: int, g: int, b: int) -> int:
+    """Nearest 256-color index for an RGB value (6x6x6 cube, indices 16-231)."""
+    return 16 + 36 * round(r / 255 * 5) + 6 * round(g / 255 * 5) + round(b / 255 * 5)
+
+
 def _init_colors() -> None:
-    """Initialize curses color pairs to match the ANSI scheme."""
+    """Initialize curses color pairs: base ANSI, scrollbar, and gradient palette."""
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(C_RED, curses.COLOR_RED, -1)
@@ -985,6 +1001,11 @@ def _init_colors() -> None:
     if curses.COLORS >= 256:
         curses.init_pair(C_ORANGE, 208, -1)
         curses.init_pair(C_SCROLLBAR, 249, 236)
+        ### Pre-allocate gradient palette for continuous color mapping
+        for i in range(GRADIENT_STEPS):
+            t = i / (GRADIENT_STEPS - 1)
+            r, g, b = _gradient_rgb(t)
+            curses.init_pair(C_GRADIENT_BASE + i, _rgb_to_256(r, g, b), -1)
     else:
         curses.init_pair(C_ORANGE, curses.COLOR_YELLOW, -1)
         curses.init_pair(C_SCROLLBAR, curses.COLOR_WHITE, curses.COLOR_BLACK)
@@ -1010,8 +1031,44 @@ def _build_attr_map() -> None:
     )
 
 
+### Pre-computed table mapping each gradient step's 256-color index back to its pair.
+### Built once by _build_attr_map; used by _parse_ansi for O(1) true-color lookup.
+_gradient_256_to_pair: dict[int, int] = {}
+
+
+def _build_gradient_lookup() -> None:
+    """Build reverse lookup from 256-color index to gradient curses pair."""
+    for i in range(GRADIENT_STEPS):
+        t = i / (GRADIENT_STEPS - 1)
+        r, g, b = _gradient_rgb(t)
+        c256 = _rgb_to_256(r, g, b)
+        _gradient_256_to_pair[c256] = curses.color_pair(C_GRADIENT_BASE + i)
+
+
+def _nearest_gradient_pair(r: int, g: int, b: int) -> int:
+    """Find the curses color pair closest to an RGB value from the gradient palette."""
+    c256 = _rgb_to_256(r, g, b)
+    if c256 in _gradient_256_to_pair:
+        return _gradient_256_to_pair[c256]
+    ### Fallback: find nearest by RGB distance across all gradient steps
+    best_pair = 0
+    best_dist = float("inf")
+    for i in range(GRADIENT_STEPS):
+        t = i / (GRADIENT_STEPS - 1)
+        gr, gg, gb = _gradient_rgb(t)
+        dist = (r - gr) ** 2 + (g - gg) ** 2 + (b - gb) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_pair = curses.color_pair(C_GRADIENT_BASE + i)
+    return best_pair
+
+
 def _parse_ansi(text: str) -> list[tuple[str, int]]:
-    """Parse ANSI-escaped string into (text_segment, curses_attr) pairs."""
+    """Parse ANSI-escaped string into (text_segment, curses_attr) pairs.
+
+    Handles standard SGR codes (bold, dim, basic colors, 256-color) and
+    true color codes (38;2;R;G;B) by mapping to the nearest gradient pair.
+    """
     segments: list[tuple[str, int]] = []
     attr = 0
     pos = 0
@@ -1024,8 +1081,17 @@ def _parse_ansi(text: str) -> list[tuple[str, int]]:
             attr = 0
         elif code in ("1", "2"):
             attr |= _ANSI_ATTR.get(code, 0)
+        elif code.startswith("38;2;"):
+            ### True color: map to nearest gradient palette entry
+            parts = code.split(";")
+            try:
+                r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
+                pair = _nearest_gradient_pair(r, g, b)
+                attr = (attr & (curses.A_BOLD | curses.A_DIM)) | pair
+            except (IndexError, ValueError):
+                pass
         else:
-            ### Color code: keep bold/dim, replace color
+            ### Standard color code: keep bold/dim, replace color
             attr = (attr & (curses.A_BOLD | curses.A_DIM)) | _ANSI_ATTR.get(code, 0)
         pos = m.end()
 
@@ -1103,6 +1169,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     """Main TUI loop with 1-second visual ticks, periodic data refresh, and tabbed panes."""
     _init_colors()
     _build_attr_map()
+    _build_gradient_lookup()
     curses.curs_set(0)
 
     scope = args.scope
