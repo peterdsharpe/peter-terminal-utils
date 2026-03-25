@@ -46,11 +46,13 @@ ORANGE = "\033[38;5;208m"
 C_RED, C_GREEN, C_YELLOW, C_BLUE, C_CYAN, C_ORANGE = 1, 2, 3, 4, 5, 6
 
 ### State category display order and ANSI colors
+### Ordered: total, then "how free" (idle), then "in use" (mixed, alloc, comp),
+### then "offline" (drain, maint, resv, down). Matches the bar segment order.
 STATE_COLS = [
     ("nodes", BOLD),
-    ("alloc", RED),
     ("idle", GREEN),
     ("mixed", YELLOW),
+    ("alloc", RED),
     ("comp", BLUE),
     ("drain", DIM),
     ("maint", DIM),
@@ -704,17 +706,49 @@ def _notes(job: Job, etas: dict[str, str]) -> str:
 
 BAR_WIDTH = 20
 
+### Bar segment definitions: (state_keys, block_char, ansi_color)
+### Ordered: idle first (what you care about), then in-use, then unavailable.
+BAR_SEGMENTS = [
+    (["idle"], "█", GREEN),
+    (["mixed"], "█", YELLOW),
+    (["alloc"], "█", RED),
+    (["comp"], "█", BLUE),
+    (["drain", "maint", "resv", "down"], "█", DIM),
+]
 
-def _utilization_bar(alloc: int, total: int) -> str:
-    """Render a 20-char utilization bar with gradient color and percentage."""
+
+def _utilization_bar(states: dict[str, int], total: int) -> str:
+    """Render a 20-char multi-segment bar showing cluster state breakdown.
+
+    Segments are colored to match the column headers (red=alloc, green=idle,
+    etc.). The percentage shows idle fraction of the usable pool.
+    """
     if total <= 0:
         return ""
-    frac = alloc / total
-    filled = round(frac * BAR_WIDTH)
-    bar = "█" * filled + "░" * (BAR_WIDTH - filled)
-    pct = f"{frac * 100:3.0f}%"
-    color = _gradient_ansi(frac)
-    return f"  {color}▐{bar}▌{RESET} {DIM}{pct}{RESET}"
+
+    ### Build segments as fractional widths, then quantize to characters.
+    ### Use largest-remainder method to avoid rounding gaps.
+    raw = []
+    for keys, char, color in BAR_SEGMENTS:
+        count = sum(states.get(k, 0) for k in keys)
+        raw.append(count / total * BAR_WIDTH)
+    floors = [int(v) for v in raw]
+    remainders = [(raw[i] - floors[i], i) for i in range(len(raw))]
+    gap = BAR_WIDTH - sum(floors)
+    for _, idx in sorted(remainders, reverse=True)[:gap]:
+        floors[idx] += 1
+
+    bar = ""
+    for i, (_, char, color) in enumerate(BAR_SEGMENTS):
+        if floors[i] > 0:
+            bar += f"{color}{char * floors[i]}{RESET}"
+
+    ### Show % idle of usable pool (excluding drain/maint/resv/down)
+    unavail = sum(states.get(k, 0) for k in ("drain", "maint", "resv", "down"))
+    usable = total - unavail
+    idle = states.get("idle", 0)
+    pct = f"{idle / usable * 100:3.0f}%" if usable > 0 else "  -"
+    return f"  ▐{bar}▌ {DIM}{pct} idle{RESET}"
 
 
 def render_cluster_status(partitions: list[Partition]) -> list[str]:
@@ -770,7 +804,7 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
                 row += f"  {col_colors[i]}{v:>{col_w[i]}}{RESET}"
             else:
                 row += f"  {DIM}{'-':>{col_w[i]}}{RESET}"
-        row += _utilization_bar(p.states.get("alloc", 0), p.total)
+        row += _utilization_bar(p.states, p.total)
         lines.append(row)
 
     return lines
