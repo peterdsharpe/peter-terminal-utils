@@ -559,6 +559,7 @@ def collapse_arrays(jobs: list[Job]) -> list[Job]:
             running_by_base.setdefault(base, job)
             if base in pending:
                 job.array_count = _array_count(pending[base].jobid)
+                job.jobid = base
                 absorbed.add(id(pending[base]))
 
     ### Second pass: catch individual pending array tasks (no bracket notation,
@@ -573,6 +574,7 @@ def collapse_arrays(jobs: list[Job]) -> list[Job]:
             base = job.jobid.split("_")[0]
             if base in running_by_base:
                 running_by_base[base].array_count += 1
+                running_by_base[base].jobid = base
                 absorbed.add(id(job))
 
     return [j for j in jobs if id(j) not in absorbed]
@@ -1278,8 +1280,15 @@ def _parse_ansi(text: str) -> list[tuple[str, int]]:
     return segments
 
 
-def _addstr_ansi(win: curses.window, y: int, x: int, text: str, max_x: int) -> None:
-    """Write ANSI-colored text to a curses window, clipping at max_x."""
+def _addstr_ansi(
+    win: curses.window, y: int, x: int, text: str, max_x: int, base_attr: int = 0
+) -> None:
+    """Write ANSI-colored text to a curses window, clipping at max_x.
+
+    Args:
+        base_attr: Additional curses attribute OR'd with every segment (e.g.,
+            curses.A_REVERSE for selection highlighting that preserves colors).
+    """
     col = x
     for segment, attr in _parse_ansi(text):
         if col >= max_x:
@@ -1287,7 +1296,7 @@ def _addstr_ansi(win: curses.window, y: int, x: int, text: str, max_x: int) -> N
         avail = max_x - col
         fragment = segment[:avail]
         try:
-            win.addstr(y, col, fragment, attr)
+            win.addstr(y, col, fragment, attr | base_attr)
         except curses.error:
             pass
         col += len(fragment)
@@ -1410,11 +1419,14 @@ def _draw_overlay_box(
     w: int,
 ) -> None:
     """Draw a centered, scrollable overlay box and block until dismissed."""
-    box_w = min(max(len(ANSI_RE.sub("", l)) for l in lines) + 6, w - 4, 90)
+    ### Use most of the terminal width; cap at w-6 for breathing room
+    content_max = w - 10
+    box_w = min(max(len(ANSI_RE.sub("", l)) for l in lines) + 6, w - 6)
     box_h = min(len(lines) + 2, h - 4)
     y0 = max(0, (h - box_h) // 2)
     x0 = max(0, (w - box_w) // 2)
     content_h = box_h - 2
+    inner_w = box_w - 4  # usable chars between "│ " and " │"
 
     scroll = ScrollState(total=len(lines), visible=content_h)
     top_border = f"╭─ {title} {'─' * max(0, box_w - len(title) - 5)}╮"
@@ -1433,7 +1445,11 @@ def _draw_overlay_box(
             for i in range(content_h):
                 idx = scroll.offset + i
                 line = lines[idx] if idx < len(lines) else ""
+                ### Truncate content that exceeds inner width
                 vis_len = len(ANSI_RE.sub("", line))
+                if vis_len > inner_w:
+                    line = line[:inner_w - 1] + "\u2026"
+                    vis_len = inner_w
                 pad = max(0, box_w - 3 - vis_len)
                 row_str = f"│ {line}{' ' * pad}│"
                 _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
@@ -1658,6 +1674,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     _build_attr_map()
     _build_gradient_lookup()
     curses.curs_set(0)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
 
     scope = args.scope
     running_only = args.running
@@ -1718,23 +1735,23 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             tab_lines = render_shares(shares, items)
 
         ### Build a mapping: for each tab content line, which selectable index does it correspond to?
-        ### Non-selectable lines (headers, separators, summaries) get -1.
+        ### First 2 lines are always header + underline. After that, each line maps to
+        ### the next selectable item unless it's a SummaryLine (non-selectable).
         line_to_sel: list[int] = []
         sel_idx = 0
-        for line in tab_lines:
-            stripped = ANSI_RE.sub("", line)
-            is_header = stripped.startswith("Jobid") or stripped.startswith("Account")
-            is_sep = stripped.startswith("─")
-            is_summary = stripped.strip().startswith("  ") and ":" in stripped and "jobs pending" in stripped
-
-            if is_header or is_sep or is_summary or not stripped.strip():
+        for line_i, line in enumerate(tab_lines):
+            if line_i < 2:
                 line_to_sel.append(-1)
+                continue
+            stripped = ANSI_RE.sub("", line).strip()
+            is_summary = ":" in stripped and "jobs pending" in stripped
+            if is_summary or not stripped:
+                line_to_sel.append(-1)
+            elif sel_idx < len(selectable):
+                line_to_sel.append(sel_idx)
+                sel_idx += 1
             else:
-                if sel_idx < len(selectable):
-                    line_to_sel.append(sel_idx)
-                    sel_idx += 1
-                else:
-                    line_to_sel.append(-1)
+                line_to_sel.append(-1)
 
         ### Find the line index of the cursor's selectable item
         cursor_line = -1
@@ -1771,17 +1788,15 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             is_selected = sel == cursor and sel >= 0
 
             if is_selected:
-                ### Draw reverse-highlighted selected row
+                ### Reverse-highlight with preserved colors (setup pattern)
                 try:
                     stdscr.addstr(y, 0, " " * content_w, curses.A_REVERSE)
                 except curses.error:
                     pass
-                _addstr_ansi(stdscr, y, 0, tab_lines[line_idx], content_w)
-                ### Overlay reverse attribute on the whole line
-                try:
-                    stdscr.chgat(y, 0, content_w, curses.A_REVERSE)
-                except curses.error:
-                    pass
+                _addstr_ansi(
+                    stdscr, y, 0, tab_lines[line_idx], content_w,
+                    base_attr=curses.A_REVERSE,
+                )
             else:
                 _addstr_ansi(stdscr, y, 0, tab_lines[line_idx], content_w)
 
@@ -1872,6 +1887,41 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             cursor_per_tab[active_tab] = 0
         elif key == curses.KEY_END:
             cursor_per_tab[active_tab] = len(selectable) - 1 if selectable else 0
+        elif key == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+            except curses.error:
+                continue
+
+            ### Scroll wheel moves cursor
+            if bstate & curses.BUTTON4_PRESSED and selectable:
+                cursor_per_tab[active_tab] = max(0, cursor - 3)
+            elif bstate & curses.BUTTON5_PRESSED and selectable:
+                cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 3)
+
+            ### Click in tab content area to select item
+            elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
+                if header_h <= my < h - 1:
+                    line_idx = scroll.offset + (my - header_h)
+                    if 0 <= line_idx < len(line_to_sel):
+                        clicked_sel = line_to_sel[line_idx]
+                        if clicked_sel >= 0:
+                            cursor_per_tab[active_tab] = clicked_sel
+
+            ### Double-click opens details
+            elif bstate & curses.BUTTON1_DOUBLE_CLICKED and selectable:
+                if header_h <= my < h - 1:
+                    line_idx = scroll.offset + (my - header_h)
+                    if 0 <= line_idx < len(line_to_sel):
+                        clicked_sel = line_to_sel[line_idx]
+                        if clicked_sel >= 0:
+                            cursor_per_tab[active_tab] = clicked_sel
+                            sel_item = selectable[clicked_sel]
+                            if active_tab == 0 and isinstance(sel_item, Job):
+                                _show_job_detail(stdscr, sel_item, h, w)
+                            elif active_tab == 1 and isinstance(sel_item, ShareEntry):
+                                _show_share_detail(stdscr, sel_item, shares, items, h, w)
+
         elif key == curses.KEY_RESIZE:
             pass
 
