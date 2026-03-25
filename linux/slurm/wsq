@@ -46,7 +46,7 @@ ORANGE = "\033[38;5;208m"
 C_RED, C_GREEN, C_YELLOW, C_BLUE, C_CYAN, C_ORANGE = 1, 2, 3, 4, 5, 6
 
 ### State category display order and ANSI colors
-### Ordered: total, then "how free" (idle), then "in use" (mixed, alloc, comp),
+### Ordered: total, then "how free" (idle), then "in use" (mixed, alloc, comp, plnd),
 ### then "offline" (drain, maint, resv, down). Matches the bar segment order.
 STATE_COLS = [
     ("nodes", BOLD),
@@ -54,6 +54,7 @@ STATE_COLS = [
     ("mixed", YELLOW),
     ("alloc", RED),
     ("comp", BLUE),
+    ("plnd", DIM),
     ("drain", DIM),
     ("maint", DIM),
     ("resv", DIM),
@@ -64,14 +65,25 @@ STATE_COLS = [
 SINFO_STATE_MAP = {
     "alloc": "alloc",
     "idle": "idle",
+    "idle~": "idle",
     "mix": "mixed",
+    "mix-": "mixed",
     "comp": "comp",
+    "plnd": "plnd",
     "drain": "drain",
+    "drain$": "drain",
+    "drain*": "drain",
     "drng": "drain",
     "maint": "maint",
     "resv": "resv",
     "down": "down",
     "down*": "down",
+    "down$": "down",
+    "pow_dn": "down",
+    "pow_up": "down",
+    "reboot": "down",
+    "unk": "down",
+    "future": "down",
 }
 
 ### Continuous heat-map gradient (blue → cyan → green → yellow → orange → red)
@@ -713,6 +725,7 @@ BAR_SEGMENTS = [
     (["mixed"], "█", YELLOW),
     (["alloc"], "█", RED),
     (["comp"], "█", BLUE),
+    (["plnd"], "█", DIM),
     (["drain", "maint", "resv", "down"], "█", DIM),
 ]
 
