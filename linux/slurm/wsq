@@ -173,6 +173,8 @@ class Job:
     dep_count: int = 0
     array_count: int = 0
     task_count: int = 0
+    more_count: int = 0
+    collapsed_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -184,6 +186,8 @@ class SummaryLine:
     count: int
     nodes: int
     reason: str
+    first_name: str = ""
+    job_names: list[str] = field(default_factory=list)
 
 
 JobOrSummary = Job | SummaryLine
@@ -242,7 +246,7 @@ def _sshare_cmd(scope: str) -> list[str]:
 
 def _squeue_cmd(scope: str, running_only: bool) -> list[str]:
     sep = "\x1f"
-    fmt = sep.join(["%18i", "%12P", "%200j", "%20u", "%2t", "%10M", "%6D", "%40r"])
+    fmt = sep.join(["%18i", "%12P", "%200j", "%20u", "%2t", "%10M", "%6D", "%60r"])
     cmd = ["squeue", f"--format={fmt}"]
     if scope == "me":
         cmd.append("--me")
@@ -453,7 +457,7 @@ def parse_squeue(output: str) -> list[Job]:
             Job(
                 jobid=fields[0], partition=fields[1], name=name,
                 user=user, state=fields[4], time_str=fields[5],
-                nodes=nodes, reason=fields[7],
+                nodes=nodes, reason=fields[7] if fields[7] not in ("", "None") else "-",
             )
         )
     return jobs
@@ -550,17 +554,19 @@ def collapse_arrays(jobs: list[Job]) -> list[Job]:
                 count += 1
         return count
 
-    ### Match running tasks to pending array specs
+    ### Match running tasks to pending array specs.
+    ### Only strip the suffix and set array_count on the FIRST running task per base.
     absorbed: set[int] = set()
     running_by_base: dict[str, Job] = {}
     for job in jobs:
-        if job.state == "R" and "_" in job.jobid and "[" not in job.jobid:
+        if job.state in ("R", "CG") and "_" in job.jobid and "[" not in job.jobid:
             base = job.jobid.split("_")[0]
-            running_by_base.setdefault(base, job)
-            if base in pending:
-                job.array_count = _array_count(pending[base].jobid)
-                job.jobid = base
-                absorbed.add(id(pending[base]))
+            if base not in running_by_base:
+                running_by_base[base] = job
+                if base in pending:
+                    job.array_count = _array_count(pending[base].jobid)
+                    job.jobid = base
+                    absorbed.add(id(pending[base]))
 
     ### Second pass: catch individual pending array tasks (no bracket notation,
     ### e.g., "2014800_5" when only one task is pending)
@@ -588,10 +594,10 @@ def collapse_running_arrays(jobs: list[Job]) -> list[Job]:
     task, sets jobid to the base ID, multiplies nodes by the task count,
     and stores the count in task_count for display.
     """
-    ### Identify running jobs with array-task suffixes
+    ### Identify running/completing jobs with array-task suffixes
     array_groups: dict[tuple, list[Job]] = {}
     for job in jobs:
-        if job.state == "R" and "_" in job.jobid and "[" not in job.jobid:
+        if job.state in ("R", "CG") and "_" in job.jobid and "[" not in job.jobid:
             base = job.jobid.split("_")[0]
             key = (base, job.name, job.user, job.partition, job.nodes)
             array_groups.setdefault(key, []).append(job)
@@ -614,11 +620,11 @@ def collapse_running_arrays(jobs: list[Job]) -> list[Job]:
 
 def collapse_user_batches(
     jobs: list[Job], threshold: int = 5
-) -> list[JobOrSummary]:
-    """Replace large blocks of same-user pending jobs with summary lines.
+) -> list[Job]:
+    """Collapse large blocks of same-user pending jobs into the first job.
 
-    Only collapses jobs that weren't already absorbed by chain/array collapse
-    (i.e., standalone pending jobs with no dep_count or array_count).
+    Keeps the first job as a normal table row and annotates it with
+    more_count and collapsed_names for the +N more notation.
     """
     ### Group standalone pending jobs by (user, partition, reason, nodes)
     groups: dict[tuple, list[Job]] = {}
@@ -633,21 +639,15 @@ def collapse_user_batches(
             groups.setdefault(key, []).append(job)
 
     collapsed_ids: set[int] = set()
-    summaries: list[SummaryLine] = []
-    for (user, partition, reason, nodes), group in groups.items():
+    for group in groups.values():
         if len(group) > threshold:
-            for job in group:
+            head = group[0]
+            head.more_count = len(group) - 1
+            head.collapsed_names = [j.name for j in group[1:]]
+            for job in group[1:]:
                 collapsed_ids.add(id(job))
-            summaries.append(
-                SummaryLine(
-                    user=user, partition=partition,
-                    count=len(group), nodes=nodes, reason=reason,
-                )
-            )
 
-    result: list[JobOrSummary] = list(summaries)
-    result.extend(j for j in jobs if id(j) not in collapsed_ids)
-    return result
+    return [j for j in jobs if id(j) not in collapsed_ids]
 
 
 ###############################################################################
@@ -689,19 +689,19 @@ def _format_seconds(total: int) -> str:
 
 
 def sort_items(items: list[JobOrSummary]) -> list[JobOrSummary]:
-    """Sort: summaries with PD, then PD jobs, then R jobs. Within each: user, nodes desc, time desc."""
+    """Sort: PD jobs first, then R jobs. Within each: user, nodes desc, time desc."""
 
     def key(item: JobOrSummary) -> tuple:
-        if isinstance(item, SummaryLine):
-            return (0, item.user, -item.nodes, 0, "")
-        state_ord = 0 if item.state == "PD" else 1
-        return (
-            state_ord,
-            item.user,
-            -item.nodes,
-            -_time_seconds(item.time_str),
-            item.name,
-        )
+        if isinstance(item, Job):
+            state_ord = 0 if item.state == "PD" else 1
+            return (
+                state_ord,
+                item.user,
+                -item.nodes,
+                -_time_seconds(item.time_str),
+                item.name,
+            )
+        return (0, "", 0, 0, "")
 
     return sorted(items, key=key)
 
@@ -716,13 +716,15 @@ def _notes(job: Job, etas: dict[str, str]) -> str:
     parts: list[str] = []
 
     if job.state == "PD":
-        if job.reason not in ("None", ""):
+        if job.reason not in ("None", "", "-"):
             parts.append(job.reason)
         eta = etas.get(job.jobid, "")
         if eta:
             parts.append(f"ETA:{eta}")
         if job.dep_count > 0:
             parts.append(f"+{job.dep_count} dep")
+        if job.more_count > 0:
+            parts.append(f"+{job.more_count} more")
     else:
         if job.dep_count > 0:
             parts.append(f"+{job.dep_count} dep")
@@ -1026,14 +1028,8 @@ def render_jobs(
     lines: list[str] = [header_str, f"{DIM}{'─' * header_width}{RESET}"]
 
     for item in items:
-        if isinstance(item, SummaryLine):
-            text = (
-                f"  {item.user}: {item.count} {item.partition} jobs pending"
-                f" ({item.reason}), {item.nodes} nodes each"
-            )
-            lines.append(f"{DIM}{text}{RESET}")
+        if not isinstance(item, Job):
             continue
-
         row = rows[id(item)]
         raw = fmt_line(row)
 
@@ -1512,6 +1508,10 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         lines.append(f"  Array:       +{job.array_count} pending array tasks")
     if job.task_count > 0:
         lines.append(f"  Tasks:       split over {job.task_count} running tasks")
+    if job.more_count > 0:
+        lines.extend(["", f"  +{job.more_count} similar jobs collapsed:"])
+        for name in job.collapsed_names:
+            lines.append(f"    {name}")
     lines.extend(["", "  j/k to scroll · q/Esc to close", ""])
 
     _draw_overlay_box(stdscr, lines, f"Job {job.jobid}: {job.name}", h, w)
@@ -1743,9 +1743,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             if line_i < 2:
                 line_to_sel.append(-1)
                 continue
-            stripped = ANSI_RE.sub("", line).strip()
-            is_summary = ":" in stripped and "jobs pending" in stripped
-            if is_summary or not stripped:
+            if not ANSI_RE.sub("", line).strip():
                 line_to_sel.append(-1)
             elif sel_idx < len(selectable):
                 line_to_sel.append(sel_idx)
@@ -1916,6 +1914,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                         clicked_sel = line_to_sel[line_idx]
                         if clicked_sel >= 0:
                             cursor_per_tab[active_tab] = clicked_sel
+                            ### Simulate 'o' key on double-clicked item
                             sel_item = selectable[clicked_sel]
                             if active_tab == 0 and isinstance(sel_item, Job):
                                 _show_job_detail(stdscr, sel_item, h, w)
