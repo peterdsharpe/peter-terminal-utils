@@ -1153,6 +1153,14 @@ class ScrollState:
     def go_bottom(self) -> None:
         self.offset = max(0, self.total - self.visible)
 
+    def ensure_visible(self, idx: int) -> None:
+        """Adjust offset so item at idx is within the visible window."""
+        if idx < self.offset:
+            self.offset = idx
+        elif idx >= self.offset + self.visible:
+            self.offset = idx - self.visible + 1
+        self.clamp()
+
 
 def _rgb_to_256(r: int, g: int, b: int) -> int:
     """Nearest 256-color index for an RGB value (6x6x6 cube, indices 16-231)."""
@@ -1336,14 +1344,17 @@ TAB_NAMES = ["Jobs", "Shares"]
 
 HELP_LINES = [
     "",
-    "  q          quit",
+    "  j/k  ↑↓    move cursor",
+    "  PgUp/Dn    move cursor by page",
+    "  Home/End   top / bottom",
+    "  o          open details for selected item",
+    "  c          cancel selected job (with confirm)",
+    "",
+    "  tab        switch Jobs / Shares",
     "  r          force refresh",
     "  m / a / g  scope: me / all / group",
     "  t          toggle ETAs",
-    "  tab        switch Jobs / Shares",
-    "  j/k  ↑↓    scroll (3 lines)",
-    "  PgUp/Dn    scroll page",
-    "  Home/End   top / bottom",
+    "  q          quit",
     "  ?          this help",
     "",
     "  Colors: continuous log-scale gradient",
@@ -1386,8 +1397,263 @@ def _draw_help_overlay(stdscr: curses.window, h: int, w: int) -> None:
     stdscr.getch()
 
 
+###############################################################################
+### Overlay Dialogs (job detail, cancel confirm, share detail)
+###############################################################################
+
+
+def _draw_overlay_box(
+    stdscr: curses.window,
+    lines: list[str],
+    title: str,
+    h: int,
+    w: int,
+) -> None:
+    """Draw a centered, scrollable overlay box and block until dismissed."""
+    box_w = min(max(len(ANSI_RE.sub("", l)) for l in lines) + 6, w - 4, 90)
+    box_h = min(len(lines) + 2, h - 4)
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+    content_h = box_h - 2
+
+    scroll = ScrollState(total=len(lines), visible=content_h)
+    top_border = f"╭─ {title} {'─' * max(0, box_w - len(title) - 5)}╮"
+    bot_border = f"╰{'─' * (box_w - 2)}╯"
+
+    while True:
+        scroll.clamp()
+        for row in range(box_h):
+            try:
+                stdscr.addstr(y0 + row, x0, " " * box_w)
+            except curses.error:
+                pass
+
+        try:
+            stdscr.addstr(y0, x0, top_border[:box_w], curses.A_BOLD)
+            for i in range(content_h):
+                idx = scroll.offset + i
+                line = lines[idx] if idx < len(lines) else ""
+                vis_len = len(ANSI_RE.sub("", line))
+                pad = max(0, box_w - 3 - vis_len)
+                row_str = f"│ {line}{' ' * pad}│"
+                _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
+            stdscr.addstr(y0 + box_h - 1, x0, bot_border[:box_w], curses.A_BOLD)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+        stdscr.timeout(-1)
+        key = stdscr.getch()
+
+        if key in (ord("q"), 27, ord("\n")):
+            break
+        elif key == curses.KEY_DOWN or key == ord("j"):
+            scroll.scroll_down(1)
+        elif key == curses.KEY_UP or key == ord("k"):
+            scroll.scroll_up(1)
+        elif key == curses.KEY_PPAGE:
+            scroll.page_up()
+        elif key == curses.KEY_NPAGE:
+            scroll.page_down()
+
+
+def _fetch_job_detail(jobid: str) -> dict[str, str]:
+    """Fetch and parse scontrol show job output into a key-value dict."""
+    out = _run(["scontrol", "show", "job", jobid], timeout=10)
+    detail: dict[str, str] = {}
+    for token in out.split():
+        if "=" in token:
+            k, v = token.split("=", 1)
+            detail[k] = v
+    return detail
+
+
+def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
+    """Fetch job details via scontrol and display in an overlay."""
+    detail = _fetch_job_detail(job.jobid)
+    if not detail:
+        detail = {"Error": "Could not fetch job details"}
+
+    lines = [
+        "",
+        f"  State:       {detail.get('JobState', '?')}  ({detail.get('Reason', '')})",
+        f"  Account:     {detail.get('Account', '?')}",
+        f"  Partition:   {detail.get('Partition', '?')}    QOS: {detail.get('QOS', '?')}",
+        f"  Nodes:       {detail.get('NumNodes', '?')}    GPUs: {detail.get('TresPerNode', '-')}",
+        f"  TimeLimit:   {detail.get('TimeLimit', '?')}    RunTime: {detail.get('RunTime', '?')}",
+        f"  Submit:      {detail.get('SubmitTime', '?')}",
+        f"  Start:       {detail.get('StartTime', '?')}    End: {detail.get('EndTime', '?')}",
+        "",
+        f"  WorkDir:     {detail.get('WorkDir', '?')}",
+        f"  Command:     {detail.get('Command', '?')}",
+        f"  StdOut:      {detail.get('StdOut', '?')}",
+        "",
+        f"  Dependency:  {detail.get('Dependency', 'None')}",
+    ]
+    if job.dep_count > 0:
+        lines.append(f"  Chain:       +{job.dep_count} dependency jobs queued")
+    if job.array_count > 0:
+        lines.append(f"  Array:       +{job.array_count} pending array tasks")
+    if job.task_count > 0:
+        lines.append(f"  Tasks:       split over {job.task_count} running tasks")
+    lines.extend(["", "  j/k to scroll · q/Esc to close", ""])
+
+    _draw_overlay_box(stdscr, lines, f"Job {job.jobid}: {job.name}", h, w)
+
+
+def _show_cancel_confirm(
+    stdscr: curses.window, job: Job, h: int, w: int
+) -> str | None:
+    """Show cancel confirmation dialog. Returns 'y', 'a', or None (abort)."""
+    if job.user != CURRENT_USER:
+        lines = ["", f"  Cannot cancel: job belongs to {job.user}", "", "  Press any key"]
+        _draw_overlay_box(stdscr, lines, "Cancel", h, w)
+        return None
+
+    lines = [
+        "",
+        f"  {job.jobid}  {job.name}",
+        f"  {job.user}  {job.state}  {job.time_str}  {job.nodes} nodes",
+        "",
+    ]
+
+    has_chain = job.dep_count > 0
+    has_array = job.array_count > 0 or job.task_count > 0
+
+    if has_chain:
+        lines.append(f"  [y] Cancel this job only")
+        lines.append(f"  [a] Cancel all {job.dep_count + 1} (this + {job.dep_count} chained)")
+    elif has_array:
+        total = job.array_count + job.task_count + 1
+        lines.append(f"  [y] Cancel this job only")
+        lines.append(f"  [a] Cancel entire array ({total} tasks)")
+    else:
+        lines.append(f"  [y] Cancel this job")
+
+    lines.extend(["  [n] Abort", ""])
+
+    box_w = min(max(len(l) for l in lines) + 6, w - 4, 70)
+    box_h = len(lines) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    top = f"╭─ Cancel job? {'─' * max(0, box_w - 16)}╮"
+    bot = f"╰{'─' * (box_w - 2)}╯"
+
+    for row in range(box_h):
+        try:
+            stdscr.addstr(y0 + row, x0, " " * box_w)
+        except curses.error:
+            pass
+    try:
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
+        for i, line in enumerate(lines):
+            padded = f"│ {line:<{box_w - 3}}│"
+            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+
+    while True:
+        key = stdscr.getch()
+        if key == ord("y"):
+            return "y"
+        if key == ord("a") and (has_chain or has_array):
+            return "a"
+        if key in (ord("n"), 27):
+            return None
+
+
+def _do_cancel(job: Job, mode: str) -> None:
+    """Execute scancel for a job. mode='y' cancels one, 'a' cancels chain/array."""
+    if mode == "y":
+        _run(["scancel", job.jobid], timeout=10)
+    elif mode == "a":
+        if job.dep_count > 0:
+            _run(["scancel", "-n", job.name], timeout=10)
+        else:
+            base = job.jobid.split("_")[0] if "_" in job.jobid else job.jobid
+            _run(["scancel", base], timeout=10)
+
+
+def _show_share_detail(
+    stdscr: curses.window,
+    entry: ShareEntry,
+    shares: list[ShareEntry],
+    items: list[JobOrSummary],
+    h: int,
+    w: int,
+) -> None:
+    """Show detail overlay for a share entry (user or group)."""
+    user_nodes = _active_nodes_by_user(items)
+
+    if entry.is_group:
+        ### Group detail: show all members with active jobs
+        title = entry.account
+        members = [s for s in shares if not s.is_group and s.account == entry.account]
+        members.sort(key=lambda s: s.raw_usage, reverse=True)
+
+        lines = [
+            "",
+            f"  Account:     {entry.account}",
+            f"  Total Usage: {entry.raw_usage:,}",
+            f"  LevelFS:     {entry.level_fs:.6f}" if entry.level_fs is not None else "",
+            "",
+            f"  Members ({len(members)}):",
+        ]
+        for m in members:
+            n = user_nodes.get(m.user, 0)
+            node_str = f"{n:>4} nodes" if n > 0 else "         "
+            lines.append(f"    {m.user:<20s}  {node_str}  {m.raw_usage:>12,} usage")
+    else:
+        ### User detail: show their jobs + account info
+        title = f"{entry.user} @ {entry.account}"
+        running = [j for j in items if isinstance(j, Job) and j.user == entry.user and j.state == "R"]
+        pending = [j for j in items if isinstance(j, Job) and j.user == entry.user and j.state == "PD"]
+        r_nodes = sum(j.nodes for j in running)
+        p_nodes = sum(j.nodes for j in pending)
+
+        sacctmgr_out = _run(
+            ["sacctmgr", "show", "assoc", f"user={entry.user}", f"account={entry.account}",
+             "format=Share,MaxJobs,MaxNodes,MaxSubmit,QOS%60", "--noheader", "--parsable2"],
+            timeout=10,
+        )
+        qos = ""
+        share_raw = ""
+        for line in sacctmgr_out.strip().splitlines():
+            parts = line.split("|")
+            if len(parts) >= 5:
+                share_raw = parts[0]
+                qos = parts[4]
+
+        lines = [
+            "",
+            f"  Account:     {entry.account}",
+            f"  Share:       {share_raw}" if share_raw else "",
+            f"  RawUsage:    {entry.raw_usage:,}",
+            f"  EffectvUsage:{entry.effectv_usage:.6f}",
+            f"  LevelFS:     {entry.level_fs:.6f}" if entry.level_fs is not None else "",
+            f"  QOS:         {qos}" if qos else "",
+            "",
+            f"  Running:     {r_nodes} nodes across {len(running)} jobs",
+            f"  Pending:     {len(pending)} jobs ({p_nodes} nodes requested)",
+        ]
+        lines = [l for l in lines if l is not None and l != ""]
+
+    lines.extend(["", "  j/k to scroll · q/Esc to close", ""])
+    _draw_overlay_box(stdscr, lines, title, h, w)
+
+
+###############################################################################
+### TUI Main Loop
+###############################################################################
+
+
 def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
-    """Main TUI loop with 1-second visual ticks, periodic data refresh, and tabbed panes."""
+    """Main TUI loop with cursor selection, tabbed panes, and action overlays."""
     _init_colors()
     _build_attr_map()
     _build_gradient_lookup()
@@ -1403,8 +1669,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     shares: list[ShareEntry] = []
     items: list[JobOrSummary] = []
     etas: dict[str, str] = {}
+    ordered_shares: list[ShareEntry] = []
 
     active_tab = 0
+    cursor_per_tab = [0, 0]
     scroll_per_tab = [ScrollState(), ScrollState()]
     last_fetch = 0.0
     needs_refresh = True
@@ -1413,51 +1681,115 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     while True:
         now = time.time()
         h, w = stdscr.getmaxyx()
-        content_h = h - 1
-        scroll = scroll_per_tab[active_tab]
 
         ### Refresh data from Slurm if interval elapsed or forced
         if needs_refresh or (now - last_fetch) >= interval:
             partitions, shares, items, etas = fetch_all(scope, running_only, timing)
+            ordered_shares = sorted(
+                [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
+            ) + sorted(
+                [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
+            )
             last_fetch = time.time()
             now = last_fetch
             needs_refresh = False
 
-        ### Render: cluster status (always) + active tab content
-        cluster_lines = render_cluster_status(partitions)
+        ### Determine selectable items for current tab
+        if active_tab == 0:
+            selectable: list = [j for j in items if isinstance(j, Job)]
+        else:
+            selectable = ordered_shares
+
+        cursor = cursor_per_tab[active_tab]
+        cursor = max(0, min(cursor, len(selectable) - 1)) if selectable else 0
+        cursor_per_tab[active_tab] = cursor
+
+        ### Render fixed header (cluster status)
+        header_lines = render_cluster_status(partitions)
+        if header_lines:
+            header_lines.append(_separator())
+        header_h = len(header_lines)
+
+        ### Render tab content lines, tracking which line index maps to which selectable item
         time_offset = int(now - last_fetch)
         if active_tab == 0:
             tab_lines = render_jobs(items, etas, time_offset=time_offset)
         else:
             tab_lines = render_shares(shares, items)
 
-        if not cluster_lines and not tab_lines:
-            lines = [
-                f"{DIM}No data available (Slurm controller may be unreachable).{RESET}",
-                f"{DIM}Retrying on next refresh...{RESET}",
-            ]
-        else:
-            lines = cluster_lines + ([_separator()] if cluster_lines and tab_lines else []) + tab_lines
+        ### Build a mapping: for each tab content line, which selectable index does it correspond to?
+        ### Non-selectable lines (headers, separators, summaries) get -1.
+        line_to_sel: list[int] = []
+        sel_idx = 0
+        for line in tab_lines:
+            stripped = ANSI_RE.sub("", line)
+            is_header = stripped.startswith("Jobid") or stripped.startswith("Account")
+            is_sep = stripped.startswith("─")
+            is_summary = stripped.strip().startswith("  ") and ":" in stripped and "jobs pending" in stripped
 
-        ### Update scroll state
-        scroll.total = len(lines)
-        scroll.visible = content_h
+            if is_header or is_sep or is_summary or not stripped.strip():
+                line_to_sel.append(-1)
+            else:
+                if sel_idx < len(selectable):
+                    line_to_sel.append(sel_idx)
+                    sel_idx += 1
+                else:
+                    line_to_sel.append(-1)
+
+        ### Find the line index of the cursor's selectable item
+        cursor_line = -1
+        for i, si in enumerate(line_to_sel):
+            if si == cursor:
+                cursor_line = i
+                break
+
+        ### Scrollable area dimensions
+        list_h = h - 1 - header_h  # status bar takes 1 line
+        scroll = scroll_per_tab[active_tab]
+        scroll.total = len(tab_lines)
+        scroll.visible = list_h
+        if cursor_line >= 0:
+            scroll.ensure_visible(cursor_line)
         scroll.clamp()
 
-        ### Determine if scrollbar is needed
         needs_scrollbar = scroll.total > scroll.visible
         content_w = w - 1 if needs_scrollbar else w
 
-        ### Draw content
+        ### Draw
         stdscr.erase()
-        for i in range(min(content_h, max(0, len(lines) - scroll.offset))):
-            _addstr_ansi(stdscr, i, 0, lines[scroll.offset + i], content_w)
 
-        ### Draw scrollbar
+        ### Fixed header
+        for i, line in enumerate(header_lines):
+            if i < h - 1:
+                _addstr_ansi(stdscr, i, 0, line, content_w)
+
+        ### Tab content with cursor highlighting
+        for i in range(min(list_h, max(0, len(tab_lines) - scroll.offset))):
+            line_idx = scroll.offset + i
+            y = header_h + i
+            sel = line_to_sel[line_idx] if line_idx < len(line_to_sel) else -1
+            is_selected = sel == cursor and sel >= 0
+
+            if is_selected:
+                ### Draw reverse-highlighted selected row
+                try:
+                    stdscr.addstr(y, 0, " " * content_w, curses.A_REVERSE)
+                except curses.error:
+                    pass
+                _addstr_ansi(stdscr, y, 0, tab_lines[line_idx], content_w)
+                ### Overlay reverse attribute on the whole line
+                try:
+                    stdscr.chgat(y, 0, content_w, curses.A_REVERSE)
+                except curses.error:
+                    pass
+            else:
+                _addstr_ansi(stdscr, y, 0, tab_lines[line_idx], content_w)
+
+        ### Scrollbar
         if needs_scrollbar:
-            _draw_scrollbar(stdscr, w - 1, 0, content_h, scroll, scrollbar_attr)
+            _draw_scrollbar(stdscr, w - 1, header_h, list_h, scroll, scrollbar_attr)
 
-        ### Draw tab indicators right-aligned on the title line (row 0)
+        ### Tab indicators right-aligned on the title line (row 0)
         tab_parts = []
         for i, name in enumerate(TAB_NAMES):
             tab_parts.append(f"[{name}]" if i == active_tab else f" {name} ")
@@ -1479,7 +1811,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         timing_tag = " · etas:on" if timing else ""
         status = (
             f" {scope}{timing_tag} · {age_str}"
-            f" · q:quit  r:refresh  m/a/g:scope  t:etas  tab:switch  j/k:scroll  ?:help"
+            f" · q:quit  o:details  c:cancel  r:refresh  tab:switch  ?:help"
         )
         try:
             padded = status[:w].ljust(w)
@@ -1497,6 +1829,21 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             break
         elif key == ord("?"):
             _draw_help_overlay(stdscr, h, w)
+        elif key == ord("o") and selectable:
+            ### Open detail overlay for selected item
+            sel_item = selectable[cursor]
+            if active_tab == 0 and isinstance(sel_item, Job):
+                _show_job_detail(stdscr, sel_item, h, w)
+            elif active_tab == 1 and isinstance(sel_item, ShareEntry):
+                _show_share_detail(stdscr, sel_item, shares, items, h, w)
+        elif key == ord("c") and selectable and active_tab == 0:
+            ### Cancel job (Jobs tab only)
+            sel_item = selectable[cursor]
+            if isinstance(sel_item, Job):
+                result = _show_cancel_confirm(stdscr, sel_item, h, w)
+                if result:
+                    _do_cancel(sel_item, result)
+                    needs_refresh = True
         elif key == ord("\t"):
             active_tab = 1 - active_tab
         elif key == ord("r"):
@@ -1514,17 +1861,17 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             timing = not timing
             needs_refresh = True
         elif key == curses.KEY_UP or key == ord("k"):
-            scroll.scroll_up()
+            cursor_per_tab[active_tab] = max(0, cursor - 1)
         elif key == curses.KEY_DOWN or key == ord("j"):
-            scroll.scroll_down()
+            cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 1) if selectable else 0
         elif key == curses.KEY_PPAGE:
-            scroll.page_up()
+            cursor_per_tab[active_tab] = max(0, cursor - list_h)
         elif key == curses.KEY_NPAGE:
-            scroll.page_down()
+            cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + list_h) if selectable else 0
         elif key == curses.KEY_HOME:
-            scroll.go_top()
+            cursor_per_tab[active_tab] = 0
         elif key == curses.KEY_END:
-            scroll.go_bottom()
+            cursor_per_tab[active_tab] = len(selectable) - 1 if selectable else 0
         elif key == curses.KEY_RESIZE:
             pass
 
