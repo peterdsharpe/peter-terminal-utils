@@ -726,16 +726,24 @@ def _utilization_bar(states: dict[str, int], total: int) -> str:
     if total <= 0:
         return ""
 
-    ### Build segments as fractional widths, then quantize to characters.
-    ### Use largest-remainder method to avoid rounding gaps.
-    raw = []
-    for keys, char, color in BAR_SEGMENTS:
-        count = sum(states.get(k, 0) for k in keys)
-        raw.append(count / total * BAR_WIDTH)
+    ### Build segment counts, folding unaccounted nodes into unavailable
+    counts = []
+    tracked = 0
+    for keys, _, _ in BAR_SEGMENTS:
+        c = sum(states.get(k, 0) for k in keys)
+        counts.append(c)
+        tracked += c
+    counts[-1] += max(0, total - tracked)  # unaccounted → unavailable
+
+    ### Quantize to characters using largest-remainder method
+    raw = [c / total * BAR_WIDTH for c in counts]
     floors = [int(v) for v in raw]
-    remainders = [(raw[i] - floors[i], i) for i in range(len(raw))]
+    remainders = sorted(
+        ((raw[i] - floors[i], i) for i in range(len(raw)) if counts[i] > 0),
+        reverse=True,
+    )
     gap = BAR_WIDTH - sum(floors)
-    for _, idx in sorted(remainders, reverse=True)[:gap]:
+    for _, idx in remainders[:gap]:
         floors[idx] += 1
 
     bar = ""
