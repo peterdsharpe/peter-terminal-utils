@@ -831,8 +831,20 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
     return lines
 
 
-def render_shares(shares: list[ShareEntry]) -> list[str]:
-    """Render the sshare table (6 columns, sorted by usage)."""
+def _active_nodes_by_user(items: list[JobOrSummary]) -> dict[str, int]:
+    """Sum running-job nodes per user for the Shares table 'Nodes' column."""
+    totals: dict[str, int] = {}
+    for item in items:
+        if isinstance(item, Job) and item.state == "R":
+            totals[item.user] = totals.get(item.user, 0) + item.nodes
+    return totals
+
+
+def render_shares(
+    shares: list[ShareEntry],
+    items: list[JobOrSummary] | None = None,
+) -> list[str]:
+    """Render the sshare table with an active-nodes column from job data."""
     if not shares:
         return []
 
@@ -844,14 +856,30 @@ def render_shares(shares: list[ShareEntry]) -> list[str]:
     )
     ordered = groups + users
 
+    ### Compute active nodes per user from job data
+    user_nodes = _active_nodes_by_user(items) if items else {}
+    ### For group rows, sum across all users belonging to that account
+    account_nodes: dict[str, int] = {}
+    for s in users:
+        if user_nodes.get(s.user, 0) > 0:
+            account_nodes[s.account] = (
+                account_nodes.get(s.account, 0) + user_nodes[s.user]
+            )
+
     ### Build row data as strings
-    headers = ["Account", "User", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
+    headers = ["Account", "User", "Nodes", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
 
     def fmt_row(s: ShareEntry) -> list[str]:
         lfs = f"{s.level_fs:.6f}" if s.level_fs is not None else ""
+        if s.is_group:
+            n = account_nodes.get(s.account, 0)
+        else:
+            n = user_nodes.get(s.user, 0)
+        nodes_str = str(n) if n > 0 else "-"
         return [
             s.account,
             s.user,
+            nodes_str,
             f"{s.raw_usage:,}",
             f"{s.norm_usage:.6f}",
             f"{s.effectv_usage:.6f}",
@@ -861,7 +889,7 @@ def render_shares(shares: list[ShareEntry]) -> list[str]:
     rows = [fmt_row(s) for s in ordered]
 
     ### Column widths; right-align numeric columns for easier scanning
-    RIGHT_COLS = {2, 5}  # RawUsage, LevelFS
+    RIGHT_COLS = {2, 3, 6}  # Nodes, RawUsage, LevelFS
     widths = [len(h) for h in headers]
     for row in rows:
         for i, val in enumerate(row):
@@ -1002,7 +1030,7 @@ def render_all(
 
     lines: list[str] = []
     cluster = render_cluster_status(partitions)
-    share_lines = render_shares(shares)
+    share_lines = render_shares(shares, items)
     job_lines = render_jobs(items, etas, time_offset=time_offset)
 
     if cluster:
@@ -1355,7 +1383,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         if active_tab == 0:
             tab_lines = render_jobs(items, etas, time_offset=time_offset)
         else:
-            tab_lines = render_shares(shares)
+            tab_lines = render_shares(shares, items)
 
         if not cluster_lines and not tab_lines:
             lines = [
