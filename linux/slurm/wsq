@@ -1258,7 +1258,7 @@ HELP_LINES = [
     "",
 ]
 HELP_TITLE = " wsq help "
-HELP_WIDTH = max(len(line) for line in HELP_LINES) + 4
+HELP_WIDTH = max(len(ANSI_RE.sub("", line)) for line in HELP_LINES) + 4
 
 
 def _draw_help_overlay(stdscr: curses.window, h: int, w: int) -> None:
@@ -1268,16 +1268,21 @@ def _draw_help_overlay(stdscr: curses.window, h: int, w: int) -> None:
     y0 = max(0, (h - box_h) // 2)
     x0 = max(0, (w - box_w) // 2)
 
-    ### Draw box border
+    ### Draw box with opaque background - blank each row first
     top = f"╭─{HELP_TITLE}{'─' * (box_w - len(HELP_TITLE) - 3)}╮"
     bot = f"╰{'─' * (box_w - 2)}╯"
 
     try:
-        stdscr.addstr(y0, x0, top[:w], curses.A_BOLD)
+        stdscr.addstr(y0, x0, " " * box_w)
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
         for i, line in enumerate(HELP_LINES):
-            padded = f"│ {line:<{box_w - 3}}│"
+            stdscr.addstr(y0 + 1 + i, x0, " " * box_w)
+            visible_len = len(ANSI_RE.sub("", line))
+            pad = box_w - 3 - visible_len
+            padded = f"│ {line}{' ' * max(0, pad)}│"
             _addstr_ansi(stdscr, y0 + 1 + i, x0, padded, x0 + box_w)
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:w], curses.A_BOLD)
+        stdscr.addstr(y0 + box_h - 1, x0, " " * box_w)
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
     except curses.error:
         pass
 
