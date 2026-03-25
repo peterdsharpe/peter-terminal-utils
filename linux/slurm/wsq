@@ -702,8 +702,23 @@ def _notes(job: Job, etas: dict[str, str]) -> str:
     return " ".join(parts)
 
 
+BAR_WIDTH = 20
+
+
+def _utilization_bar(alloc: int, total: int) -> str:
+    """Render a 20-char utilization bar with gradient color and percentage."""
+    if total <= 0:
+        return ""
+    frac = alloc / total
+    filled = round(frac * BAR_WIDTH)
+    bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+    pct = f"{frac * 100:3.0f}%"
+    color = _gradient_ansi(frac)
+    return f"  {color}▐{bar}▌{RESET} {DIM}{pct}{RESET}"
+
+
 def render_cluster_status(partitions: list[Partition]) -> list[str]:
-    """Render the cluster status table."""
+    """Render the cluster status table with utilization bars and GPU summary."""
     if not partitions:
         return []
 
@@ -721,10 +736,23 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
             if v > 0:
                 col_w[i] = max(col_w[i], len(str(v)))
 
+    ### GPU summary from the largest GPU partition (avoids double-counting
+    ### overlapping partitions like batch / batch_long)
+    gpu_parts = [p for p in partitions if p.gpu_per_node > 0]
+    gpu_summary = ""
+    if gpu_parts:
+        biggest = max(gpu_parts, key=lambda p: p.total)
+        total_gpus = biggest.total * biggest.gpu_per_node
+        alloc_gpus = biggest.states.get("alloc", 0) * biggest.gpu_per_node
+        gpu_summary = f" \u2014 {alloc_gpus:,}/{total_gpus:,} GPUs allocated"
+
     lines: list[str] = []
     cluster = _get_cluster_name()
-    title = f"Cluster Status ({cluster}):" if cluster else "Cluster Status:"
-    lines.append(f"{BOLD}{title}{RESET}")
+    title_parts = ["Cluster Status"]
+    if cluster:
+        title_parts[0] += f" ({cluster})"
+    title_parts[0] += gpu_summary + ":"
+    lines.append(f"{BOLD}{title_parts[0]}{RESET}")
 
     ### Header row
     hdr = f"  {'':>{part_w}}"
@@ -732,7 +760,7 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
         hdr += f"  {col_colors[i]}{name:>{col_w[i]}}{RESET}"
     lines.append(hdr)
 
-    ### Data rows
+    ### Data rows with utilization bars
     for p in partitions:
         row = f"  {p.display_name:<{part_w}}"
         row += f"  {col_colors[0]}{p.total:>{col_w[0]}}{RESET}"
@@ -742,6 +770,7 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
                 row += f"  {col_colors[i]}{v:>{col_w[i]}}{RESET}"
             else:
                 row += f"  {DIM}{'-':>{col_w[i]}}{RESET}"
+        row += _utilization_bar(p.states.get("alloc", 0), p.total)
         lines.append(row)
 
     return lines
@@ -792,7 +821,9 @@ def render_shares(shares: list[ShareEntry]) -> list[str]:
                 parts.append(f"{v:<{widths[i]}}")
         return "  ".join(parts)
 
-    lines: list[str] = [pad(headers)]
+    header_str = pad(headers)
+    header_width = sum(widths) + 2 * (len(widths) - 1)
+    lines: list[str] = [header_str, f"{DIM}{'─' * header_width}{RESET}"]
     for entry, row in zip(ordered, rows):
         raw = pad(row)
         color = usage_color(entry.raw_usage)
@@ -821,7 +852,7 @@ def render_jobs(
     ### Separate jobs from summaries for column width computation
     job_items = [j for j in items if isinstance(j, Job)]
 
-    headers = ["Jobid", "Part", "Name", "User", "St", "Time", "#", "Notes"]
+    headers = ["JobID", "Part", "Name", "User", "St", "Time", "#", "Notes"]
 
     def job_row(j: Job) -> list[str]:
         displayed_time = j.time_str
@@ -859,7 +890,9 @@ def render_jobs(
                 parts.append(f"{v:<{widths[i]}}")
         return "  ".join(parts)
 
-    lines: list[str] = [fmt_line(headers)]
+    header_str = fmt_line(headers)
+    header_width = sum(widths) + 2 * (len(widths) - 1)
+    lines: list[str] = [header_str, f"{DIM}{'─' * header_width}{RESET}"]
 
     for item in items:
         if isinstance(item, SummaryLine):
@@ -884,6 +917,14 @@ def render_jobs(
         lines.append(colored)
 
     return lines
+
+
+SEPARATOR_WIDTH = 80
+
+
+def _separator() -> str:
+    """A dim horizontal rule for visual separation between sections."""
+    return f"{DIM}{'─' * SEPARATOR_WIDTH}{RESET}"
 
 
 def render_all(
@@ -913,11 +954,11 @@ def render_all(
         lines.extend(cluster)
     if share_lines:
         if lines:
-            lines.append("")
+            lines.append(_separator())
         lines.extend(share_lines)
     if job_lines:
         if lines:
-            lines.append("")
+            lines.append(_separator())
         lines.extend(job_lines)
     return lines
 
@@ -1164,6 +1205,52 @@ def _draw_scrollbar(
 
 TAB_NAMES = ["Jobs", "Shares"]
 
+HELP_LINES = [
+    "",
+    "  q          quit",
+    "  r          force refresh",
+    "  m / a / g  scope: me / all / group",
+    "  t          toggle ETAs",
+    "  tab        switch Jobs / Shares",
+    "  j/k  ↑↓    scroll (3 lines)",
+    "  PgUp/Dn    scroll page",
+    "  Home/End   top / bottom",
+    "  ?          this help",
+    "",
+    "  Colors: continuous log-scale gradient",
+    f"  {_gradient_ansi(0.0)}blue{RESET}=low  ────  {_gradient_ansi(1.0)}red{RESET}=high",
+    "",
+    "  Press any key to close",
+    "",
+]
+HELP_TITLE = " wsq help "
+HELP_WIDTH = max(len(line) for line in HELP_LINES) + 4
+
+
+def _draw_help_overlay(stdscr: curses.window, h: int, w: int) -> None:
+    """Draw a centered help box overlay and wait for any key to dismiss."""
+    box_w = min(HELP_WIDTH, w - 4)
+    box_h = len(HELP_LINES) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    ### Draw box border
+    top = f"╭─{HELP_TITLE}{'─' * (box_w - len(HELP_TITLE) - 3)}╮"
+    bot = f"╰{'─' * (box_w - 2)}╯"
+
+    try:
+        stdscr.addstr(y0, x0, top[:w], curses.A_BOLD)
+        for i, line in enumerate(HELP_LINES):
+            padded = f"│ {line:<{box_w - 3}}│"
+            _addstr_ansi(stdscr, y0 + 1 + i, x0, padded, x0 + box_w)
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    stdscr.getch()
+
 
 def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     """Main TUI loop with 1-second visual ticks, periodic data refresh, and tabbed panes."""
@@ -1216,7 +1303,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 f"{DIM}Retrying on next refresh...{RESET}",
             ]
         else:
-            lines = cluster_lines + ([""] if cluster_lines and tab_lines else []) + tab_lines
+            lines = cluster_lines + ([_separator()] if cluster_lines and tab_lines else []) + tab_lines
 
         ### Update scroll state
         scroll.total = len(lines)
@@ -1258,7 +1345,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         timing_tag = " · etas:on" if timing else ""
         status = (
             f" {scope}{timing_tag} · {age_str}"
-            f" · q:quit  r:refresh  m/a/g:scope  t:etas  tab:switch  j/k:scroll"
+            f" · q:quit  r:refresh  m/a/g:scope  t:etas  tab:switch  j/k:scroll  ?:help"
         )
         try:
             padded = status[:w].ljust(w)
@@ -1274,6 +1361,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         if key == ord("q") or key == 27:
             break
+        elif key == ord("?"):
+            _draw_help_overlay(stdscr, h, w)
         elif key == ord("\t"):
             active_tab = 1 - active_tab
         elif key == ord("r"):
