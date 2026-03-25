@@ -54,7 +54,7 @@ STATE_COLS = [
     ("mixed", YELLOW),
     ("alloc", RED),
     ("comp", BLUE),
-    ("plnd", DIM),
+    ("plan", DIM),
     ("drain", DIM),
     ("maint", DIM),
     ("resv", DIM),
@@ -69,7 +69,7 @@ SINFO_STATE_MAP = {
     "mix": "mixed",
     "mix-": "mixed",
     "comp": "comp",
-    "plnd": "plnd",
+    "plnd": "plan",
     "drain": "drain",
     "drain$": "drain",
     "drain*": "drain",
@@ -552,12 +552,28 @@ def collapse_arrays(jobs: list[Job]) -> list[Job]:
 
     ### Match running tasks to pending array specs
     absorbed: set[int] = set()
+    running_by_base: dict[str, Job] = {}
     for job in jobs:
         if job.state == "R" and "_" in job.jobid and "[" not in job.jobid:
             base = job.jobid.split("_")[0]
+            running_by_base.setdefault(base, job)
             if base in pending:
                 job.array_count = _array_count(pending[base].jobid)
                 absorbed.add(id(pending[base]))
+
+    ### Second pass: catch individual pending array tasks (no bracket notation,
+    ### e.g., "2014800_5" when only one task is pending)
+    for job in jobs:
+        if (
+            job.state == "PD"
+            and "_" in job.jobid
+            and "[" not in job.jobid
+            and id(job) not in absorbed
+        ):
+            base = job.jobid.split("_")[0]
+            if base in running_by_base:
+                running_by_base[base].array_count += 1
+                absorbed.add(id(job))
 
     return [j for j in jobs if id(j) not in absorbed]
 
@@ -725,7 +741,7 @@ BAR_SEGMENTS = [
     (["mixed"], "█", YELLOW),
     (["alloc"], "█", RED),
     (["comp"], "█", BLUE),
-    (["plnd"], "█", DIM),
+    (["plan"], "█", DIM),
     (["drain", "maint", "resv", "down"], "█", DIM),
 ]
 
@@ -772,10 +788,40 @@ def _utilization_bar(states: dict[str, int], total: int) -> str:
     return f"  ▐{bar}▌ {DIM}{pct} idle{RESET}"
 
 
+def _dedup_partitions(partitions: list[Partition]) -> list[Partition]:
+    """Merge partitions that share identical nodes (same total, states, gpu).
+
+    Overlapping partitions like batch/batch_long map to the same physical
+    nodes and always have identical state counts. Merge their names into
+    a single comma-separated entry to avoid duplicate rows.
+    """
+    groups: dict[tuple, list[Partition]] = {}
+    for p in partitions:
+        key = (p.total, tuple(sorted(p.states.items())), p.gpu_per_node)
+        groups.setdefault(key, []).append(p)
+
+    merged: list[Partition] = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0])
+        else:
+            combined = Partition(
+                name=", ".join(p.name for p in group),
+                gpu_per_node=group[0].gpu_per_node,
+                total=group[0].total,
+                states=group[0].states,
+            )
+            merged.append(combined)
+    merged.sort(key=lambda p: p.total, reverse=True)
+    return merged
+
+
 def render_cluster_status(partitions: list[Partition]) -> list[str]:
     """Render the cluster status table with utilization bars and GPU summary."""
     if not partitions:
         return []
+
+    partitions = _dedup_partitions(partitions)
 
     col_names = [name for name, _ in STATE_COLS]
     col_colors = [color for _, color in STATE_COLS]
