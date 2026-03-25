@@ -14,6 +14,7 @@ Usage:
 import argparse
 import curses
 import datetime
+import functools
 import os
 import re
 import subprocess
@@ -183,6 +184,16 @@ def _run(cmd: list[str], timeout: int | None = None) -> str:
         return r.stdout
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
+
+
+@functools.cache
+def _get_cluster_name() -> str:
+    """Get the Slurm cluster name (cached after first call)."""
+    out = _run(["scontrol", "show", "config"], timeout=10)
+    for line in out.splitlines():
+        if line.strip().startswith("ClusterName"):
+            return line.split("=", 1)[1].strip()
+    return ""
 
 
 ###############################################################################
@@ -702,7 +713,9 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
                 col_w[i] = max(col_w[i], len(str(v)))
 
     lines: list[str] = []
-    lines.append(f"{BOLD}Cluster Status:{RESET}")
+    cluster = _get_cluster_name()
+    title = f"Cluster Status ({cluster}):" if cluster else "Cluster Status:"
+    lines.append(f"{BOLD}{title}{RESET}")
 
     ### Header row
     hdr = f"  {'':>{part_w}}"
@@ -730,13 +743,13 @@ def render_shares(shares: list[ShareEntry]) -> list[str]:
     if not shares:
         return []
 
-    users = sorted(
-        [s for s in shares if not s.is_group], key=lambda s: s.raw_usage
-    )
     groups = sorted(
-        [s for s in shares if s.is_group], key=lambda s: s.raw_usage
+        [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True
     )
-    ordered = users + groups
+    users = sorted(
+        [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True
+    )
+    ordered = groups + users
 
     ### Build row data as strings
     headers = ["Account", "User", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
@@ -1083,8 +1096,11 @@ def _draw_scrollbar(
             pass
 
 
+TAB_NAMES = ["Jobs", "Shares"]
+
+
 def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
-    """Main TUI loop with 1-second visual ticks and periodic data refresh."""
+    """Main TUI loop with 1-second visual ticks, periodic data refresh, and tabbed panes."""
     _init_colors()
     _build_attr_map()
     curses.curs_set(0)
@@ -1100,7 +1116,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     items: list[JobOrSummary] = []
     etas: dict[str, str] = {}
 
-    scroll = ScrollState()
+    active_tab = 0
+    scroll_per_tab = [ScrollState(), ScrollState()]
     last_fetch = 0.0
     needs_refresh = True
     scrollbar_attr = curses.color_pair(C_SCROLLBAR)
@@ -1109,6 +1126,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         now = time.time()
         h, w = stdscr.getmaxyx()
         content_h = h - 1
+        scroll = scroll_per_tab[active_tab]
 
         ### Refresh data from Slurm if interval elapsed or forced
         if needs_refresh or (now - last_fetch) >= interval:
@@ -1117,9 +1135,21 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             now = last_fetch
             needs_refresh = False
 
-        ### Re-render every tick with live time offset for running jobs
+        ### Render: cluster status (always) + active tab content
+        cluster_lines = render_cluster_status(partitions)
         time_offset = int(now - last_fetch)
-        lines = render_all(partitions, shares, items, etas, time_offset=time_offset)
+        if active_tab == 0:
+            tab_lines = render_jobs(items, etas, time_offset=time_offset)
+        else:
+            tab_lines = render_shares(shares)
+
+        if not cluster_lines and not tab_lines:
+            lines = [
+                f"{DIM}No data available (Slurm controller may be unreachable).{RESET}",
+                f"{DIM}Retrying on next refresh...{RESET}",
+            ]
+        else:
+            lines = cluster_lines + ([""] if cluster_lines and tab_lines else []) + tab_lines
 
         ### Update scroll state
         scroll.total = len(lines)
@@ -1139,13 +1169,29 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         if needs_scrollbar:
             _draw_scrollbar(stdscr, w - 1, 0, content_h, scroll, scrollbar_attr)
 
+        ### Draw tab indicators right-aligned on the title line (row 0)
+        tab_parts = []
+        for i, name in enumerate(TAB_NAMES):
+            tab_parts.append(f"[{name}]" if i == active_tab else f" {name} ")
+        tab_label = "  ".join(tab_parts)
+        tab_x = max(0, w - len(tab_label) - 1)
+        col = tab_x
+        for i, name in enumerate(TAB_NAMES):
+            segment = f"[{name}]" if i == active_tab else f" {name} "
+            attr = curses.A_BOLD if i == active_tab else curses.A_DIM
+            try:
+                stdscr.addstr(0, col, segment, attr)
+            except curses.error:
+                pass
+            col += len(segment) + 2
+
         ### Status bar
         age = int(now - last_fetch)
         age_str = f"{age}s ago" if age > 0 else "just now"
         timing_tag = " · etas:on" if timing else ""
         status = (
             f" {scope}{timing_tag} · {age_str}"
-            f" · q:quit  r:refresh  m/a/g:scope  t:etas  j/k:scroll"
+            f" · q:quit  r:refresh  m/a/g:scope  t:etas  tab:switch  j/k:scroll"
         )
         try:
             padded = status[:w].ljust(w)
@@ -1161,6 +1207,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         if key == ord("q") or key == 27:
             break
+        elif key == ord("\t"):
+            active_tab = 1 - active_tab
         elif key == ord("r"):
             needs_refresh = True
         elif key == ord("m"):
