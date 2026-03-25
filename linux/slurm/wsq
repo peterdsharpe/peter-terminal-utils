@@ -1,3 +1,1261 @@
-#!/bin/bash
+#!/usr/bin/env python3
+"""wsq - Slurm queue monitor with curses TUI and static output modes.
 
-watch --color -w -n 5 sq -mt
+Usage:
+    wsq                  # TUI mode, auto-refresh every 5s
+    wsq --static         # One-shot print to stdout (aliased as 'sq')
+    wsq -m               # Scope: my jobs only
+    wsq -a               # Scope: all cluster jobs
+    wsq -r               # Filter: running jobs only
+    wsq -t               # Show ETAs for pending Priority jobs
+    wsq -n 10            # Set TUI refresh interval (seconds)
+"""
+
+import argparse
+import curses
+import datetime
+import os
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+
+###############################################################################
+### Configuration
+###############################################################################
+
+SLURM_GROUP = "coreai_modulus_cae"
+CURRENT_USER = os.environ.get("USER", "")
+
+### ANSI escape codes
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+CYAN = "\033[36m"
+ORANGE = "\033[38;5;208m"
+
+### Curses color pair indices (initialized in TUI mode)
+C_RED, C_GREEN, C_YELLOW, C_BLUE, C_CYAN, C_ORANGE = 1, 2, 3, 4, 5, 6
+
+### State category display order and ANSI colors
+STATE_COLS = [
+    ("nodes", BOLD),
+    ("alloc", RED),
+    ("idle", GREEN),
+    ("mixed", YELLOW),
+    ("comp", BLUE),
+    ("drain", DIM),
+    ("maint", DIM),
+    ("resv", DIM),
+    ("down", DIM),
+]
+
+### sinfo state name -> display category
+SINFO_STATE_MAP = {
+    "alloc": "alloc",
+    "idle": "idle",
+    "mix": "mixed",
+    "comp": "comp",
+    "drain": "drain",
+    "drng": "drain",
+    "maint": "maint",
+    "resv": "resv",
+    "down": "down",
+    "down*": "down",
+}
+
+### Usage color thresholds (RawUsage -> ANSI code)
+USAGE_THRESHOLDS = [
+    (10_000, BLUE),
+    (50_000, CYAN),
+    (200_000, GREEN),
+    (1_000_000, YELLOW),
+    (5_000_000, ORANGE),
+]
+
+### Node count -> ANSI color for running jobs
+NODE_COLOR_THRESHOLDS = [
+    (1, BLUE),
+    (3, CYAN),
+    (7, GREEN),
+    (15, YELLOW),
+    (31, ORANGE),
+]
+
+
+def usage_color(raw_usage: int) -> str:
+    for threshold, color in USAGE_THRESHOLDS:
+        if raw_usage < threshold:
+            return color
+    return RED
+
+
+def node_color(nodes: int) -> str:
+    for threshold, color in NODE_COLOR_THRESHOLDS:
+        if nodes <= threshold:
+            return color
+    return RED
+
+
+###############################################################################
+### Data Models
+###############################################################################
+
+
+@dataclass
+class Partition:
+    name: str
+    gpu_per_node: int
+    total: int = 0
+    states: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def display_name(self) -> str:
+        if self.gpu_per_node > 0:
+            return f"{self.name} ({self.gpu_per_node} gpu/node)"
+        return self.name
+
+
+@dataclass
+class ShareEntry:
+    account: str
+    user: str
+    raw_usage: int
+    norm_usage: float
+    effectv_usage: float
+    level_fs: float | None
+
+    @property
+    def is_group(self) -> bool:
+        return not self.user
+
+
+@dataclass
+class Job:
+    jobid: str
+    partition: str
+    name: str
+    user: str
+    state: str
+    time_str: str
+    nodes: int
+    reason: str
+    dep_count: int = 0
+    array_count: int = 0
+    task_count: int = 0
+
+
+@dataclass
+class SummaryLine:
+    """A collapsed batch of similar pending jobs from one user."""
+
+    user: str
+    partition: str
+    count: int
+    nodes: int
+    reason: str
+
+
+JobOrSummary = Job | SummaryLine
+
+
+###############################################################################
+### Subprocess Helpers
+###############################################################################
+
+
+CMD_TIMEOUT = 30
+
+
+def _run(cmd: list[str], timeout: int | None = None) -> str:
+    """Run a command, return stdout. Returns empty string on failure."""
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout if timeout is not None else CMD_TIMEOUT,
+        )
+        return r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
+###############################################################################
+### Data Fetching
+###############################################################################
+
+
+def _sinfo_cmd() -> list[str]:
+    return ["sinfo", "--format=%P %t %D %G", "--noheader"]
+
+
+def _sshare_cmd(scope: str) -> list[str]:
+    fmt = "Account%50,User%30,RawUsage,NormUsage,EffectvUsage,LevelFS"
+    cmd = ["sshare", f"--format={fmt}"]
+    if scope == "me":
+        cmd.extend(["-A", SLURM_GROUP])
+    elif scope == "group":
+        cmd.extend(["-A", SLURM_GROUP, "-a"])
+    else:
+        cmd.append("-a")
+    return cmd
+
+
+def _squeue_cmd(scope: str, running_only: bool) -> list[str]:
+    sep = "\x1f"
+    fmt = sep.join(["%18i", "%12P", "%200j", "%20u", "%2t", "%10M", "%6D", "%40r"])
+    cmd = ["squeue", f"--format={fmt}"]
+    if scope == "me":
+        cmd.append("--me")
+    elif scope == "group":
+        cmd.extend(["-A", SLURM_GROUP])
+    if running_only:
+        cmd.extend(["-t", "R"])
+    return cmd
+
+
+def _fetch_eta(jobid: str, now: float) -> tuple[str, str]:
+    """Fetch ETA for a single job via scontrol."""
+    try:
+        out = _run(["scontrol", "show", "job", jobid], timeout=10)
+        for token in out.split():
+            if token.startswith("StartTime="):
+                val = token.split("=", 1)[1]
+                if val in ("Unknown", "N/A", ""):
+                    return jobid, "Unknown"
+                ts = datetime.datetime.fromisoformat(val).timestamp()
+                diff = ts - now
+                if diff < 0:
+                    return jobid, "imminent"
+                h, rem = divmod(int(diff), 3600)
+                m = rem // 60
+                return jobid, f"{h}:{m:02d}"
+    except Exception:
+        pass
+    return jobid, "Unknown"
+
+
+def fetch_all(
+    scope: str, running_only: bool, timing: bool
+) -> tuple[list[Partition], list[ShareEntry], list[JobOrSummary], dict[str, str]]:
+    """Fetch sinfo + sshare + squeue in parallel, process, return ready-to-render data.
+
+    When running_only is True, we still fetch ALL jobs for chain collapsing
+    (so +N dep counts are accurate), then filter to running afterward.
+    """
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_info = pool.submit(_run, _sinfo_cmd())
+        f_share = pool.submit(_run, _sshare_cmd(scope))
+        ### Always fetch all states for accurate chain counts
+        f_queue = pool.submit(_run, _squeue_cmd(scope, running_only=False))
+
+        partitions = parse_sinfo(f_info.result())
+        shares = parse_sshare(f_share.result())
+        jobs = parse_squeue(f_queue.result())
+
+    jobs = collapse_chains(jobs)
+    jobs = collapse_arrays(jobs)
+    jobs = collapse_running_arrays(jobs)
+
+    if running_only:
+        jobs = [j for j in jobs if j.state == "R"]
+
+    items = collapse_user_batches(jobs)
+    items = sort_items(items)
+
+    etas: dict[str, str] = {}
+    if timing:
+        prio_ids = [
+            j.jobid
+            for j in items
+            if isinstance(j, Job) and j.state == "PD" and j.reason == "Priority"
+        ]
+        if prio_ids:
+            now = time.time()
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for jid, eta in pool.map(lambda jid: _fetch_eta(jid, now), prio_ids):
+                    etas[jid] = eta
+
+    return partitions, shares, items, etas
+
+
+###############################################################################
+### Parsing
+###############################################################################
+
+
+def parse_sinfo(output: str) -> list[Partition]:
+    """Parse sinfo --format='%P %t %D %G' --noheader output."""
+    parts: dict[str, Partition] = {}
+
+    for line in output.strip().splitlines():
+        tokens = line.split()
+        if len(tokens) < 3:
+            continue
+
+        name = tokens[0].rstrip("*")
+        state_raw = tokens[1]
+        count = int(tokens[2])
+        gres = tokens[3] if len(tokens) > 3 else ""
+
+        if name not in parts:
+            gpu = 0
+            if gres.startswith("gpu:"):
+                try:
+                    gpu = int(gres.split(":")[1].split("(")[0])
+                except (ValueError, IndexError):
+                    pass
+            parts[name] = Partition(name=name, gpu_per_node=gpu)
+
+        p = parts[name]
+        p.total += count
+        cat = SINFO_STATE_MAP.get(state_raw, "")
+        if cat:
+            p.states[cat] = p.states.get(cat, 0) + count
+
+    result = [p for p in parts.values() if p.total > 0]
+    result.sort(key=lambda p: p.total, reverse=True)
+    return result
+
+
+def parse_sshare(output: str) -> list[ShareEntry]:
+    """Parse sshare fixed-width output using the separator line to find column positions."""
+    lines = output.strip().splitlines()
+    if len(lines) < 3:
+        return []
+
+    # Column boundaries from the dash-separator line
+    sep = lines[1]
+    ranges: list[tuple[int, int]] = []
+    in_dash = False
+    start = 0
+    for i, ch in enumerate(sep):
+        if ch == "-" and not in_dash:
+            start = i
+            in_dash = True
+        elif ch != "-" and in_dash:
+            ranges.append((start, i))
+            in_dash = False
+    if in_dash:
+        ranges.append((start, len(sep)))
+
+    def field(line: str, idx: int) -> str:
+        if idx >= len(ranges):
+            return ""
+        s, e = ranges[idx]
+        return line[s:e].strip() if s < len(line) else ""
+
+    entries: list[ShareEntry] = []
+    for line in lines[2:]:
+        account = field(line, 0)
+        user = field(line, 1)
+        if account == "root":
+            continue
+
+        try:
+            raw = int(field(line, 2) or "0")
+        except ValueError:
+            raw = 0
+        if raw == 0:
+            continue
+
+        try:
+            norm = float(field(line, 3) or "0")
+        except ValueError:
+            norm = 0.0
+        try:
+            eff = float(field(line, 4) or "0")
+        except ValueError:
+            eff = 0.0
+
+        lfs_str = field(line, 5)
+        try:
+            lfs = float(lfs_str) if lfs_str else None
+        except ValueError:
+            lfs = None
+
+        entries.append(
+            ShareEntry(
+                account=account, user=user, raw_usage=raw,
+                norm_usage=norm, effectv_usage=eff, level_fs=lfs,
+            )
+        )
+
+    return entries
+
+
+def parse_squeue(output: str) -> list[Job]:
+    """Parse squeue output delimited by \\x1f."""
+    lines = output.strip().splitlines()
+    if len(lines) < 2:
+        return []
+
+    jobs: list[Job] = []
+    for line in lines[1:]:
+        fields = line.split("\x1f")
+        if len(fields) < 8:
+            continue
+        fields = [f.strip() for f in fields]
+
+        name = fields[2]
+        user = fields[3]
+
+        ### Strip redundant {SLURM_GROUP}-{user}. prefix from job names
+        prefix = f"{SLURM_GROUP}-{user}."
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+
+        try:
+            nodes = int(fields[6])
+        except ValueError:
+            nodes = 0
+
+        jobs.append(
+            Job(
+                jobid=fields[0], partition=fields[1], name=name,
+                user=user, state=fields[4], time_str=fields[5],
+                nodes=nodes, reason=fields[7],
+            )
+        )
+    return jobs
+
+
+###############################################################################
+### Processing
+###############################################################################
+
+
+def collapse_chains(jobs: list[Job]) -> list[Job]:
+    """Merge dependency-chain jobs into their head (Running or Priority) job.
+
+    Groups by (name, user, partition, nodes). Within each group, the head is
+    the Running job if one exists, otherwise the first Priority-pending job.
+    All Dependency-pending members are absorbed into head.dep_count.
+    """
+    ### Build groups
+    groups: dict[tuple[str, str, str, int], list[Job]] = {}
+    for job in jobs:
+        key = (job.name, job.user, job.partition, job.nodes)
+        groups.setdefault(key, []).append(job)
+
+    ### Identify heads and dependency counts
+    heads: dict[tuple, Job] = {}
+    dep_counts: dict[tuple, int] = {}
+
+    for key, group in groups.items():
+        head: Job | None = None
+        dep_count = 0
+
+        for job in group:
+            if job.state == "R":
+                if head is None or head.state != "R":
+                    head = job
+            elif job.reason == "Priority":
+                if head is None or head.state != "R":
+                    head = job
+            elif job.reason == "Dependency":
+                dep_count += 1
+
+        if head is not None and dep_count > 0:
+            heads[key] = head
+            dep_counts[key] = dep_count
+
+    ### Rebuild job list, skipping absorbed dependency jobs
+    result: list[Job] = []
+    for job in jobs:
+        key = (job.name, job.user, job.partition, job.nodes)
+        if key in heads:
+            if job is heads[key]:
+                job.dep_count = dep_counts[key]
+                result.append(job)
+            elif job.reason == "Dependency" and job.state == "PD":
+                continue
+            else:
+                result.append(job)
+        else:
+            result.append(job)
+    return result
+
+
+def collapse_arrays(jobs: list[Job]) -> list[Job]:
+    """Merge pending job-array tasks into the running array task.
+
+    Detects pending array specs (jobid contains '[') and matches them to
+    running tasks sharing the same base ID.
+    """
+    ### Map base_id -> pending array job
+    pending: dict[str, Job] = {}
+    for job in jobs:
+        if job.state == "PD" and "[" in job.jobid:
+            base = job.jobid.split("_")[0]
+            pending[base] = job
+
+    if not pending:
+        return jobs
+
+    ### Parse count from array spec like "[3-5%1]"
+    def _array_count(spec: str) -> int:
+        m = re.search(r"\[([^\]]+)\]", spec)
+        if not m:
+            return 0
+        inner = m.group(1).split("%")[0]
+        count = 0
+        for part in inner.split(","):
+            if "-" in part:
+                try:
+                    lo, hi = part.split("-", 1)
+                    count += int(hi) - int(lo) + 1
+                except ValueError:
+                    count += 1
+            else:
+                count += 1
+        return count
+
+    ### Match running tasks to pending array specs
+    absorbed: set[int] = set()
+    for job in jobs:
+        if job.state == "R" and "_" in job.jobid and "[" not in job.jobid:
+            base = job.jobid.split("_")[0]
+            if base in pending:
+                job.array_count = _array_count(pending[base].jobid)
+                absorbed.add(id(pending[base]))
+
+    return [j for j in jobs if id(j) not in absorbed]
+
+
+def collapse_running_arrays(jobs: list[Job]) -> list[Job]:
+    """Collapse running array tasks that share the same base job ID.
+
+    Groups running jobs whose jobid contains '_' by (base_id, name, user,
+    partition, nodes). For groups with >1 member, keeps the longest-running
+    task, sets jobid to the base ID, multiplies nodes by the task count,
+    and stores the count in task_count for display.
+    """
+    ### Identify running jobs with array-task suffixes
+    array_groups: dict[tuple, list[Job]] = {}
+    for job in jobs:
+        if job.state == "R" and "_" in job.jobid and "[" not in job.jobid:
+            base = job.jobid.split("_")[0]
+            key = (base, job.name, job.user, job.partition, job.nodes)
+            array_groups.setdefault(key, []).append(job)
+
+    ### For groups with >1 task, pick the longest-running and annotate
+    collapsed_ids: set[int] = set()
+    for (base, _name, _user, _part, nodes_per_task), group in array_groups.items():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda j: _time_seconds(j.time_str), reverse=True)
+        head = group[0]
+        head.jobid = base
+        head.nodes = nodes_per_task * len(group)
+        head.task_count = len(group)
+        for other in group[1:]:
+            collapsed_ids.add(id(other))
+
+    return [j for j in jobs if id(j) not in collapsed_ids]
+
+
+def collapse_user_batches(
+    jobs: list[Job], threshold: int = 5
+) -> list[JobOrSummary]:
+    """Replace large blocks of same-user pending jobs with summary lines.
+
+    Only collapses jobs that weren't already absorbed by chain/array collapse
+    (i.e., standalone pending jobs with no dep_count or array_count).
+    """
+    ### Group standalone pending jobs by (user, partition, reason, nodes)
+    groups: dict[tuple, list[Job]] = {}
+    for job in jobs:
+        if (
+            job.state == "PD"
+            and job.dep_count == 0
+            and job.array_count == 0
+            and job.reason not in ("None", "")
+        ):
+            key = (job.user, job.partition, job.reason, job.nodes)
+            groups.setdefault(key, []).append(job)
+
+    collapsed_ids: set[int] = set()
+    summaries: list[SummaryLine] = []
+    for (user, partition, reason, nodes), group in groups.items():
+        if len(group) > threshold:
+            for job in group:
+                collapsed_ids.add(id(job))
+            summaries.append(
+                SummaryLine(
+                    user=user, partition=partition,
+                    count=len(group), nodes=nodes, reason=reason,
+                )
+            )
+
+    result: list[JobOrSummary] = list(summaries)
+    result.extend(j for j in jobs if id(j) not in collapsed_ids)
+    return result
+
+
+###############################################################################
+### Sorting
+###############################################################################
+
+
+def _time_seconds(t: str) -> int:
+    """Convert Slurm time string (D-HH:MM:SS, HH:MM:SS, MM:SS) to seconds."""
+    if "-" in t:
+        day_part, rest = t.split("-", 1)
+        parts = rest.split(":")
+        return (
+            int(day_part) * 86400
+            + int(parts[0]) * 3600
+            + int(parts[1]) * 60
+            + (int(parts[2]) if len(parts) > 2 else 0)
+        )
+    parts = t.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    return 0
+
+
+def _format_seconds(total: int) -> str:
+    """Convert seconds back to Slurm-style time string (D-HH:MM:SS or H:MM:SS)."""
+    if total < 0:
+        total = 0
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days > 0:
+        return f"{days}-{hours:02d}:{minutes:02d}:{seconds:02d}"
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def sort_items(items: list[JobOrSummary]) -> list[JobOrSummary]:
+    """Sort: summaries with PD, then PD jobs, then R jobs. Within each: user, nodes desc, time desc."""
+
+    def key(item: JobOrSummary) -> tuple:
+        if isinstance(item, SummaryLine):
+            return (0, item.user, -item.nodes, 0, "")
+        state_ord = 0 if item.state == "PD" else 1
+        return (
+            state_ord,
+            item.user,
+            -item.nodes,
+            -_time_seconds(item.time_str),
+            item.name,
+        )
+
+    return sorted(items, key=key)
+
+
+###############################################################################
+### Rendering (produces ANSI-colored strings, shared by static + TUI)
+###############################################################################
+
+
+def _notes(job: Job, etas: dict[str, str]) -> str:
+    """Build the Notes column value for a job."""
+    parts: list[str] = []
+
+    if job.state == "PD":
+        if job.reason not in ("None", ""):
+            parts.append(job.reason)
+        eta = etas.get(job.jobid, "")
+        if eta:
+            parts.append(f"ETA:{eta}")
+        if job.dep_count > 0:
+            parts.append(f"+{job.dep_count} dep")
+    else:
+        if job.dep_count > 0:
+            parts.append(f"+{job.dep_count} dep")
+        if job.array_count > 0:
+            parts.append(f"+{job.array_count} array")
+        if job.task_count > 0:
+            parts.append(f"split over {job.task_count} tasks")
+
+    return " ".join(parts)
+
+
+def render_cluster_status(partitions: list[Partition]) -> list[str]:
+    """Render the cluster status table."""
+    if not partitions:
+        return []
+
+    col_names = [name for name, _ in STATE_COLS]
+    col_colors = [color for _, color in STATE_COLS]
+
+    ### Compute column widths
+    col_w = [len(n) for n in col_names]
+    part_w = max(len(p.display_name) for p in partitions)
+
+    for p in partitions:
+        col_w[0] = max(col_w[0], len(str(p.total)))
+        for i, name in enumerate(col_names[1:], 1):
+            v = p.states.get(name, 0)
+            if v > 0:
+                col_w[i] = max(col_w[i], len(str(v)))
+
+    lines: list[str] = []
+    lines.append(f"{BOLD}Cluster Status:{RESET}")
+
+    ### Header row
+    hdr = f"  {'':>{part_w}}"
+    for i, name in enumerate(col_names):
+        hdr += f"  {col_colors[i]}{name:>{col_w[i]}}{RESET}"
+    lines.append(hdr)
+
+    ### Data rows
+    for p in partitions:
+        row = f"  {p.display_name:<{part_w}}"
+        row += f"  {col_colors[0]}{p.total:>{col_w[0]}}{RESET}"
+        for i, name in enumerate(col_names[1:], 1):
+            v = p.states.get(name, 0)
+            if v > 0:
+                row += f"  {col_colors[i]}{v:>{col_w[i]}}{RESET}"
+            else:
+                row += f"  {DIM}{'-':>{col_w[i]}}{RESET}"
+        lines.append(row)
+
+    return lines
+
+
+def render_shares(shares: list[ShareEntry]) -> list[str]:
+    """Render the sshare table (6 columns, sorted by usage)."""
+    if not shares:
+        return []
+
+    users = sorted(
+        [s for s in shares if not s.is_group], key=lambda s: s.raw_usage
+    )
+    groups = sorted(
+        [s for s in shares if s.is_group], key=lambda s: s.raw_usage
+    )
+    ordered = users + groups
+
+    ### Build row data as strings
+    headers = ["Account", "User", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
+
+    def fmt_row(s: ShareEntry) -> list[str]:
+        lfs = f"{s.level_fs:.6f}" if s.level_fs is not None else ""
+        return [
+            s.account,
+            s.user,
+            f"{s.raw_usage:,}",
+            f"{s.norm_usage:.6f}",
+            f"{s.effectv_usage:.6f}",
+            lfs,
+        ]
+
+    rows = [fmt_row(s) for s in ordered]
+
+    ### Column widths; right-align numeric columns for easier scanning
+    RIGHT_COLS = {2, 5}  # RawUsage, LevelFS
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(val))
+
+    def pad(vals: list[str]) -> str:
+        parts = []
+        for i, v in enumerate(vals):
+            if i in RIGHT_COLS:
+                parts.append(f"{v:>{widths[i]}}")
+            else:
+                parts.append(f"{v:<{widths[i]}}")
+        return "  ".join(parts)
+
+    lines: list[str] = [pad(headers)]
+    for entry, row in zip(ordered, rows):
+        raw = pad(row)
+        color = usage_color(entry.raw_usage)
+        is_me = entry.user == CURRENT_USER or (
+            entry.is_group and entry.account == SLURM_GROUP
+        )
+        if is_me:
+            lines.append(f"{BOLD}{color}{raw}{RESET}")
+        else:
+            lines.append(f"{color}{raw}{RESET}")
+
+    return lines
+
+
+def render_jobs(
+    items: list[JobOrSummary], etas: dict[str, str], time_offset: int = 0
+) -> list[str]:
+    """Render the job table with chain/array annotations.
+
+    Args:
+        time_offset: Seconds to add to running job times (for TUI live ticking).
+    """
+    if not items:
+        return []
+
+    ### Separate jobs from summaries for column width computation
+    job_items = [j for j in items if isinstance(j, Job)]
+
+    headers = ["Jobid", "Part", "Name", "User", "St", "Time", "#", "Notes"]
+
+    def job_row(j: Job) -> list[str]:
+        displayed_time = j.time_str
+        if time_offset > 0 and j.state == "R":
+            displayed_time = _format_seconds(_time_seconds(j.time_str) + time_offset)
+        return [
+            j.jobid, j.partition, j.name, j.user,
+            j.state, displayed_time, str(j.nodes), _notes(j, etas),
+        ]
+
+    rows = {id(j): job_row(j) for j in job_items}
+
+    ### Truncate other users' names to avoid extreme horizontal sprawl.
+    ### Cap is max(65, longest current-user name) so the column is never wider
+    ### than needed for your own jobs.
+    my_names = [r[2] for j, r in zip(job_items, rows.values()) if j.user == CURRENT_USER]
+    name_cap = max(65, max((len(n) for n in my_names), default=0))
+    for j, row in zip(job_items, rows.values()):
+        if j.user != CURRENT_USER and len(row[2]) > name_cap:
+            row[2] = row[2][: name_cap - 1] + "\u2026"
+
+    ### Column widths from headers + job data
+    widths = [len(h) for h in headers]
+    for row in rows.values():
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(val))
+
+    ### Right-align # column, left-align everything else
+    def fmt_line(vals: list[str]) -> str:
+        parts = []
+        for i, v in enumerate(vals):
+            if i in (5, 6):  # Time and # columns are right-aligned
+                parts.append(f"{v:>{widths[i]}}")
+            else:
+                parts.append(f"{v:<{widths[i]}}")
+        return "  ".join(parts)
+
+    lines: list[str] = [fmt_line(headers)]
+
+    for item in items:
+        if isinstance(item, SummaryLine):
+            text = (
+                f"  {item.user}: {item.count} {item.partition} jobs pending"
+                f" ({item.reason}), {item.nodes} nodes each"
+            )
+            lines.append(f"{DIM}{text}{RESET}")
+            continue
+
+        row = rows[id(item)]
+        raw = fmt_line(row)
+
+        if item.state == "PD":
+            colored = f"{DIM}{raw}{RESET}"
+        else:
+            colored = f"{node_color(item.nodes)}{raw}{RESET}"
+
+        if item.user == CURRENT_USER:
+            colored = f"{BOLD}{colored}"
+
+        lines.append(colored)
+
+    return lines
+
+
+def render_all(
+    partitions: list[Partition],
+    shares: list[ShareEntry],
+    items: list[JobOrSummary],
+    etas: dict[str, str],
+    time_offset: int = 0,
+) -> list[str]:
+    """Render all sections into a flat list of ANSI-colored lines.
+
+    Args:
+        time_offset: Seconds to add to running job times (for TUI live ticking).
+    """
+    if not partitions and not shares and not items:
+        return [
+            f"{DIM}No data available (Slurm controller may be unreachable).{RESET}",
+            f"{DIM}Retrying on next refresh...{RESET}",
+        ]
+
+    lines: list[str] = []
+    cluster = render_cluster_status(partitions)
+    share_lines = render_shares(shares)
+    job_lines = render_jobs(items, etas, time_offset=time_offset)
+
+    if cluster:
+        lines.extend(cluster)
+    if share_lines:
+        if lines:
+            lines.append("")
+        lines.extend(share_lines)
+    if job_lines:
+        if lines:
+            lines.append("")
+        lines.extend(job_lines)
+    return lines
+
+
+###############################################################################
+### Static Mode
+###############################################################################
+
+
+def run_static(args: argparse.Namespace) -> None:
+    """One-shot print to stdout."""
+    partitions, shares, items, etas = fetch_all(
+        args.scope, args.running, args.timing
+    )
+    for line in render_all(partitions, shares, items, etas):
+        print(line)
+
+
+###############################################################################
+### TUI Mode (curses)
+###############################################################################
+
+ANSI_RE = re.compile(r"\033\[([0-9;]*)m")
+
+### Scrollbar color pair index and Unicode eighth-block characters
+C_SCROLLBAR = 7
+LOWER_EIGHTHS = " ▁▂▃▄▅▆▇█"
+UPPER_EIGHTHS = " ▔🮂🮃▀🮄🮅🮆█"
+
+SCROLL_STEP = 3
+
+
+@dataclass
+class ScrollState:
+    """Scroll position tracking for the TUI content area."""
+
+    offset: int = 0
+    total: int = 0
+    visible: int = 0
+
+    def clamp(self) -> None:
+        self.offset = max(0, min(self.offset, max(0, self.total - self.visible)))
+
+    def scroll_up(self, n: int = SCROLL_STEP) -> None:
+        self.offset -= n
+        self.clamp()
+
+    def scroll_down(self, n: int = SCROLL_STEP) -> None:
+        self.offset += n
+        self.clamp()
+
+    def page_up(self) -> None:
+        self.scroll_up(max(1, self.visible - 1))
+
+    def page_down(self) -> None:
+        self.scroll_down(max(1, self.visible - 1))
+
+    def go_top(self) -> None:
+        self.offset = 0
+
+    def go_bottom(self) -> None:
+        self.offset = max(0, self.total - self.visible)
+
+
+def _init_colors() -> None:
+    """Initialize curses color pairs to match the ANSI scheme."""
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(C_RED, curses.COLOR_RED, -1)
+    curses.init_pair(C_GREEN, curses.COLOR_GREEN, -1)
+    curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
+    curses.init_pair(C_BLUE, curses.COLOR_BLUE, -1)
+    curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
+    if curses.COLORS >= 256:
+        curses.init_pair(C_ORANGE, 208, -1)
+        curses.init_pair(C_SCROLLBAR, 249, 236)
+    else:
+        curses.init_pair(C_ORANGE, curses.COLOR_YELLOW, -1)
+        curses.init_pair(C_SCROLLBAR, curses.COLOR_WHITE, curses.COLOR_BLACK)
+
+
+### Map ANSI SGR code -> curses attribute
+_ANSI_ATTR: dict[str, int] = {}
+
+
+def _build_attr_map() -> None:
+    """Populate _ANSI_ATTR after curses is initialized."""
+    _ANSI_ATTR.update(
+        {
+            "1": curses.A_BOLD,
+            "2": curses.A_DIM,
+            "31": curses.color_pair(C_RED),
+            "32": curses.color_pair(C_GREEN),
+            "33": curses.color_pair(C_YELLOW),
+            "34": curses.color_pair(C_BLUE),
+            "36": curses.color_pair(C_CYAN),
+            "38;5;208": curses.color_pair(C_ORANGE),
+        }
+    )
+
+
+def _parse_ansi(text: str) -> list[tuple[str, int]]:
+    """Parse ANSI-escaped string into (text_segment, curses_attr) pairs."""
+    segments: list[tuple[str, int]] = []
+    attr = 0
+    pos = 0
+
+    for m in ANSI_RE.finditer(text):
+        if m.start() > pos:
+            segments.append((text[pos : m.start()], attr))
+        code = m.group(1)
+        if code in ("0", ""):
+            attr = 0
+        elif code in ("1", "2"):
+            attr |= _ANSI_ATTR.get(code, 0)
+        else:
+            ### Color code: keep bold/dim, replace color
+            attr = (attr & (curses.A_BOLD | curses.A_DIM)) | _ANSI_ATTR.get(code, 0)
+        pos = m.end()
+
+    if pos < len(text):
+        segments.append((text[pos:], attr))
+    return segments
+
+
+def _addstr_ansi(win: curses.window, y: int, x: int, text: str, max_x: int) -> None:
+    """Write ANSI-colored text to a curses window, clipping at max_x."""
+    col = x
+    for segment, attr in _parse_ansi(text):
+        if col >= max_x:
+            break
+        avail = max_x - col
+        fragment = segment[:avail]
+        try:
+            win.addstr(y, col, fragment, attr)
+        except curses.error:
+            pass
+        col += len(fragment)
+
+
+def _draw_scrollbar(
+    stdscr: curses.window,
+    x: int,
+    y_start: int,
+    height: int,
+    scroll: ScrollState,
+    attr: int,
+) -> None:
+    """Draw a vertical scrollbar with sub-character precision positioning.
+
+    Ported from linux/setup. Uses Unicode eighth-block characters for smooth
+    thumb rendering at 8x finer granularity than integer cell positions.
+    """
+    if height < 2 or scroll.total <= scroll.visible:
+        return
+
+    thumb_size = max(1.0, height * scroll.visible / scroll.total)
+    max_offset = max(1, scroll.total - scroll.visible)
+    thumb_pos = (height - thumb_size) * scroll.offset / max_offset
+    thumb_top = thumb_pos
+    thumb_bottom = thumb_pos + thumb_size
+
+    for i in range(height):
+        y = y_start + i
+        cell_top = float(i)
+        cell_bottom = float(i + 1)
+
+        if thumb_bottom <= cell_top or thumb_top >= cell_bottom:
+            char = " "
+        elif thumb_top <= cell_top and thumb_bottom >= cell_bottom:
+            char = "█"
+        elif thumb_top > cell_top and thumb_bottom < cell_bottom:
+            eighths = max(1, min(8, round((thumb_bottom - thumb_top) * 8)))
+            char = LOWER_EIGHTHS[eighths]
+        elif thumb_top > cell_top:
+            eighths = max(1, min(8, round((cell_bottom - thumb_top) * 8)))
+            char = LOWER_EIGHTHS[eighths]
+        else:
+            eighths = max(1, min(8, round((thumb_bottom - cell_top) * 8)))
+            char = UPPER_EIGHTHS[eighths]
+
+        try:
+            stdscr.addstr(y, x, char, attr)
+        except curses.error:
+            pass
+
+
+def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
+    """Main TUI loop with 1-second visual ticks and periodic data refresh."""
+    _init_colors()
+    _build_attr_map()
+    curses.curs_set(0)
+
+    scope = args.scope
+    running_only = args.running
+    timing = args.timing
+    interval = args.interval
+
+    ### Cached data from last fetch
+    partitions: list[Partition] = []
+    shares: list[ShareEntry] = []
+    items: list[JobOrSummary] = []
+    etas: dict[str, str] = {}
+
+    scroll = ScrollState()
+    last_fetch = 0.0
+    needs_refresh = True
+    scrollbar_attr = curses.color_pair(C_SCROLLBAR)
+
+    while True:
+        now = time.time()
+        h, w = stdscr.getmaxyx()
+        content_h = h - 1
+
+        ### Refresh data from Slurm if interval elapsed or forced
+        if needs_refresh or (now - last_fetch) >= interval:
+            partitions, shares, items, etas = fetch_all(scope, running_only, timing)
+            last_fetch = time.time()
+            now = last_fetch
+            needs_refresh = False
+
+        ### Re-render every tick with live time offset for running jobs
+        time_offset = int(now - last_fetch)
+        lines = render_all(partitions, shares, items, etas, time_offset=time_offset)
+
+        ### Update scroll state
+        scroll.total = len(lines)
+        scroll.visible = content_h
+        scroll.clamp()
+
+        ### Determine if scrollbar is needed
+        needs_scrollbar = scroll.total > scroll.visible
+        content_w = w - 1 if needs_scrollbar else w
+
+        ### Draw content
+        stdscr.erase()
+        for i in range(min(content_h, max(0, len(lines) - scroll.offset))):
+            _addstr_ansi(stdscr, i, 0, lines[scroll.offset + i], content_w)
+
+        ### Draw scrollbar
+        if needs_scrollbar:
+            _draw_scrollbar(stdscr, w - 1, 0, content_h, scroll, scrollbar_attr)
+
+        ### Status bar
+        age = int(now - last_fetch)
+        age_str = f"{age}s ago" if age > 0 else "just now"
+        timing_tag = " · etas:on" if timing else ""
+        status = (
+            f" {scope}{timing_tag} · {age_str}"
+            f" · q:quit  r:refresh  m/a/g:scope  t:etas  j/k:scroll"
+        )
+        try:
+            padded = status[:w].ljust(w)
+            stdscr.addstr(h - 1, 0, padded[:w - 1], curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        ### Input handling - tick every 1 second for live time counters
+        stdscr.timeout(1000)
+        key = stdscr.getch()
+
+        if key == ord("q") or key == 27:
+            break
+        elif key == ord("r"):
+            needs_refresh = True
+        elif key == ord("m"):
+            scope = "me"
+            needs_refresh = True
+        elif key == ord("a"):
+            scope = "all"
+            needs_refresh = True
+        elif key == ord("g"):
+            scope = "group"
+            needs_refresh = True
+        elif key == ord("t"):
+            timing = not timing
+            needs_refresh = True
+        elif key == curses.KEY_UP or key == ord("k"):
+            scroll.scroll_up()
+        elif key == curses.KEY_DOWN or key == ord("j"):
+            scroll.scroll_down()
+        elif key == curses.KEY_PPAGE:
+            scroll.page_up()
+        elif key == curses.KEY_NPAGE:
+            scroll.page_down()
+        elif key == curses.KEY_HOME:
+            scroll.go_top()
+        elif key == curses.KEY_END:
+            scroll.go_bottom()
+        elif key == curses.KEY_RESIZE:
+            pass
+
+
+def run_tui(args: argparse.Namespace) -> None:
+    """Entry point for TUI mode - wraps curses."""
+    try:
+        curses.wrapper(lambda stdscr: _run_tui(stdscr, args))
+    except curses.error:
+        print(
+            "Cannot start TUI (no terminal available). "
+            "Use --static for non-interactive output.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+###############################################################################
+### CLI
+###############################################################################
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="wsq",
+        description="Slurm queue monitor with TUI and static output modes.",
+    )
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--static", "-1", action="store_true",
+        help="One-shot print to stdout (default when invoked as 'sq')",
+    )
+
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
+        "--me", "-m", action="store_const", const="me", dest="scope",
+        help="Show only your jobs and shares",
+    )
+    scope_group.add_argument(
+        "--all", "-a", action="store_const", const="all", dest="scope",
+        help="Show all jobs and shares across the cluster",
+    )
+    parser.set_defaults(scope="group")
+
+    parser.add_argument(
+        "--running", "-r", action="store_true",
+        help="Show only running jobs",
+    )
+    parser.add_argument(
+        "--timing", "-t", action="store_true",
+        help="Show estimated start time for pending Priority jobs",
+    )
+    parser.add_argument(
+        "--interval", "-n", type=int, default=5,
+        help="TUI refresh interval in seconds (default: 5)",
+    )
+
+    args = parser.parse_args()
+
+    ### Auto-detect static mode when invoked as 'sq'
+    if os.path.basename(sys.argv[0]) == "sq":
+        args.static = True
+
+    if args.static:
+        run_static(args)
+    else:
+        run_tui(args)
+
+
+if __name__ == "__main__":
+    main()
