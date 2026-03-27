@@ -12,9 +12,11 @@ Usage:
 """
 
 import argparse
+import csv
 import curses
 import datetime
 import functools
+import json
 import math
 import os
 import re
@@ -122,8 +124,8 @@ def usage_color(raw_usage: int) -> str:
 
 
 def node_color(nodes: int) -> str:
-    """Continuous gradient for node count on a log2 scale (1 → blue, 1024 → red)."""
-    t = math.log2(max(1, nodes)) / 10.0
+    """Continuous gradient for node count on a log2 scale (1 → blue, 512 → red)."""
+    t = math.log2(max(1, nodes)) / 9.0
     return _gradient_ansi(t)
 
 
@@ -177,20 +179,9 @@ class Job:
     collapsed_names: list[str] = field(default_factory=list)
 
 
-@dataclass
-class SummaryLine:
-    """A collapsed batch of similar pending jobs from one user."""
-
-    user: str
-    partition: str
-    count: int
-    nodes: int
-    reason: str
-    first_name: str = ""
-    job_names: list[str] = field(default_factory=list)
-
-
-JobOrSummary = Job | SummaryLine
+### Historical note: the processing pipeline used to include a SummaryLine type
+### alongside Job. All items are now plain Job instances after the collapsing
+### functions fold batches into the first Job's more_count/collapsed_names fields.
 
 
 ###############################################################################
@@ -280,7 +271,7 @@ def _fetch_eta(jobid: str, now: float) -> tuple[str, str]:
 
 def fetch_all(
     scope: str, running_only: bool, timing: bool
-) -> tuple[list[Partition], list[ShareEntry], list[JobOrSummary], dict[str, str]]:
+) -> tuple[list[Partition], list[ShareEntry], list[Job], dict[str, str]]:
     """Fetch sinfo + sshare + squeue in parallel, process, return ready-to-render data.
 
     When running_only is True, we still fetch ALL jobs for chain collapsing
@@ -309,9 +300,7 @@ def fetch_all(
     etas: dict[str, str] = {}
     if timing:
         prio_ids = [
-            j.jobid
-            for j in items
-            if isinstance(j, Job) and j.state == "PD" and j.reason == "Priority"
+            j.jobid for j in items if j.state == "PD" and j.reason == "Priority"
         ]
         if prio_ids:
             now = time.time()
@@ -594,18 +583,27 @@ def collapse_running_arrays(jobs: list[Job]) -> list[Job]:
     task, sets jobid to the base ID, multiplies nodes by the task count,
     and stores the count in task_count for display.
     """
-    ### Identify running/completing jobs with array-task suffixes
+    ### Identify running/completing jobs with array-task suffixes.
+    ### Skip jobs already processed by collapse_arrays (they have array_count > 0
+    ### and their jobid was already stripped to the base).
     array_groups: dict[tuple, list[Job]] = {}
     for job in jobs:
-        if job.state in ("R", "CG") and "_" in job.jobid and "[" not in job.jobid:
+        if (
+            job.state in ("R", "CG")
+            and "_" in job.jobid
+            and "[" not in job.jobid
+            and job.array_count == 0
+        ):
             base = job.jobid.split("_")[0]
             key = (base, job.name, job.user, job.partition, job.nodes)
             array_groups.setdefault(key, []).append(job)
 
-    ### For groups with >1 task, pick the longest-running and annotate
+    ### For every array-task group, strip the _N suffix from the jobid.
+    ### For groups with >1 task, also merge into a single entry.
     collapsed_ids: set[int] = set()
     for (base, _name, _user, _part, nodes_per_task), group in array_groups.items():
-        if len(group) < 2:
+        if len(group) == 1:
+            group[0].jobid = base
             continue
         group.sort(key=lambda j: _time_seconds(j.time_str), reverse=True)
         head = group[0]
@@ -657,20 +655,23 @@ def collapse_user_batches(
 
 def _time_seconds(t: str) -> int:
     """Convert Slurm time string (D-HH:MM:SS, HH:MM:SS, MM:SS) to seconds."""
-    if "-" in t:
-        day_part, rest = t.split("-", 1)
-        parts = rest.split(":")
-        return (
-            int(day_part) * 86400
-            + int(parts[0]) * 3600
-            + int(parts[1]) * 60
-            + (int(parts[2]) if len(parts) > 2 else 0)
-        )
-    parts = t.split(":")
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + int(parts[1])
+    try:
+        if "-" in t:
+            day_part, rest = t.split("-", 1)
+            parts = rest.split(":")
+            return (
+                int(day_part) * 86400
+                + int(parts[0]) * 3600
+                + int(parts[1]) * 60
+                + (int(parts[2]) if len(parts) > 2 else 0)
+            )
+        parts = t.split(":")
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        pass
     return 0
 
 
@@ -688,22 +689,118 @@ def _format_seconds(total: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def sort_items(items: list[JobOrSummary]) -> list[JobOrSummary]:
+def sort_items(items: list[Job]) -> list[Job]:
     """Sort: PD jobs first, then R jobs. Within each: user, nodes desc, time desc."""
 
-    def key(item: JobOrSummary) -> tuple:
-        if isinstance(item, Job):
-            state_ord = 0 if item.state == "PD" else 1
-            return (
-                state_ord,
-                item.user,
-                -item.nodes,
-                -_time_seconds(item.time_str),
-                item.name,
-            )
-        return (0, "", 0, 0, "")
+    def key(item: Job) -> tuple:
+        state_ord = 0 if item.state == "PD" else 1
+        return (
+            state_ord,
+            item.user,
+            -item.nodes,
+            -_time_seconds(item.time_str),
+            item.name,
+        )
 
     return sorted(items, key=key)
+
+
+###############################################################################
+### Interactive Filter & Sort Helpers (TUI)
+###############################################################################
+
+
+def _match_filter(item: Job | ShareEntry, text: str) -> bool:
+    """Return True if any visible field of item contains text (case-insensitive)."""
+    low = text.lower()
+    if isinstance(item, Job):
+        return any(
+            low in f.lower()
+            for f in (item.jobid, item.partition, item.name, item.user,
+                      item.state, item.time_str, str(item.nodes), item.reason)
+        )
+    if isinstance(item, ShareEntry):
+        return any(
+            low in f.lower()
+            for f in (item.account, item.user, str(item.raw_usage))
+        )
+    return True
+
+
+JOB_SORT_LABELS = [
+    "Default (state > user > nodes)",
+    "JobID",
+    "Name",
+    "User",
+    "Time",
+    "Nodes",
+]
+
+SHARE_SORT_LABELS = [
+    "Default (by usage)",
+    "Account",
+    "RawUsage",
+    "Nodes",
+]
+
+
+def _sort_jobs_by(
+    items: list[Job], mode: int, ascending: bool,
+) -> list[Job]:
+    """Sort jobs by the given mode index. mode=0 falls back to default sort."""
+    if mode == 0:
+        return sort_items(items)
+    jobs = list(items)
+    key_funcs: dict[int, object] = {
+        1: lambda j: int(j.jobid.split("_")[0]) if j.jobid.split("_")[0].isdigit() else 0,
+        2: lambda j: j.name.lower(),
+        3: lambda j: j.user.lower(),
+        4: lambda j: _time_seconds(j.time_str),
+        5: lambda j: j.nodes,
+    }
+    if mode in key_funcs:
+        jobs.sort(key=key_funcs[mode], reverse=not ascending)
+    return jobs
+
+
+def _sort_shares_by(
+    shares: list[ShareEntry], mode: int, ascending: bool,
+    user_nodes: dict[str, int] | None = None,
+) -> list[ShareEntry]:
+    """Sort shares by the given mode index. mode=0 falls back to default sort."""
+    if mode == 0:
+        groups = sorted(
+            [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
+        )
+        users = sorted(
+            [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
+        )
+        return groups + users
+
+    if mode == 3:
+        ### Nodes sort: for group entries, sum member node counts
+        un = user_nodes or {}
+        account_nodes: dict[str, int] = {}
+        for s in shares:
+            if not s.is_group:
+                n = un.get(s.user, 0)
+                if n > 0:
+                    account_nodes[s.account] = account_nodes.get(s.account, 0) + n
+
+        def node_key(s: ShareEntry) -> int:
+            if s.is_group:
+                return account_nodes.get(s.account, 0)
+            return un.get(s.user, 0)
+
+        return sorted(shares, key=node_key, reverse=not ascending)
+
+    key_funcs: dict[int, object] = {
+        1: lambda s: s.account.lower(),
+        2: lambda s: s.raw_usage,
+    }
+    if mode in key_funcs:
+        return sorted(shares, key=key_funcs[mode], reverse=not ascending)
+    return shares
 
 
 ###############################################################################
@@ -881,37 +978,45 @@ def render_cluster_status(partitions: list[Partition]) -> list[str]:
     return lines
 
 
-def _active_nodes_by_user(items: list[JobOrSummary]) -> dict[str, int]:
+def _active_nodes_by_user(items: list[Job]) -> dict[str, int]:
     """Sum running-job nodes per user for the Shares table 'Nodes' column."""
     totals: dict[str, int] = {}
     for item in items:
-        if isinstance(item, Job) and item.state == "R":
+        if item.state == "R":
             totals[item.user] = totals.get(item.user, 0) + item.nodes
     return totals
 
 
 def render_shares(
     shares: list[ShareEntry],
-    items: list[JobOrSummary] | None = None,
+    items: list[Job] | None = None,
+    pre_sorted: bool = False,
 ) -> list[str]:
-    """Render the sshare table with an active-nodes column from job data."""
+    """Render the sshare table with an active-nodes column from job data.
+
+    When pre_sorted is True, the input order is preserved (for custom sort/filter).
+    """
     if not shares:
         return []
 
-    groups = sorted(
-        [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True
-    )
-    users = sorted(
-        [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True
-    )
-    ordered = groups + users
+    if pre_sorted:
+        ordered = list(shares)
+    else:
+        groups = sorted(
+            [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
+        )
+        users = sorted(
+            [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
+        )
+        ordered = groups + users
 
-    ### Compute active nodes per user from job data
+    ### Compute active nodes per user from job data.
+    ### account_nodes sums over ALL shares (not just filtered `ordered`) so that
+    ### group-row node counts remain accurate even when a filter hides some users.
     user_nodes = _active_nodes_by_user(items) if items else {}
-    ### For group rows, sum across all users belonging to that account
     account_nodes: dict[str, int] = {}
-    for s in users:
-        if user_nodes.get(s.user, 0) > 0:
+    for s in shares:
+        if not s.is_group and user_nodes.get(s.user, 0) > 0:
             account_nodes[s.account] = (
                 account_nodes.get(s.account, 0) + user_nodes[s.user]
             )
@@ -972,7 +1077,7 @@ def render_shares(
 
 
 def render_jobs(
-    items: list[JobOrSummary], etas: dict[str, str], time_offset: int = 0
+    items: list[Job], etas: dict[str, str], time_offset: int = 0
 ) -> list[str]:
     """Render the job table with chain/array annotations.
 
@@ -982,8 +1087,7 @@ def render_jobs(
     if not items:
         return []
 
-    ### Separate jobs from summaries for column width computation
-    job_items = [j for j in items if isinstance(j, Job)]
+    job_items = list(items)
 
     headers = ["JobID", "Part", "Name", "User", "St", "Time", "#", "Notes"]
 
@@ -1001,9 +1105,10 @@ def render_jobs(
     ### Truncate other users' names to avoid extreme horizontal sprawl.
     ### Cap is max(65, longest current-user name) so the column is never wider
     ### than needed for your own jobs.
-    my_names = [r[2] for j, r in zip(job_items, rows.values()) if j.user == CURRENT_USER]
-    name_cap = max(65, max((len(n) for n in my_names), default=0))
-    for j, row in zip(job_items, rows.values()):
+    my_max = max((len(rows[id(j)][2]) for j in job_items if j.user == CURRENT_USER), default=0)
+    name_cap = max(65, my_max)
+    for j in job_items:
+        row = rows[id(j)]
         if j.user != CURRENT_USER and len(row[2]) > name_cap:
             row[2] = row[2][: name_cap - 1] + "\u2026"
 
@@ -1028,8 +1133,6 @@ def render_jobs(
     lines: list[str] = [header_str, f"{DIM}{'─' * header_width}{RESET}"]
 
     for item in items:
-        if not isinstance(item, Job):
-            continue
         row = rows[id(item)]
         raw = fmt_line(row)
 
@@ -1057,7 +1160,7 @@ def _separator() -> str:
 def render_all(
     partitions: list[Partition],
     shares: list[ShareEntry],
-    items: list[JobOrSummary],
+    items: list[Job],
     etas: dict[str, str],
     time_offset: int = 0,
 ) -> list[str]:
@@ -1352,8 +1455,17 @@ HELP_LINES = [
     "  j/k  ↑↓    move cursor",
     "  PgUp/Dn    move cursor by page",
     "  Home/End   top / bottom",
-    "  o          open details for selected item",
-    "  c          cancel selected job (with confirm)",
+    "",
+    "  o          details for selected item",
+    "  l          view job stdout/stderr log",
+    "  c          cancel selected job",
+    "  h          hold selected job",
+    "  u          release (unhold) selected job",
+    "",
+    "  /          filter (type to search, Enter/Esc)",
+    "  S          sort by column",
+    "  n          job's nodes / problem nodes",
+    "  e          export current view to file",
     "",
     "  tab        switch Jobs / Shares",
     "  r          force refresh",
@@ -1415,8 +1527,6 @@ def _draw_overlay_box(
     w: int,
 ) -> None:
     """Draw a centered, scrollable overlay box and block until dismissed."""
-    ### Use most of the terminal width; cap at w-6 for breathing room
-    content_max = w - 10
     box_w = min(max(len(ANSI_RE.sub("", l)) for l in lines) + 6, w - 6)
     box_h = min(len(lines) + 2, h - 4)
     y0 = max(0, (h - box_h) // 2)
@@ -1470,13 +1580,33 @@ def _draw_overlay_box(
 
 
 def _fetch_job_detail(jobid: str) -> dict[str, str]:
-    """Fetch and parse scontrol show job output into a key-value dict."""
+    """Fetch and parse scontrol show job output into a key-value dict.
+
+    scontrol output uses `Key=Value` pairs separated by whitespace, but values
+    can contain spaces (e.g., `Reason=ReqNodeNotAvail, UnavailableNodes:...`).
+    We handle this by scanning for the `Key=` pattern: a token is a new key
+    only if it matches `AlphaKey=...`; otherwise it's a continuation of the
+    previous value.
+
+    For array base IDs, scontrol returns multiple job blocks separated by
+    blank lines. We parse only the first block.
+    """
     out = _run(["scontrol", "show", "job", jobid], timeout=10)
     detail: dict[str, str] = {}
-    for token in out.split():
-        if "=" in token:
-            k, v = token.split("=", 1)
-            detail[k] = v
+    key_re = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)=(.*)")
+    last_key = ""
+    for line in out.splitlines():
+        if not line.strip():
+            if detail:
+                break
+            continue
+        for token in line.split():
+            m = key_re.match(token)
+            if m:
+                last_key = m.group(1)
+                detail[last_key] = m.group(2)
+            elif last_key:
+                detail[last_key] += " " + token
     return detail
 
 
@@ -1537,14 +1667,14 @@ def _show_cancel_confirm(
     has_array = job.array_count > 0 or job.task_count > 0
 
     if has_chain:
-        lines.append(f"  [y] Cancel this job only")
+        lines.append("  [y] Cancel this job only")
         lines.append(f"  [a] Cancel all {job.dep_count + 1} (this + {job.dep_count} chained)")
     elif has_array:
         total = job.array_count + job.task_count + 1
-        lines.append(f"  [y] Cancel this job only")
+        lines.append("  [y] Cancel this job only")
         lines.append(f"  [a] Cancel entire array ({total} tasks)")
     else:
-        lines.append(f"  [y] Cancel this job")
+        lines.append("  [y] Cancel this job")
 
     lines.extend(["  [n] Abort", ""])
 
@@ -1599,7 +1729,7 @@ def _show_share_detail(
     stdscr: curses.window,
     entry: ShareEntry,
     shares: list[ShareEntry],
-    items: list[JobOrSummary],
+    items: list[Job],
     h: int,
     w: int,
 ) -> None:
@@ -1627,8 +1757,8 @@ def _show_share_detail(
     else:
         ### User detail: show their jobs + account info
         title = f"{entry.user} @ {entry.account}"
-        running = [j for j in items if isinstance(j, Job) and j.user == entry.user and j.state == "R"]
-        pending = [j for j in items if isinstance(j, Job) and j.user == entry.user and j.state == "PD"]
+        running = [j for j in items if j.user == entry.user and j.state == "R"]
+        pending = [j for j in items if j.user == entry.user and j.state == "PD"]
         r_nodes = sum(j.nodes for j in running)
         p_nodes = sum(j.nodes for j in pending)
 
@@ -1664,6 +1794,405 @@ def _show_share_detail(
 
 
 ###############################################################################
+### Sort Picker, Job Log, Hold/Release, Export, Node Details
+###############################################################################
+
+
+def _show_sort_picker(
+    stdscr: curses.window, tab: int, current: int, h: int, w: int,
+) -> int | None:
+    """Show sort column picker overlay. Returns selected mode index or None."""
+    labels = JOB_SORT_LABELS if tab == 0 else SHARE_SORT_LABELS
+    lines = [""]
+    for i, label in enumerate(labels):
+        marker = "\u25b8" if i == current else " "
+        lines.append(f"  {marker} [{i + 1}] {label}")
+    lines.extend(["", f"  Press 1\u2013{len(labels)}, or Esc to cancel", ""])
+
+    box_w = min(max(len(l) for l in lines) + 6, w - 4, 55)
+    box_h = len(lines) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    top = f"\u256d\u2500 Sort by {'\u2500' * max(0, box_w - 12)}\u256e"
+    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
+
+    for row in range(box_h):
+        try:
+            stdscr.addstr(y0 + row, x0, " " * box_w)
+        except curses.error:
+            pass
+    try:
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
+        for i, line in enumerate(lines):
+            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
+            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    while True:
+        key = stdscr.getch()
+        if key in (27, ord("q")):
+            return None
+        num = key - ord("1")
+        if 0 <= num < len(labels):
+            return num
+
+
+def _read_tail(path: str, max_lines: int = 500) -> list[str]:
+    """Read the last max_lines from a file without loading the whole file.
+
+    Uses the system `tail` command to avoid reading multi-GB log files into
+    memory (common for long-running HPC training jobs).
+    """
+    out = _run(["tail", "-n", str(max_lines), path], timeout=10)
+    if out:
+        return out.splitlines()
+    ### tail failed or returned empty - check why so we can show a useful message
+    try:
+        with open(path) as f:
+            f.read(1)
+        return ["  (file is empty)"]
+    except FileNotFoundError:
+        return [f"  (file not found: {path})"]
+    except PermissionError:
+        return [f"  (permission denied: {path})"]
+    except OSError as e:
+        return [f"  (error reading file: {e})"]
+
+
+def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
+    """Show job stdout/stderr in a scrollable overlay with refresh and follow."""
+    detail = _fetch_job_detail(job.jobid)
+    stdout_path = detail.get("StdOut", "")
+    stderr_path = detail.get("StdErr", "")
+
+    if not stdout_path and not stderr_path:
+        _draw_overlay_box(
+            stdscr,
+            ["", "  No output file path found for this job", ""],
+            "Job Log", h, w,
+        )
+        return
+
+    current = "stdout" if stdout_path else "stderr"
+    path = stdout_path or stderr_path
+    follow = True
+
+    box_w = w - 4
+    box_h = h - 2
+    y0, x0 = 1, 2
+    content_h = box_h - 2
+    inner_w = box_w - 4
+    saved_offset = 0
+
+    while True:
+        content = _read_tail(path)
+        hint = f"r:refresh  s:switch  f:follow({'on' if follow else 'off'})  q:close"
+        display = content + ["", f"  {DIM}{path}{RESET}", f"  {DIM}{hint}{RESET}", ""]
+
+        scroll = ScrollState(total=len(display), visible=content_h)
+        if follow:
+            scroll.go_bottom()
+        else:
+            scroll.offset = saved_offset
+
+        title = f"Job {job.jobid} {current}"
+        top_border = f"\u256d\u2500 {title} {'\u2500' * max(0, box_w - len(title) - 5)}\u256e"
+        bot_border = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
+
+        redraw = True
+        while True:
+            if redraw:
+                scroll.clamp()
+                for row in range(box_h):
+                    try:
+                        stdscr.addstr(y0 + row, x0, " " * box_w)
+                    except curses.error:
+                        pass
+                try:
+                    stdscr.addstr(y0, x0, top_border[:box_w], curses.A_BOLD)
+                    for i in range(content_h):
+                        idx = scroll.offset + i
+                        line = display[idx] if idx < len(display) else ""
+                        vis_len = len(ANSI_RE.sub("", line))
+                        if vis_len > inner_w:
+                            line = line[: inner_w - 1] + "\u2026"
+                            vis_len = inner_w
+                        pad = max(0, box_w - 3 - vis_len)
+                        row_str = f"\u2502 {line}{' ' * pad}\u2502"
+                        _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
+                    stdscr.addstr(y0 + box_h - 1, x0, bot_border[:box_w], curses.A_BOLD)
+                except curses.error:
+                    pass
+                stdscr.refresh()
+                redraw = False
+
+            stdscr.timeout(2000 if follow else -1)
+            key = stdscr.getch()
+
+            if key == -1 and follow:
+                saved_offset = scroll.offset
+                break
+            elif key in (ord("q"), 27):
+                return
+            elif key == ord("r"):
+                saved_offset = scroll.offset
+                break
+            elif key == ord("s"):
+                if current == "stdout" and stderr_path:
+                    current, path = "stderr", stderr_path
+                elif current == "stderr" and stdout_path:
+                    current, path = "stdout", stdout_path
+                saved_offset = 0
+                break
+            elif key == ord("f"):
+                follow = not follow
+                if follow:
+                    scroll.go_bottom()
+                redraw = True
+            elif key in (curses.KEY_DOWN, ord("j")):
+                scroll.scroll_down(1)
+                redraw = True
+            elif key in (curses.KEY_UP, ord("k")):
+                scroll.scroll_up(1)
+                redraw = True
+            elif key == curses.KEY_PPAGE:
+                scroll.page_up()
+                redraw = True
+            elif key == curses.KEY_NPAGE:
+                scroll.page_down()
+                redraw = True
+
+
+def _job_action(
+    stdscr: curses.window, job: Job, action: str, verb: str, h: int, w: int,
+) -> bool:
+    """Generic hold/release confirmation + execution. Returns True if acted."""
+    if job.user != CURRENT_USER:
+        _draw_overlay_box(
+            stdscr,
+            ["", f"  Cannot {verb}: job belongs to {job.user}", "", "  Press any key"],
+            verb.title(), h, w,
+        )
+        return False
+
+    lines = [
+        "",
+        f"  {job.jobid}  {job.name}",
+        f"  {job.user}  {job.state}  {job.nodes} nodes",
+        "",
+        f"  [y] {verb.title()} this job",
+        "  [n] Cancel",
+        "",
+    ]
+    box_w = min(max(len(l) for l in lines) + 6, w - 4, 60)
+    box_h = len(lines) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    top = f"\u256d\u2500 {verb.title()} job? {'\u2500' * max(0, box_w - len(verb) - 10)}\u256e"
+    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
+
+    for row in range(box_h):
+        try:
+            stdscr.addstr(y0 + row, x0, " " * box_w)
+        except curses.error:
+            pass
+    try:
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
+        for i, line in enumerate(lines):
+            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
+            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    while True:
+        key = stdscr.getch()
+        if key == ord("y"):
+            _run(["scontrol", action, job.jobid], timeout=10)
+            return True
+        if key in (ord("n"), 27):
+            return False
+
+
+def _show_export_picker(stdscr: curses.window, h: int, w: int) -> str | None:
+    """Show export format picker. Returns 'csv', 'json', or None."""
+    lines = ["", "  [1] CSV", "  [2] JSON", "", "  Esc to cancel", ""]
+    box_w = min(30, w - 4)
+    box_h = len(lines) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    top = f"\u256d\u2500 Export format {'\u2500' * max(0, box_w - 18)}\u256e"
+    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
+
+    for row in range(box_h):
+        try:
+            stdscr.addstr(y0 + row, x0, " " * box_w)
+        except curses.error:
+            pass
+    try:
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
+        for i, line in enumerate(lines):
+            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
+            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    while True:
+        key = stdscr.getch()
+        if key == ord("1"):
+            return "csv"
+        if key == ord("2"):
+            return "json"
+        if key in (27, ord("q")):
+            return None
+
+
+def _export_jobs(items: list[Job], fmt: str, path: str) -> None:
+    """Write job data to a CSV or JSON file."""
+    jobs = items
+    headers = ["JobID", "Partition", "Name", "User", "State", "Time", "Nodes", "Reason"]
+    if fmt == "csv":
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for j in jobs:
+                w.writerow([j.jobid, j.partition, j.name, j.user,
+                            j.state, j.time_str, j.nodes, j.reason])
+    else:
+        data = [
+            dict(zip(headers, [j.jobid, j.partition, j.name, j.user,
+                                j.state, j.time_str, j.nodes, j.reason]))
+            for j in jobs
+        ]
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+
+def _export_shares(shares: list[ShareEntry], fmt: str, path: str) -> None:
+    """Write share data to a CSV or JSON file."""
+    headers = ["Account", "User", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
+    if fmt == "csv":
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for s in shares:
+                w.writerow([s.account, s.user, s.raw_usage, s.norm_usage,
+                            s.effectv_usage, s.level_fs if s.level_fs is not None else ""])
+    else:
+        data = [
+            {"account": s.account, "user": s.user, "raw_usage": s.raw_usage,
+             "norm_usage": s.norm_usage, "effectv_usage": s.effectv_usage,
+             "level_fs": s.level_fs}
+            for s in shares
+        ]
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+
+def _fetch_node_details(nodelist: str = "") -> list[str]:
+    """Fetch per-node status from sinfo and format with state colors.
+
+    If nodelist is provided, shows only those nodes (for a specific job).
+    If empty, shows only problematic nodes (drain/down/maint/reboot).
+    """
+    sep = "|"
+    cmd = [
+        "sinfo", "-N",
+        f"--format=%N{sep}%P{sep}%T{sep}%c{sep}%m{sep}%e{sep}%G{sep}%R",
+        "--noheader",
+    ]
+    if nodelist:
+        cmd.extend(["-n", nodelist])
+    else:
+        cmd.extend(["-t", "drain,down,maint,reboot,fail,power_down"])
+
+    out = _run(cmd, timeout=15)
+    if not out.strip():
+        if nodelist:
+            return ["  (no node data for this job)"]
+        return ["  (no problem nodes found - cluster looks healthy)"]
+
+    ### Parse and deduplicate by node name (nodes in multiple partitions
+    ### like batch/batch_long produce duplicate rows from sinfo -N)
+    rows: list[list[str]] = []
+    seen_nodes: set[str] = set()
+    for line in out.strip().splitlines():
+        parts = line.split(sep, 7)
+        if len(parts) < 4:
+            continue
+        cleaned = [p.strip() for p in parts]
+        node_name = cleaned[0]
+        if node_name in seen_nodes:
+            continue
+        seen_nodes.add(node_name)
+        for i in range(len(cleaned)):
+            if cleaned[i] in ("(null)", "(none)", "N/A"):
+                cleaned[i] = "-"
+        rows.append(cleaned)
+
+    if not rows:
+        if nodelist:
+            return ["  (no node data for this job)"]
+        return ["  (no problem nodes found - cluster looks healthy)"]
+
+    headers = ["Node", "Part", "State", "CPUs", "Mem", "FreeMem", "GRES", "Reason"]
+    col_w = [len(h) for h in headers]
+    for row in rows:
+        for i in range(min(len(headers), len(row))):
+            col_w[i] = max(col_w[i], len(row[i]))
+
+    def fmt_row(vals: list[str]) -> str:
+        parts = []
+        for i in range(len(headers)):
+            v = vals[i] if i < len(vals) else ""
+            parts.append(f"{v:<{col_w[i]}}")
+        return "  ".join(parts)
+
+    hdr = fmt_row(headers)
+    lines: list[str] = [hdr, f"{DIM}{'\u2500' * len(hdr)}{RESET}"]
+
+    state_colors = {
+        "idle": GREEN, "idle~": GREEN,
+        "mix": YELLOW, "mixed": YELLOW,
+        "alloc": RED, "allocated": RED,
+        "comp": BLUE, "completing": BLUE,
+    }
+    for row in rows:
+        state_raw = row[2] if len(row) > 2 else ""
+        state_key = state_raw.lower().rstrip("*$~+-")
+        color = state_colors.get(state_key, DIM)
+        lines.append(f"{color}{fmt_row(row)}{RESET}")
+
+    return lines
+
+
+def _show_node_details(
+    stdscr: curses.window, h: int, w: int,
+    nodelist: str = "", title: str = "",
+) -> None:
+    """Fetch and display node details in a scrollable overlay.
+
+    When nodelist is given, shows those specific nodes (e.g., for a job).
+    Otherwise shows only problematic nodes across the cluster.
+    """
+    lines = _fetch_node_details(nodelist)
+    overlay_title = title or ("Problem Nodes" if not nodelist else "Node Details")
+    _draw_overlay_box(stdscr, lines, overlay_title, h, w)
+
+
+###############################################################################
 ### TUI Main Loop
 ###############################################################################
 
@@ -1684,9 +2213,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     ### Cached data from last fetch
     partitions: list[Partition] = []
     shares: list[ShareEntry] = []
-    items: list[JobOrSummary] = []
+    items: list[Job] = []
     etas: dict[str, str] = {}
     ordered_shares: list[ShareEntry] = []
+    user_nodes: dict[str, int] = {}
 
     active_tab = 0
     cursor_per_tab = [0, 0]
@@ -1694,6 +2224,18 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     last_fetch = 0.0
     needs_refresh = True
     scrollbar_attr = curses.color_pair(C_SCROLLBAR)
+
+    ### Filter state (per-tab)
+    filter_text = ["", ""]
+    filter_active = False
+
+    ### Sort state (per-tab): mode index + ascending flag
+    sort_mode = [0, 0]
+    sort_ascending = [True, True]
+
+    ### Transient flash message for the status bar (e.g., "exported to ...")
+    flash_msg = ""
+    flash_until = 0.0
 
     while True:
         now = time.time()
@@ -1707,15 +2249,28 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             ) + sorted(
                 [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
             )
+            user_nodes = _active_nodes_by_user(items)
             last_fetch = time.time()
             now = last_fetch
             needs_refresh = False
 
-        ### Determine selectable items for current tab
+        ### Determine selectable items for current tab, applying sort + filter
         if active_tab == 0:
-            selectable: list = [j for j in items if isinstance(j, Job)]
+            all_selectable: list = list(items)
+            if sort_mode[0] != 0:
+                all_selectable = _sort_jobs_by(all_selectable, sort_mode[0], sort_ascending[0])
         else:
-            selectable = ordered_shares
+            all_selectable = list(ordered_shares)
+            if sort_mode[1] != 0:
+                all_selectable = _sort_shares_by(
+                    all_selectable, sort_mode[1], sort_ascending[1], user_nodes,
+                )
+
+        ft = filter_text[active_tab]
+        if ft:
+            selectable = [s for s in all_selectable if _match_filter(s, ft)]
+        else:
+            selectable = all_selectable
 
         cursor = cursor_per_tab[active_tab]
         cursor = max(0, min(cursor, len(selectable) - 1)) if selectable else 0
@@ -1727,16 +2282,20 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             header_lines.append(_separator())
         header_h = len(header_lines)
 
-        ### Render tab content lines, tracking which line index maps to which selectable item
+        ### Render tab content from the (possibly filtered/sorted) selectable list
         time_offset = int(now - last_fetch)
         if active_tab == 0:
-            tab_lines = render_jobs(items, etas, time_offset=time_offset)
+            if ft or sort_mode[0] != 0:
+                tab_lines = render_jobs(selectable, etas, time_offset=time_offset)
+            else:
+                tab_lines = render_jobs(items, etas, time_offset=time_offset)
         else:
-            tab_lines = render_shares(shares, items)
+            if ft or sort_mode[1] != 0:
+                tab_lines = render_shares(selectable, items, pre_sorted=True)
+            else:
+                tab_lines = render_shares(shares, items)
 
-        ### Build a mapping: for each tab content line, which selectable index does it correspond to?
-        ### First 2 lines are always header + underline. After that, each line maps to
-        ### the next selectable item unless it's a SummaryLine (non-selectable).
+        ### Build mapping: tab content line index -> selectable item index
         line_to_sel: list[int] = []
         sel_idx = 0
         for line_i, line in enumerate(tab_lines):
@@ -1751,7 +2310,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             else:
                 line_to_sel.append(-1)
 
-        ### Find the line index of the cursor's selectable item
         cursor_line = -1
         for i, si in enumerate(line_to_sel):
             if si == cursor:
@@ -1759,7 +2317,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 break
 
         ### Scrollable area dimensions
-        list_h = h - 1 - header_h  # status bar takes 1 line
+        list_h = h - 1 - header_h
         scroll = scroll_per_tab[active_tab]
         scroll.total = len(tab_lines)
         scroll.visible = list_h
@@ -1773,12 +2331,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         ### Draw
         stdscr.erase()
 
-        ### Fixed header
         for i, line in enumerate(header_lines):
             if i < h - 1:
                 _addstr_ansi(stdscr, i, 0, line, content_w)
 
-        ### Tab content with cursor highlighting
         for i in range(min(list_h, max(0, len(tab_lines) - scroll.offset))):
             line_idx = scroll.offset + i
             y = header_h + i
@@ -1786,7 +2342,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             is_selected = sel == cursor and sel >= 0
 
             if is_selected:
-                ### Reverse-highlight with preserved colors (setup pattern)
                 try:
                     stdscr.addstr(y, 0, " " * content_w, curses.A_REVERSE)
                 except curses.error:
@@ -1798,20 +2353,18 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             else:
                 _addstr_ansi(stdscr, y, 0, tab_lines[line_idx], content_w)
 
-        ### Scrollbar
         if needs_scrollbar:
             _draw_scrollbar(stdscr, w - 1, header_h, list_h, scroll, scrollbar_attr)
 
         ### Tab indicators right-aligned on the title line (row 0)
-        tab_parts = []
-        for i, name in enumerate(TAB_NAMES):
-            tab_parts.append(f"[{name}]" if i == active_tab else f" {name} ")
-        tab_label = "  ".join(tab_parts)
-        tab_x = max(0, w - len(tab_label) - 1)
-        col = tab_x
-        for i, name in enumerate(TAB_NAMES):
-            segment = f"[{name}]" if i == active_tab else f" {name} "
-            attr = curses.A_BOLD if i == active_tab else curses.A_DIM
+        tab_segments = [
+            (f"[{name}]" if i == active_tab else f" {name} ",
+             curses.A_BOLD if i == active_tab else curses.A_DIM)
+            for i, name in enumerate(TAB_NAMES)
+        ]
+        tab_total_w = sum(len(s) for s, _ in tab_segments) + 2 * (len(TAB_NAMES) - 1)
+        col = max(0, w - tab_total_w - 1)
+        for segment, attr in tab_segments:
             try:
                 stdscr.addstr(0, col, segment, attr)
             except curses.error:
@@ -1819,13 +2372,26 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             col += len(segment) + 2
 
         ### Status bar
-        age = int(now - last_fetch)
-        age_str = f"{age}s ago" if age > 0 else "just now"
-        timing_tag = " · etas:on" if timing else ""
-        status = (
-            f" {scope}{timing_tag} · {age_str}"
-            f" · q:quit  o:details  c:cancel  r:refresh  tab:switch  ?:help"
-        )
+        if filter_active:
+            status = f" Filter: {ft}\u2588"
+        elif now < flash_until and flash_msg:
+            status = f" {flash_msg}"
+        else:
+            age = int(now - last_fetch)
+            age_str = f"{age}s ago" if age > 0 else "just now"
+            timing_tag = " \u00b7 etas:on" if timing else ""
+            filter_tag = f" \u00b7 filter:\"{ft}\"" if ft else ""
+            sort_labels = JOB_SORT_LABELS if active_tab == 0 else SHARE_SORT_LABELS
+            sm = sort_mode[active_tab]
+            if sm != 0:
+                arrow = "\u2191" if sort_ascending[active_tab] else "\u2193"
+                sort_tag = f" \u00b7 sort:{sort_labels[sm].split()[0].lower()}{arrow}"
+            else:
+                sort_tag = ""
+            status = (
+                f" {scope}{timing_tag}{filter_tag}{sort_tag} \u00b7 {age_str}"
+                f" \u00b7 /:filter S:sort o:details ?:help"
+            )
         try:
             padded = status[:w].ljust(w)
             stdscr.addstr(h - 1, 0, padded[:w - 1], curses.A_REVERSE)
@@ -1834,29 +2400,104 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         stdscr.refresh()
 
-        ### Input handling - tick every 1 second for live time counters
+        ### Input handling
         stdscr.timeout(1000)
         key = stdscr.getch()
 
+        ### ------- Filter input mode -------
+        if filter_active:
+            if key == 27:
+                filter_text[active_tab] = ""
+                filter_active = False
+                cursor_per_tab[active_tab] = 0
+            elif key in (ord("\n"), curses.KEY_ENTER):
+                filter_active = False
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if ft:
+                    filter_text[active_tab] = ft[:-1]
+                    cursor_per_tab[active_tab] = 0
+                else:
+                    filter_active = False
+            elif 32 <= key <= 126:
+                filter_text[active_tab] += chr(key)
+                cursor_per_tab[active_tab] = 0
+            continue
+
+        ### ------- Normal key handling -------
         if key == ord("q") or key == 27:
             break
         elif key == ord("?"):
             _draw_help_overlay(stdscr, h, w)
+        elif key == ord("/"):
+            filter_active = True
+        elif key == ord("S"):
+            picked = _show_sort_picker(stdscr, active_tab, sort_mode[active_tab], h, w)
+            if picked is not None:
+                if picked == sort_mode[active_tab] and picked != 0:
+                    sort_ascending[active_tab] = not sort_ascending[active_tab]
+                else:
+                    sort_mode[active_tab] = picked
+                    ### Numeric columns default to descending (biggest first)
+                    if active_tab == 0:
+                        sort_ascending[active_tab] = picked not in (4, 5)  # Time, Nodes
+                    else:
+                        sort_ascending[active_tab] = picked not in (2, 3)  # RawUsage, Nodes
+                cursor_per_tab[active_tab] = 0
         elif key == ord("o") and selectable:
-            ### Open detail overlay for selected item
             sel_item = selectable[cursor]
             if active_tab == 0 and isinstance(sel_item, Job):
                 _show_job_detail(stdscr, sel_item, h, w)
             elif active_tab == 1 and isinstance(sel_item, ShareEntry):
                 _show_share_detail(stdscr, sel_item, shares, items, h, w)
+        elif key == ord("l") and selectable and active_tab == 0:
+            sel_item = selectable[cursor]
+            if isinstance(sel_item, Job) and sel_item.state in ("R", "CG"):
+                _show_job_log(stdscr, sel_item, h, w)
         elif key == ord("c") and selectable and active_tab == 0:
-            ### Cancel job (Jobs tab only)
             sel_item = selectable[cursor]
             if isinstance(sel_item, Job):
                 result = _show_cancel_confirm(stdscr, sel_item, h, w)
                 if result:
                     _do_cancel(sel_item, result)
                     needs_refresh = True
+        elif key == ord("h") and selectable and active_tab == 0:
+            sel_item = selectable[cursor]
+            if isinstance(sel_item, Job):
+                if _job_action(stdscr, sel_item, "hold", "hold", h, w):
+                    needs_refresh = True
+        elif key == ord("u") and selectable and active_tab == 0:
+            sel_item = selectable[cursor]
+            if isinstance(sel_item, Job):
+                if _job_action(stdscr, sel_item, "release", "release", h, w):
+                    needs_refresh = True
+        elif key == ord("e"):
+            fmt = _show_export_picker(stdscr, h, w)
+            if fmt:
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                tab_name = "jobs" if active_tab == 0 else "shares"
+                path = os.path.expanduser(f"~/sq_export_{tab_name}_{ts}.{fmt}")
+                try:
+                    if active_tab == 0:
+                        _export_jobs(selectable, fmt, path)
+                    else:
+                        _export_shares(selectable, fmt, path)
+                    flash_msg = f"Exported to {path}"
+                    flash_until = time.time() + 5.0
+                except OSError as exc:
+                    flash_msg = f"Export failed: {exc}"
+                    flash_until = time.time() + 5.0
+        elif key == ord("n"):
+            ### Context-sensitive: job's nodes if a running job is selected,
+            ### otherwise show only problematic nodes across the cluster
+            job_nodelist = ""
+            node_title = ""
+            if active_tab == 0 and selectable:
+                sel_item = selectable[cursor]
+                if isinstance(sel_item, Job) and sel_item.state in ("R", "CG"):
+                    detail = _fetch_job_detail(sel_item.jobid)
+                    job_nodelist = detail.get("NodeList", "")
+                    node_title = f"Nodes: {sel_item.name} ({sel_item.jobid})"
+            _show_node_details(stdscr, h, w, nodelist=job_nodelist, title=node_title)
         elif key == ord("\t"):
             active_tab = 1 - active_tab
         elif key == ord("r"):
@@ -1873,9 +2514,9 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("t"):
             timing = not timing
             needs_refresh = True
-        elif key == curses.KEY_UP or key == ord("k"):
+        elif key in (curses.KEY_UP, ord("k")):
             cursor_per_tab[active_tab] = max(0, cursor - 1)
-        elif key == curses.KEY_DOWN or key == ord("j"):
+        elif key in (curses.KEY_DOWN, ord("j")):
             cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 1) if selectable else 0
         elif key == curses.KEY_PPAGE:
             cursor_per_tab[active_tab] = max(0, cursor - list_h)
@@ -1891,13 +2532,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             except curses.error:
                 continue
 
-            ### Scroll wheel moves cursor
             if bstate & curses.BUTTON4_PRESSED and selectable:
                 cursor_per_tab[active_tab] = max(0, cursor - 3)
             elif bstate & curses.BUTTON5_PRESSED and selectable:
                 cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 3)
-
-            ### Click in tab content area to select item
             elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
                 if header_h <= my < h - 1:
                     line_idx = scroll.offset + (my - header_h)
@@ -1905,8 +2543,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                         clicked_sel = line_to_sel[line_idx]
                         if clicked_sel >= 0:
                             cursor_per_tab[active_tab] = clicked_sel
-
-            ### Double-click opens details
             elif bstate & curses.BUTTON1_DOUBLE_CLICKED and selectable:
                 if header_h <= my < h - 1:
                     line_idx = scroll.offset + (my - header_h)
@@ -1914,7 +2550,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                         clicked_sel = line_to_sel[line_idx]
                         if clicked_sel >= 0:
                             cursor_per_tab[active_tab] = clicked_sel
-                            ### Simulate 'o' key on double-clicked item
                             sel_item = selectable[clicked_sel]
                             if active_tab == 0 and isinstance(sel_item, Job):
                                 _show_job_detail(stdscr, sel_item, h, w)
@@ -1944,6 +2579,8 @@ def run_tui(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    global SLURM_GROUP
+
     parser = argparse.ArgumentParser(
         prog="wsq",
         description="Slurm queue monitor with TUI and static output modes.",
@@ -1978,8 +2615,20 @@ def main() -> None:
         "--interval", "-n", type=int, default=5,
         help="TUI refresh interval in seconds (default: 5)",
     )
+    parser.add_argument(
+        "--account", "-A", type=str, default="",
+        help="Slurm account/group name (default: $SQ_ACCOUNT or coreai_modulus_cae)",
+    )
 
     args = parser.parse_args()
+
+    ### Resolve account: CLI > env > default
+    SLURM_GROUP = (
+        args.account
+        or os.environ.get("SQ_ACCOUNT", "")
+        or os.environ.get("SLURM_ACCOUNT", "")
+        or "coreai_modulus_cae"
+    )
 
     ### Auto-detect static mode when invoked as 'sq'
     if os.path.basename(sys.argv[0]) == "sq":
