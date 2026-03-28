@@ -2019,8 +2019,9 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         inner_w = box_w - 5 if needs_sb else box_w - 4
 
         title = f"Job {job.jobid} {current}"
-        top_border = f"\u256d\u2500 {title} {'\u2500' * max(0, box_w - len(title) - 5)}\u256e"
-        bot_border = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
+        h = "\u2500"
+        top_border = f"\u256d\u2500 {title} {h * max(0, box_w - len(title) - 5)}\u256e"
+        bot_border = f"\u2570{h * (box_w - 2)}\u256f"
 
         redraw = True
         while True:
@@ -2289,7 +2290,8 @@ def _fetch_node_details(nodelist: str = "") -> list[str]:
         return "  ".join(parts)
 
     hdr = fmt_row(headers)
-    lines: list[str] = [hdr, f"{DIM}{'\u2500' * len(hdr)}{RESET}"]
+    h = "\u2500"
+    lines: list[str] = [hdr, f"{DIM}{h * len(hdr)}{RESET}"]
 
     state_colors = {
         "idle": GREEN, "idle~": GREEN,
