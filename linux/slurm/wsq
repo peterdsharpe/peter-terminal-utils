@@ -10,6 +10,7 @@ Usage:
     wsq -t               # Show ETAs for pending Priority jobs
     wsq -n 10            # Set TUI refresh interval (seconds)
 """
+from __future__ import annotations
 
 import argparse
 import csv
@@ -204,7 +205,7 @@ def _run(cmd: list[str], timeout: int | None = None) -> str:
         return ""
 
 
-@functools.cache
+@functools.lru_cache(maxsize=None)
 def _get_cluster_name() -> str:
     """Get the Slurm cluster name (cached after first call)."""
     out = _run(["scontrol", "show", "config"], timeout=10)
