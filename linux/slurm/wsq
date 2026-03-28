@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 SLURM_GROUP = "coreai_modulus_cae"
 CURRENT_USER = os.environ.get("USER", "")
 
+### Mouse button constants (BUTTON5 not exposed until Python 3.10)
+_BUTTON5_PRESSED = getattr(curses, "BUTTON5_PRESSED", 0x200000)
+
 ### ANSI escape codes
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -1508,7 +1511,7 @@ def _handle_viewport_scroll(key: int, scroll: ScrollState, page_size: int = 0) -
             return False
         if bstate & curses.BUTTON4_PRESSED:
             scroll.scroll_up(3)
-        elif bstate & curses.BUTTON5_PRESSED:
+        elif bstate & _BUTTON5_PRESSED:
             scroll.scroll_down(3)
         else:
             return False
@@ -2713,7 +2716,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
             if bstate & curses.BUTTON4_PRESSED and selectable:
                 cursor_per_tab[active_tab] = max(0, cursor - 3)
-            elif bstate & curses.BUTTON5_PRESSED and selectable:
+            elif bstate & _BUTTON5_PRESSED and selectable:
                 cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 3)
             elif bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
                 if header_h <= my < h - 1:
