@@ -1226,6 +1226,7 @@ LOWER_EIGHTHS = " ▁▂▃▄▅▆▇█"
 UPPER_EIGHTHS = " ▔🮂🮃▀🮄🮅🮆█"
 
 SCROLL_STEP = 3
+SCROLLOFF = 5
 
 
 @dataclass
@@ -1260,11 +1261,17 @@ class ScrollState:
         self.offset = max(0, self.total - self.visible)
 
     def ensure_visible(self, idx: int) -> None:
-        """Adjust offset so item at idx is within the visible window."""
-        if idx < self.offset:
-            self.offset = idx
-        elif idx >= self.offset + self.visible:
-            self.offset = idx - self.visible + 1
+        """Adjust offset so item at idx is within the visible window.
+
+        Maintains a SCROLLOFF margin so the cursor never reaches the viewport
+        edge (keeping context lines above/below). On small terminals the margin
+        degrades to visible//2 so the cursor always has room to move.
+        """
+        margin = min(SCROLLOFF, self.visible // 2)
+        if idx < self.offset + margin:
+            self.offset = idx - margin
+        elif idx >= self.offset + self.visible - margin:
+            self.offset = idx - self.visible + margin + 1
         self.clamp()
 
 
@@ -1457,27 +1464,29 @@ TAB_NAMES = ["Jobs", "Shares"]
 
 HELP_LINES = [
     "",
-    "  j/k  ↑↓    move cursor",
-    "  PgUp/Dn    move cursor by page",
-    "  Home/End   top / bottom",
+    "  j/k  ↑↓      move cursor",
+    "  gg / G        top / bottom",
+    "  Ctrl+D / U    half-page scroll",
+    "  Ctrl+E / Y    scroll viewport only",
+    "  PgUp / Dn     full page",
     "",
-    "  o          details for selected item",
-    "  l          view job stdout/stderr log",
-    "  c          cancel selected job",
-    "  h          hold selected job",
-    "  u          release (unhold) selected job",
+    "  o             details for selected item",
+    "  l             view job stdout/stderr log",
+    "  c             cancel selected job",
+    "  h / u         hold / release job",
     "",
-    "  /          filter (type to search, Enter/Esc)",
-    "  S          sort by column",
-    "  n          job's nodes / problem nodes",
-    "  e          export current view to file",
+    "  /             filter (type to search, Enter/Esc)",
+    "  S             sort by column",
+    "  n             job's nodes / problem nodes",
+    "  e             export current view to file",
     "",
-    "  tab        switch Jobs / Shares",
-    "  r          force refresh",
-    "  m / a / g  scope: me / all / group",
-    "  t          toggle ETAs",
-    "  q          quit",
-    "  ?          this help",
+    "  tab           switch Jobs / Shares",
+    "  r             force refresh",
+    "  m / a / g     scope: me / all / group",
+    "  t             toggle ETAs",
+    "  q             quit",
+    "",
+    "  Log viewer:   / search  n/N next/prev match",
     "",
     "  Colors: continuous log-scale gradient",
     f"  {_gradient_ansi(0.0)}blue{RESET}=low  ────  {_gradient_ansi(1.0)}red{RESET}=high",
@@ -1890,6 +1899,9 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     follow = True
     saved_offset = 0
     scrollbar_attr = curses.color_pair(C_SCROLLBAR)
+    search_text = ""
+    search_active = False
+    match_indices: list[int] = []
 
     while True:
         ### Full-screen overlay (no background bleed-through)
@@ -1899,8 +1911,24 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         content_h = box_h - 2
 
         content = _read_tail(path)
-        hint = f"r:refresh  s:switch  f:follow({'on' if follow else 'off'})  q:close"
-        display = content + ["", f"  {DIM}{path}{RESET}", f"  {DIM}{hint}{RESET}", ""]
+
+        ### Build footer with search status
+        search_hint = f"  /{search_text}" if search_text else ""
+        match_hint = f" ({len(match_indices)} matches)" if search_text and match_indices else ""
+        no_match_hint = " (no matches)" if search_text and not match_indices else ""
+        hint_parts = ["r:refresh", "s:switch", f"f:follow({'on' if follow else 'off'})",
+                      "/:search", "q:close"]
+        hint = "  ".join(hint_parts)
+        display = content + [
+            "", f"  {DIM}{path}{search_hint}{match_hint}{no_match_hint}{RESET}",
+            f"  {DIM}{hint}{RESET}", "",
+        ]
+
+        ### Recompute match indices after content reload
+        if search_text:
+            low = search_text.lower()
+            match_indices = [i for i, line in enumerate(display)
+                            if low in ANSI_RE.sub("", line).lower()]
 
         scroll = ScrollState(total=len(display), visible=content_h)
         if follow:
@@ -1921,10 +1949,15 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                 scroll.clamp()
                 stdscr.erase()
                 try:
-                    stdscr.addstr(y0, x0, top_border[:box_w], curses.A_BOLD)
+                    if search_active:
+                        bar = f" Search: {search_text}\u2588"
+                        stdscr.addstr(y0, x0, bar[:box_w].ljust(box_w), curses.A_REVERSE)
+                    else:
+                        stdscr.addstr(y0, x0, top_border[:box_w], curses.A_BOLD)
                     for i in range(content_h):
                         idx = scroll.offset + i
                         line = display[idx] if idx < len(display) else ""
+                        is_match = search_text and idx in match_indices
                         vis_len = len(ANSI_RE.sub("", line))
                         if vis_len > inner_w:
                             line = line[: inner_w - 1] + "\u2026"
@@ -1932,7 +1965,16 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                         pad = max(0, inner_w - vis_len)
                         sb_pad = " " if needs_sb else ""
                         row_str = f"\u2502 {line}{' ' * pad}{sb_pad}\u2502"
-                        _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
+                        row_attr = curses.A_BOLD if is_match else 0
+                        if is_match:
+                            try:
+                                stdscr.addstr(y0 + 1 + i, x0, " " * box_w, row_attr)
+                            except curses.error:
+                                pass
+                        _addstr_ansi(
+                            stdscr, y0 + 1 + i, x0, row_str, x0 + box_w,
+                            base_attr=row_attr,
+                        )
                     stdscr.addstr(y0 + box_h - 1, x0, bot_border[:box_w], curses.A_BOLD)
                 except curses.error:
                     pass
@@ -1947,11 +1989,67 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
             stdscr.timeout(2000 if follow else -1)
             key = stdscr.getch()
 
+            ### ------- Search input mode -------
+            if search_active:
+                if key == 27:
+                    search_text = ""
+                    match_indices = []
+                    search_active = False
+                    redraw = True
+                elif key in (ord("\n"), curses.KEY_ENTER):
+                    search_active = False
+                    if search_text:
+                        low = search_text.lower()
+                        match_indices = [
+                            i for i, line in enumerate(display)
+                            if low in ANSI_RE.sub("", line).lower()
+                        ]
+                        ### Jump to first match at or after current offset
+                        for mi in match_indices:
+                            if mi >= scroll.offset:
+                                scroll.offset = mi
+                                scroll.clamp()
+                                break
+                    redraw = True
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    if search_text:
+                        search_text = search_text[:-1]
+                    else:
+                        search_active = False
+                    redraw = True
+                elif 32 <= key <= 126:
+                    search_text += chr(key)
+                    redraw = True
+                continue
+
+            ### ------- Normal key handling -------
             if key == -1 and follow:
                 saved_offset = scroll.offset
                 break
             elif key in (ord("q"), 27):
                 return
+            elif key == ord("/"):
+                search_active = True
+                follow = False
+                redraw = True
+            elif key == ord("n") and match_indices:
+                ### Jump to next match after current viewport top
+                target = scroll.offset + 1
+                hit = next((mi for mi in match_indices if mi >= target), None)
+                if hit is None:
+                    hit = match_indices[0]
+                scroll.offset = hit
+                scroll.clamp()
+                redraw = True
+            elif key == ord("N") and match_indices:
+                ### Jump to previous match before current viewport top
+                target = scroll.offset - 1
+                hit = next((mi for mi in reversed(match_indices) if mi <= target), None)
+                if hit is None:
+                    hit = match_indices[-1]
+                scroll.offset = hit
+                scroll.clamp()
+                redraw = True
             elif key == ord("r"):
                 saved_offset = scroll.offset
                 break
@@ -1961,6 +2059,8 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                 elif current == "stderr" and stdout_path:
                     current, path = "stdout", stdout_path
                 saved_offset = 0
+                search_text = ""
+                match_indices = []
                 break
             elif key == ord("f"):
                 follow = not follow
@@ -1972,6 +2072,12 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                 redraw = True
             elif key in (curses.KEY_UP, ord("k")):
                 scroll.scroll_up()
+                redraw = True
+            elif key == 4:  # Ctrl+D: half-page down
+                scroll.scroll_down(max(1, content_h // 2))
+                redraw = True
+            elif key == 21:  # Ctrl+U: half-page up
+                scroll.scroll_up(max(1, content_h // 2))
                 redraw = True
             elif key == curses.KEY_PPAGE:
                 scroll.page_up()
@@ -2249,6 +2355,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     ### Transient flash message for the status bar (e.g., "exported to ...")
     flash_msg = ""
     flash_until = 0.0
+    prev_key = -1
 
     while True:
         now = time.time()
@@ -2401,8 +2508,9 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 sort_tag = f" \u00b7 sort:{sort_labels[sm].split()[0].lower()}{arrow}"
             else:
                 sort_tag = ""
+            pos_tag = f" \u00b7 {cursor + 1}/{len(selectable)}" if selectable else " \u00b7 0/0"
             status = (
-                f" {scope}{timing_tag}{filter_tag}{sort_tag} \u00b7 {age_str}"
+                f" {scope}{pos_tag}{timing_tag}{filter_tag}{sort_tag} \u00b7 {age_str}"
                 f" \u00b7 /:filter S:sort o:details ?:help"
             )
         try:
@@ -2521,9 +2629,14 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("a"):
             scope = "all"
             needs_refresh = True
+        elif key == ord("G") and selectable:
+            cursor_per_tab[active_tab] = len(selectable) - 1
         elif key == ord("g"):
-            scope = "group"
-            needs_refresh = True
+            if prev_key == ord("g"):
+                cursor_per_tab[active_tab] = 0
+            else:
+                scope = "group"
+                needs_refresh = True
         elif key == ord("t"):
             timing = not timing
             needs_refresh = True
@@ -2531,6 +2644,14 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             cursor_per_tab[active_tab] = max(0, cursor - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
             cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + 1) if selectable else 0
+        elif key == 5:  # Ctrl+E: scroll viewport down (cursor stays)
+            scroll_per_tab[active_tab].scroll_down(1)
+        elif key == 25:  # Ctrl+Y: scroll viewport up (cursor stays)
+            scroll_per_tab[active_tab].scroll_up(1)
+        elif key == 4 and selectable:  # Ctrl+D: half-page down
+            cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + max(1, list_h // 2))
+        elif key == 21:  # Ctrl+U: half-page up
+            cursor_per_tab[active_tab] = max(0, cursor - max(1, list_h // 2))
         elif key == curses.KEY_PPAGE:
             cursor_per_tab[active_tab] = max(0, cursor - list_h)
         elif key == curses.KEY_NPAGE:
@@ -2571,6 +2692,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         elif key == curses.KEY_RESIZE:
             pass
+
+        prev_key = key
 
 
 def run_tui(args: argparse.Namespace) -> None:
