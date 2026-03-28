@@ -1855,7 +1855,9 @@ def _read_tail(path: str, max_lines: int = 500) -> list[str]:
     """
     out = _run(["tail", "-n", str(max_lines), path], timeout=10)
     if out:
-        return out.splitlines()
+        ### For lines with \r (progress bar overwrites), keep only the final
+        ### segment - that's what a terminal would display after the carriage return.
+        return [line.split("\r")[-1] for line in out.splitlines()]
     ### tail failed or returned empty - check why so we can show a useful message
     try:
         with open(path) as f:
@@ -1886,15 +1888,16 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     current = "stdout" if stdout_path else "stderr"
     path = stdout_path or stderr_path
     follow = True
-
-    box_w = w - 4
-    box_h = h - 2
-    y0, x0 = 1, 2
-    content_h = box_h - 2
-    inner_w = box_w - 4
     saved_offset = 0
+    scrollbar_attr = curses.color_pair(C_SCROLLBAR)
 
     while True:
+        ### Full-screen overlay (no background bleed-through)
+        box_w = w
+        box_h = h - 1
+        y0, x0 = 0, 0
+        content_h = box_h - 2
+
         content = _read_tail(path)
         hint = f"r:refresh  s:switch  f:follow({'on' if follow else 'off'})  q:close"
         display = content + ["", f"  {DIM}{path}{RESET}", f"  {DIM}{hint}{RESET}", ""]
@@ -1905,6 +1908,9 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         else:
             scroll.offset = saved_offset
 
+        needs_sb = scroll.total > scroll.visible
+        inner_w = box_w - 5 if needs_sb else box_w - 4
+
         title = f"Job {job.jobid} {current}"
         top_border = f"\u256d\u2500 {title} {'\u2500' * max(0, box_w - len(title) - 5)}\u256e"
         bot_border = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
@@ -1913,11 +1919,7 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         while True:
             if redraw:
                 scroll.clamp()
-                for row in range(box_h):
-                    try:
-                        stdscr.addstr(y0 + row, x0, " " * box_w)
-                    except curses.error:
-                        pass
+                stdscr.erase()
                 try:
                     stdscr.addstr(y0, x0, top_border[:box_w], curses.A_BOLD)
                     for i in range(content_h):
@@ -1927,12 +1929,18 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                         if vis_len > inner_w:
                             line = line[: inner_w - 1] + "\u2026"
                             vis_len = inner_w
-                        pad = max(0, box_w - 3 - vis_len)
-                        row_str = f"\u2502 {line}{' ' * pad}\u2502"
+                        pad = max(0, inner_w - vis_len)
+                        sb_pad = " " if needs_sb else ""
+                        row_str = f"\u2502 {line}{' ' * pad}{sb_pad}\u2502"
                         _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
                     stdscr.addstr(y0 + box_h - 1, x0, bot_border[:box_w], curses.A_BOLD)
                 except curses.error:
                     pass
+                if needs_sb:
+                    _draw_scrollbar(
+                        stdscr, x0 + box_w - 2, y0 + 1, content_h,
+                        scroll, scrollbar_attr,
+                    )
                 stdscr.refresh()
                 redraw = False
 
@@ -1960,10 +1968,10 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                     scroll.go_bottom()
                 redraw = True
             elif key in (curses.KEY_DOWN, ord("j")):
-                scroll.scroll_down(1)
+                scroll.scroll_down()
                 redraw = True
             elif key in (curses.KEY_UP, ord("k")):
-                scroll.scroll_up(1)
+                scroll.scroll_up()
                 redraw = True
             elif key == curses.KEY_PPAGE:
                 scroll.page_up()
