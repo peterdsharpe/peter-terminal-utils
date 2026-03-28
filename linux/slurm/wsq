@@ -1593,10 +1593,11 @@ TAB_NAMES = ["Jobs", "Shares"]
 HELP_LINES = [
     "",
     "  j/k  ↑↓      move cursor",
-    "  gg / G        top / bottom",
+    "  Home / End    top / bottom",
     "  Ctrl+D / U    half-page scroll",
     "  Ctrl+E / Y    scroll viewport only",
     "  PgUp / Dn     full page",
+    "  mouse         click, double-click, scroll",
     "",
     "  o             details for selected item",
     "  l             view job stdout/stderr log",
@@ -1605,16 +1606,17 @@ HELP_LINES = [
     "",
     "  /             filter (type to search, Enter/Esc)",
     "  S             sort by column",
-    "  n             job's nodes / problem nodes",
+    "  n             node details (job or cluster)",
     "  e             export current view to file",
     "",
     "  tab           switch Jobs / Shares",
     "  r             force refresh",
     "  m / a / g     scope: me / all / group",
     "  t             toggle ETAs",
-    "  q             quit",
+    "  q / Esc       quit",
+    "  ?             this help",
     "",
-    "  Log viewer:   / search  n/N next/prev match",
+    "  Log viewer:   /=search  n/N=next/prev match",
     "",
     "  Colors: continuous log-scale gradient",
     f"  {_gradient_ansi(0.0)}blue{RESET}=low  ────  {_gradient_ansi(1.0)}red{RESET}=high",
@@ -1976,7 +1978,7 @@ def _show_sort_picker(
     for i, label in enumerate(labels):
         marker = "\u25b8" if i == current else " "
         lines.append(f"  {marker} [{i + 1}] {label}")
-    lines.extend(["", f"  Press 1\u2013{len(labels)}, or Esc to cancel", ""])
+    lines.extend(["", f"  Press 1\u2013{len(labels)}, or q/Esc to cancel", ""])
 
     _draw_prompt_box(stdscr, lines, "Sort by", h, w, max_width=55)
     while True:
@@ -2021,7 +2023,7 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     if not stdout_path and not stderr_path:
         _draw_overlay_box(
             stdscr,
-            ["", "  No output file path found for this job", ""],
+            ["", "  No output file path found for this job", "", "  q/Esc to close"],
             "Job Log", h, w,
         )
         return
@@ -2232,7 +2234,7 @@ def _job_action(
 
 def _show_export_picker(stdscr: curses.window, h: int, w: int) -> str | None:
     """Show export format picker. Returns 'csv', 'json', or None."""
-    lines = ["", "  [1] CSV", "  [2] JSON", "", "  Esc to cancel", ""]
+    lines = ["", "  [1] CSV", "  [2] JSON", "", "  q/Esc to cancel", ""]
     _draw_prompt_box(stdscr, lines, "Export format", h, w, max_width=30)
     while True:
         key = stdscr.getch()
@@ -2372,6 +2374,7 @@ def _show_node_details(
     Otherwise shows only problematic nodes across the cluster.
     """
     lines = _fetch_node_details(nodelist)
+    lines.extend(["", "  j/k to scroll \u00b7 q/Esc to close", ""])
     overlay_title = title or ("Problem Nodes" if not nodelist else "Node Details")
     _draw_overlay_box(stdscr, lines, overlay_title, h, w)
 
@@ -2420,8 +2423,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     ### Transient flash message for the status bar (e.g., "exported to ...")
     flash_msg = ""
     flash_until = 0.0
-    prev_key = -1
-
     while True:
         now = time.time()
         h, w = stdscr.getmaxyx()
@@ -2690,12 +2691,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("a"):
             scope = "all"
             needs_refresh = True
-        elif key == ord("G") and selectable:
-            cursor_per_tab[active_tab] = len(selectable) - 1
         elif key == ord("g"):
-            if prev_key == ord("g"):
-                cursor_per_tab[active_tab] = 0
-            elif scope != "group":
+            if scope != "group":
                 scope = "group"
                 needs_refresh = True
         elif key == ord("t"):
@@ -2711,7 +2708,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             scroll_per_tab[active_tab].scroll_up(1)
         elif key == 4 and selectable:  # Ctrl+D: half-page down
             cursor_per_tab[active_tab] = min(len(selectable) - 1, cursor + max(1, list_h // 2))
-        elif key == 21:  # Ctrl+U: half-page up
+        elif key == 21 and selectable:  # Ctrl+U: half-page up
             cursor_per_tab[active_tab] = max(0, cursor - max(1, list_h // 2))
         elif key == curses.KEY_PPAGE:
             cursor_per_tab[active_tab] = max(0, cursor - list_h)
@@ -2756,8 +2753,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         elif key == curses.KEY_RESIZE:
             pass
-
-        prev_key = key
 
 
 def run_tui(args: argparse.Namespace) -> None:
