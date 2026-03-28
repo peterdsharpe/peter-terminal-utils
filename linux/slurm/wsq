@@ -1354,11 +1354,65 @@ def _nearest_gradient_pair(r: int, g: int, b: int) -> int:
     return best_pair
 
 
+def _apply_sgr(attr: int, code: str) -> int:
+    """Apply an ANSI SGR parameter string to the current curses attribute.
+
+    Handles combined codes (e.g., '1;31' for bold red), 256-color ('38;5;N'),
+    and true color ('38;2;R;G;B') sequences by splitting on ';' and walking
+    sub-codes with a cursor to correctly consume multi-part sequences.
+    """
+    if code in ("0", ""):
+        return 0
+
+    parts = code.split(";")
+    i = 0
+    while i < len(parts):
+        p = parts[i]
+        if p in ("0", ""):
+            attr = 0
+        elif p == "1":
+            attr |= curses.A_BOLD
+        elif p == "2":
+            attr |= curses.A_DIM
+        elif p == "38" and i + 1 < len(parts):
+            if parts[i + 1] == "2" and i + 4 < len(parts):
+                ### True color: 38;2;R;G;B
+                try:
+                    r = int(parts[i + 2])
+                    g = int(parts[i + 3])
+                    b = int(parts[i + 4])
+                    pair = _nearest_gradient_pair(r, g, b)
+                    attr = (attr & (curses.A_BOLD | curses.A_DIM)) | pair
+                except (ValueError, IndexError):
+                    pass
+                i += 4
+            elif parts[i + 1] == "5" and i + 2 < len(parts):
+                ### 256-color: 38;5;N — check exact map, then gradient palette
+                full = f"38;5;{parts[i + 2]}"
+                if full in _ANSI_ATTR:
+                    attr = (attr & (curses.A_BOLD | curses.A_DIM)) | _ANSI_ATTR[full]
+                else:
+                    try:
+                        pair = _gradient_256_to_pair.get(int(parts[i + 2]), 0)
+                        if pair:
+                            attr = (attr & (curses.A_BOLD | curses.A_DIM)) | pair
+                    except ValueError:
+                        pass
+                i += 2
+            else:
+                i += 1
+        elif p in _ANSI_ATTR:
+            attr = (attr & (curses.A_BOLD | curses.A_DIM)) | _ANSI_ATTR[p]
+        i += 1
+    return attr
+
+
 def _parse_ansi(text: str) -> list[tuple[str, int]]:
     """Parse ANSI-escaped string into (text_segment, curses_attr) pairs.
 
-    Handles standard SGR codes (bold, dim, basic colors, 256-color) and
-    true color codes (38;2;R;G;B) by mapping to the nearest gradient pair.
+    Handles standard SGR codes (bold, dim, basic colors, 256-color),
+    true color codes (38;2;R;G;B), and combined codes (e.g., 1;31m)
+    by delegating to _apply_sgr.
     """
     segments: list[tuple[str, int]] = []
     attr = 0
@@ -1367,23 +1421,7 @@ def _parse_ansi(text: str) -> list[tuple[str, int]]:
     for m in ANSI_RE.finditer(text):
         if m.start() > pos:
             segments.append((text[pos : m.start()], attr))
-        code = m.group(1)
-        if code in ("0", ""):
-            attr = 0
-        elif code in ("1", "2"):
-            attr |= _ANSI_ATTR.get(code, 0)
-        elif code.startswith("38;2;"):
-            ### True color: map to nearest gradient palette entry
-            parts = code.split(";")
-            try:
-                r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
-                pair = _nearest_gradient_pair(r, g, b)
-                attr = (attr & (curses.A_BOLD | curses.A_DIM)) | pair
-            except (IndexError, ValueError):
-                pass
-        else:
-            ### Standard color code: keep bold/dim, replace color
-            attr = (attr & (curses.A_BOLD | curses.A_DIM)) | _ANSI_ATTR.get(code, 0)
+        attr = _apply_sgr(attr, m.group(1))
         pos = m.end()
 
     if pos < len(text):
@@ -1636,7 +1674,7 @@ def _draw_overlay_box(
 
     scroll = ScrollState(total=len(lines), visible=content_h)
     needs_sb = scroll.total > scroll.visible
-    inner_w = box_w - 5 if needs_sb else box_w - 4
+    inner_w = box_w - 4 if needs_sb else box_w - 3
     scrollbar_attr = curses.color_pair(C_SCROLLBAR) if needs_sb else 0
 
     top_border = f"╭─ {title} {'─' * max(0, box_w - len(title) - 5)}╮"
@@ -1794,7 +1832,7 @@ def _show_cancel_confirm(
 ) -> str | None:
     """Show cancel confirmation dialog. Returns 'y', 'a', or None (abort)."""
     if job.user != CURRENT_USER:
-        lines = ["", f"  Cannot cancel: job belongs to {job.user}", "", "  Press any key"]
+        lines = ["", f"  Cannot cancel: job belongs to {job.user}", "", "  q/Esc to close"]
         _draw_overlay_box(stdscr, lines, "Cancel", h, w)
         return None
 
@@ -2017,12 +2055,12 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
             scroll.offset = saved_offset
 
         needs_sb = scroll.total > scroll.visible
-        inner_w = box_w - 5 if needs_sb else box_w - 4
+        inner_w = box_w - 4 if needs_sb else box_w - 3
 
         title = f"Job {job.jobid} {current}"
-        h = "\u2500"
-        top_border = f"\u256d\u2500 {title} {h * max(0, box_w - len(title) - 5)}\u256e"
-        bot_border = f"\u2570{h * (box_w - 2)}\u256f"
+        hline = "\u2500"
+        top_border = f"\u256d\u2500 {title} {hline * max(0, box_w - len(title) - 5)}\u256e"
+        bot_border = f"\u2570{hline * (box_w - 2)}\u256f"
 
         redraw = True
         while True:
@@ -2152,7 +2190,7 @@ def _job_action(
     if job.user != CURRENT_USER:
         _draw_overlay_box(
             stdscr,
-            ["", f"  Cannot {verb}: job belongs to {job.user}", "", "  Press any key"],
+            ["", f"  Cannot {verb}: job belongs to {job.user}", "", "  q/Esc to close"],
             verb.title(), h, w,
         )
         return False
@@ -2222,9 +2260,8 @@ def _export_shares(shares: list[ShareEntry], fmt: str, path: str) -> None:
                             s.effectv_usage, s.level_fs if s.level_fs is not None else ""])
     else:
         data = [
-            {"account": s.account, "user": s.user, "raw_usage": s.raw_usage,
-             "norm_usage": s.norm_usage, "effectv_usage": s.effectv_usage,
-             "level_fs": s.level_fs}
+            dict(zip(headers, [s.account, s.user, s.raw_usage, s.norm_usage,
+                                s.effectv_usage, s.level_fs]))
             for s in shares
         ]
         with open(path, "w") as f:
@@ -2291,8 +2328,8 @@ def _fetch_node_details(nodelist: str = "") -> list[str]:
         return "  ".join(parts)
 
     hdr = fmt_row(headers)
-    h = "\u2500"
-    lines: list[str] = [hdr, f"{DIM}{h * len(hdr)}{RESET}"]
+    hline = "\u2500"
+    lines: list[str] = [hdr, f"{DIM}{hline * len(hdr)}{RESET}"]
 
     state_colors = {
         "idle": GREEN, "idle~": GREEN,
