@@ -179,11 +179,6 @@ class Job:
     collapsed_names: list[str] = field(default_factory=list)
 
 
-### Historical note: the processing pipeline used to include a SummaryLine type
-### alongside Job. All items are now plain Job instances after the collapsing
-### functions fold batches into the first Job's more_count/collapsed_names fields.
-
-
 ###############################################################################
 ### Subprocess Helpers
 ###############################################################################
@@ -332,16 +327,21 @@ def parse_sinfo(output: str) -> list[Partition]:
 
         name = tokens[0].rstrip("*")
         state_raw = tokens[1]
-        count = int(tokens[2])
+        try:
+            count = int(tokens[2])
+        except ValueError:
+            continue
         gres = tokens[3] if len(tokens) > 3 else ""
 
         if name not in parts:
             gpu = 0
             if gres.startswith("gpu:"):
-                try:
-                    gpu = int(gres.split(":")[1].split("(")[0])
-                except (ValueError, IndexError):
-                    pass
+                ### Handle gpu:N, gpu:type:N, gpu:type:N(S:0-3), etc.
+                for segment in reversed(gres.split(":")[1:]):
+                    cleaned = segment.split("(")[0]
+                    if cleaned.isdigit():
+                        gpu = int(cleaned)
+                        break
             parts[name] = Partition(name=name, gpu_per_node=gpu)
 
         p = parts[name]
@@ -540,8 +540,11 @@ def collapse_arrays(jobs: list[Job]) -> list[Job]:
         for part in inner.split(","):
             if "-" in part:
                 try:
-                    lo, hi = part.split("-", 1)
-                    count += int(hi) - int(lo) + 1
+                    lo_str, rest = part.split("-", 1)
+                    hi_str, _, step_str = rest.partition(":")
+                    lo, hi = int(lo_str), int(hi_str)
+                    step = int(step_str) if step_str else 1
+                    count += (hi - lo) // step + 1
                 except ValueError:
                     count += 1
             else:
@@ -996,10 +999,12 @@ def render_shares(
     shares: list[ShareEntry],
     items: list[Job] | None = None,
     pre_sorted: bool = False,
+    user_nodes: dict[str, int] | None = None,
 ) -> list[str]:
     """Render the sshare table with an active-nodes column from job data.
 
     When pre_sorted is True, the input order is preserved (for custom sort/filter).
+    Pass user_nodes to avoid recomputing _active_nodes_by_user.
     """
     if not shares:
         return []
@@ -1007,18 +1012,12 @@ def render_shares(
     if pre_sorted:
         ordered = list(shares)
     else:
-        groups = sorted(
-            [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
-        )
-        users = sorted(
-            [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
-        )
-        ordered = groups + users
+        ordered = _sort_shares_by(shares, mode=0, ascending=True)
 
-    ### Compute active nodes per user from job data.
     ### account_nodes sums over ALL shares (not just filtered `ordered`) so that
     ### group-row node counts remain accurate even when a filter hides some users.
-    user_nodes = _active_nodes_by_user(items) if items else {}
+    if user_nodes is None:
+        user_nodes = _active_nodes_by_user(items) if items else {}
     account_nodes: dict[str, int] = {}
     for s in shares:
         if not s.is_group and user_nodes.get(s.user, 0) > 0:
@@ -1220,7 +1219,7 @@ ANSI_RE = re.compile(r"\033\[([0-9;]*)m")
 
 ### Scrollbar and gradient color pair indices
 C_SCROLLBAR = 7
-GRADIENT_STEPS = 64
+GRADIENT_PALETTE_SIZE = 64
 C_GRADIENT_BASE = 10
 LOWER_EIGHTHS = " ▁▂▃▄▅▆▇█"
 UPPER_EIGHTHS = " ▔🮂🮃▀🮄🮅🮆█"
@@ -1293,8 +1292,8 @@ def _init_colors() -> None:
         curses.init_pair(C_ORANGE, 208, -1)
         curses.init_pair(C_SCROLLBAR, 249, 236)
         ### Pre-allocate gradient palette for continuous color mapping
-        for i in range(GRADIENT_STEPS):
-            t = i / (GRADIENT_STEPS - 1)
+        for i in range(GRADIENT_PALETTE_SIZE):
+            t = i / (GRADIENT_PALETTE_SIZE - 1)
             r, g, b = _gradient_rgb(t)
             curses.init_pair(C_GRADIENT_BASE + i, _rgb_to_256(r, g, b), -1)
     else:
@@ -1329,8 +1328,8 @@ _gradient_256_to_pair: dict[int, int] = {}
 
 def _build_gradient_lookup() -> None:
     """Build reverse lookup from 256-color index to gradient curses pair."""
-    for i in range(GRADIENT_STEPS):
-        t = i / (GRADIENT_STEPS - 1)
+    for i in range(GRADIENT_PALETTE_SIZE):
+        t = i / (GRADIENT_PALETTE_SIZE - 1)
         r, g, b = _gradient_rgb(t)
         c256 = _rgb_to_256(r, g, b)
         _gradient_256_to_pair[c256] = curses.color_pair(C_GRADIENT_BASE + i)
@@ -1344,8 +1343,8 @@ def _nearest_gradient_pair(r: int, g: int, b: int) -> int:
     ### Fallback: find nearest by RGB distance across all gradient steps
     best_pair = 0
     best_dist = float("inf")
-    for i in range(GRADIENT_STEPS):
-        t = i / (GRADIENT_STEPS - 1)
+    for i in range(GRADIENT_PALETTE_SIZE):
+        t = i / (GRADIENT_PALETTE_SIZE - 1)
         gr, gg, gb = _gradient_rgb(t)
         dist = (r - gr) ** 2 + (g - gg) ** 2 + (b - gb) ** 2
         if dist < best_dist:
@@ -1391,6 +1390,28 @@ def _parse_ansi(text: str) -> list[tuple[str, int]]:
     return segments
 
 
+def _truncate_ansi(text: str, max_visible: int) -> str:
+    """Truncate ANSI-colored string to max_visible visible chars with ellipsis.
+
+    Walks visible-character boundaries so escape sequences are never split.
+    Appends RESET after the ellipsis to prevent color bleed into padding.
+    """
+    if max_visible <= 0:
+        return ""
+    visible = 0
+    prev_end = 0
+    for m in ANSI_RE.finditer(text):
+        gap = m.start() - prev_end
+        if visible + gap >= max_visible:
+            return text[: prev_end + max_visible - visible - 1] + f"\u2026{RESET}"
+        visible += gap
+        prev_end = m.end()
+    tail = len(text) - prev_end
+    if visible + tail > max_visible:
+        return text[: prev_end + max_visible - visible - 1] + f"\u2026{RESET}"
+    return text
+
+
 def _addstr_ansi(
     win: curses.window, y: int, x: int, text: str, max_x: int, base_attr: int = 0
 ) -> None:
@@ -1411,6 +1432,71 @@ def _addstr_ansi(
         except curses.error:
             pass
         col += len(fragment)
+
+
+def _handle_viewport_scroll(key: int, scroll: ScrollState, page_size: int = 0) -> bool:
+    """Handle viewport scroll keys against a ScrollState. Returns True if consumed.
+
+    Covers j/k, arrows, PgUp/Dn, Home/End, Ctrl+D/U, Ctrl+E/Y, and mouse wheel.
+    Used by all pure-viewport scroll contexts (overlay boxes, log viewer) so that
+    scroll features stay consistent across the codebase.
+    """
+    ps = page_size or scroll.visible
+    if key in (curses.KEY_DOWN, ord("j")):
+        scroll.scroll_down(1)
+    elif key in (curses.KEY_UP, ord("k")):
+        scroll.scroll_up(1)
+    elif key == curses.KEY_PPAGE:
+        scroll.page_up()
+    elif key == curses.KEY_NPAGE:
+        scroll.page_down()
+    elif key == curses.KEY_HOME:
+        scroll.go_top()
+    elif key == curses.KEY_END:
+        scroll.go_bottom()
+    elif key == 4:  # Ctrl+D
+        scroll.scroll_down(max(1, ps // 2))
+    elif key == 21:  # Ctrl+U
+        scroll.scroll_up(max(1, ps // 2))
+    elif key == 5:  # Ctrl+E
+        scroll.scroll_down(1)
+    elif key == 25:  # Ctrl+Y
+        scroll.scroll_up(1)
+    elif key == curses.KEY_MOUSE:
+        try:
+            _, _, _, _, bstate = curses.getmouse()
+        except curses.error:
+            return False
+        if bstate & curses.BUTTON4_PRESSED:
+            scroll.scroll_up(3)
+        elif bstate & curses.BUTTON5_PRESSED:
+            scroll.scroll_down(3)
+        else:
+            return False
+    else:
+        return False
+    return True
+
+
+def _handle_text_input(key: int, text: str) -> tuple[str, str]:
+    """Process a keypress in text-input mode (filter bar, search bar, etc.).
+
+    Returns (new_text, action) where action is one of:
+        "typing"  - text was modified (char added/deleted)
+        "submit"  - Enter pressed, input committed
+        "cancel"  - Esc pressed, input should be discarded
+    """
+    if key == 27:
+        return "", "cancel"
+    if key in (ord("\n"), curses.KEY_ENTER):
+        return text, "submit"
+    if key in (curses.KEY_BACKSPACE, 127, 8):
+        if text:
+            return text[:-1], "typing"
+        return "", "cancel"
+    if 32 <= key <= 126:
+        return text + chr(key), "typing"
+    return text, "typing"
 
 
 def _draw_scrollbar(
@@ -1546,9 +1632,12 @@ def _draw_overlay_box(
     y0 = max(0, (h - box_h) // 2)
     x0 = max(0, (w - box_w) // 2)
     content_h = box_h - 2
-    inner_w = box_w - 4  # usable chars between "│ " and " │"
 
     scroll = ScrollState(total=len(lines), visible=content_h)
+    needs_sb = scroll.total > scroll.visible
+    inner_w = box_w - 5 if needs_sb else box_w - 4
+    scrollbar_attr = curses.color_pair(C_SCROLLBAR) if needs_sb else 0
+
     top_border = f"╭─ {title} {'─' * max(0, box_w - len(title) - 5)}╮"
     bot_border = f"╰{'─' * (box_w - 2)}╯"
 
@@ -1565,17 +1654,22 @@ def _draw_overlay_box(
             for i in range(content_h):
                 idx = scroll.offset + i
                 line = lines[idx] if idx < len(lines) else ""
-                ### Truncate content that exceeds inner width
                 vis_len = len(ANSI_RE.sub("", line))
                 if vis_len > inner_w:
-                    line = line[:inner_w - 1] + "\u2026"
+                    line = _truncate_ansi(line, inner_w)
                     vis_len = inner_w
-                pad = max(0, box_w - 3 - vis_len)
-                row_str = f"│ {line}{' ' * pad}│"
+                pad = max(0, inner_w - vis_len)
+                sb_pad = " " if needs_sb else ""
+                row_str = f"│ {line}{' ' * pad}{sb_pad}│"
                 _addstr_ansi(stdscr, y0 + 1 + i, x0, row_str, x0 + box_w)
             stdscr.addstr(y0 + box_h - 1, x0, bot_border[:box_w], curses.A_BOLD)
         except curses.error:
             pass
+
+        if needs_sb:
+            _draw_scrollbar(
+                stdscr, x0 + box_w - 2, y0 + 1, content_h, scroll, scrollbar_attr,
+            )
 
         stdscr.refresh()
         stdscr.timeout(-1)
@@ -1583,14 +1677,8 @@ def _draw_overlay_box(
 
         if key in (ord("q"), 27, ord("\n")):
             break
-        elif key == curses.KEY_DOWN or key == ord("j"):
-            scroll.scroll_down(1)
-        elif key == curses.KEY_UP or key == ord("k"):
-            scroll.scroll_up(1)
-        elif key == curses.KEY_PPAGE:
-            scroll.page_up()
-        elif key == curses.KEY_NPAGE:
-            scroll.page_down()
+        else:
+            _handle_viewport_scroll(key, scroll)
 
 
 def _fetch_job_detail(jobid: str) -> dict[str, str]:
@@ -1661,6 +1749,45 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     _draw_overlay_box(stdscr, lines, f"Job {job.jobid}: {job.name}", h, w)
 
 
+def _draw_prompt_box(
+    stdscr: curses.window,
+    lines: list[str],
+    title: str,
+    h: int,
+    w: int,
+    max_width: int = 70,
+) -> None:
+    """Draw a centered prompt box (background + border + content).
+
+    Shared rendering for simple confirmation/picker dialogs. After calling
+    this, the dialog's key-handling loop should call stdscr.getch() directly.
+    """
+    box_w = min(max(len(ln) for ln in lines) + 6, w - 4, max_width)
+    box_h = len(lines) + 2
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+
+    top = f"╭─ {title} {'─' * max(0, box_w - len(title) - 5)}╮"
+    bot = f"╰{'─' * (box_w - 2)}╯"
+
+    for row in range(box_h):
+        try:
+            stdscr.addstr(y0 + row, x0, " " * box_w)
+        except curses.error:
+            pass
+    try:
+        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
+        for i, line in enumerate(lines):
+            padded = f"│ {line:<{box_w - 3}}│"
+            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
+        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+
+
 def _show_cancel_confirm(
     stdscr: curses.window, job: Job, h: int, w: int
 ) -> str | None:
@@ -1692,31 +1819,7 @@ def _show_cancel_confirm(
 
     lines.extend(["  [n] Abort", ""])
 
-    box_w = min(max(len(l) for l in lines) + 6, w - 4, 70)
-    box_h = len(lines) + 2
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-
-    top = f"╭─ Cancel job? {'─' * max(0, box_w - 16)}╮"
-    bot = f"╰{'─' * (box_w - 2)}╯"
-
-    for row in range(box_h):
-        try:
-            stdscr.addstr(y0 + row, x0, " " * box_w)
-        except curses.error:
-            pass
-    try:
-        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
-        for i, line in enumerate(lines):
-            padded = f"│ {line:<{box_w - 3}}│"
-            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
-    except curses.error:
-        pass
-
-    stdscr.refresh()
-    stdscr.timeout(-1)
-
+    _draw_prompt_box(stdscr, lines, "Cancel job?", h, w)
     while True:
         key = stdscr.getch()
         if key == ord("y"):
@@ -1733,7 +1836,7 @@ def _do_cancel(job: Job, mode: str) -> None:
         _run(["scancel", job.jobid], timeout=10)
     elif mode == "a":
         if job.dep_count > 0:
-            _run(["scancel", "-n", job.name], timeout=10)
+            _run(["scancel", "-n", job.name, "-u", CURRENT_USER], timeout=10)
         else:
             base = job.jobid.split("_")[0] if "_" in job.jobid else job.jobid
             _run(["scancel", base], timeout=10)
@@ -1746,9 +1849,11 @@ def _show_share_detail(
     items: list[Job],
     h: int,
     w: int,
+    user_nodes: dict[str, int] | None = None,
 ) -> None:
     """Show detail overlay for a share entry (user or group)."""
-    user_nodes = _active_nodes_by_user(items)
+    if user_nodes is None:
+        user_nodes = _active_nodes_by_user(items)
 
     if entry.is_group:
         ### Group detail: show all members with active jobs
@@ -1756,14 +1861,10 @@ def _show_share_detail(
         members = [s for s in shares if not s.is_group and s.account == entry.account]
         members.sort(key=lambda s: s.raw_usage, reverse=True)
 
-        lines = [
-            "",
-            f"  Account:     {entry.account}",
-            f"  Total Usage: {entry.raw_usage:,}",
-            f"  LevelFS:     {entry.level_fs:.6f}" if entry.level_fs is not None else "",
-            "",
-            f"  Members ({len(members)}):",
-        ]
+        lines = ["", f"  Account:     {entry.account}", f"  Total Usage: {entry.raw_usage:,}"]
+        if entry.level_fs is not None:
+            lines.append(f"  LevelFS:     {entry.level_fs:.6f}")
+        lines.extend(["", f"  Members ({len(members)}):"])
         for m in members:
             n = user_nodes.get(m.user, 0)
             node_str = f"{n:>4} nodes" if n > 0 else "         "
@@ -1789,19 +1890,18 @@ def _show_share_detail(
                 share_raw = parts[0]
                 qos = parts[4]
 
-        lines = [
-            "",
-            f"  Account:     {entry.account}",
-            f"  Share:       {share_raw}" if share_raw else "",
-            f"  RawUsage:    {entry.raw_usage:,}",
-            f"  EffectvUsage:{entry.effectv_usage:.6f}",
-            f"  LevelFS:     {entry.level_fs:.6f}" if entry.level_fs is not None else "",
-            f"  QOS:         {qos}" if qos else "",
-            "",
-            f"  Running:     {r_nodes} nodes across {len(running)} jobs",
-            f"  Pending:     {len(pending)} jobs ({p_nodes} nodes requested)",
-        ]
-        lines = [l for l in lines if l is not None and l != ""]
+        lines = ["", f"  Account:     {entry.account}"]
+        if share_raw:
+            lines.append(f"  Share:       {share_raw}")
+        lines.append(f"  RawUsage:    {entry.raw_usage:,}")
+        lines.append(f"  EffectvUsage:{entry.effectv_usage:.6f}")
+        if entry.level_fs is not None:
+            lines.append(f"  LevelFS:     {entry.level_fs:.6f}")
+        if qos:
+            lines.append(f"  QOS:         {qos}")
+        lines.append("")
+        lines.append(f"  Running:     {r_nodes} nodes across {len(running)} jobs")
+        lines.append(f"  Pending:     {len(pending)} jobs ({p_nodes} nodes requested)")
 
     lines.extend(["", "  j/k to scroll · q/Esc to close", ""])
     _draw_overlay_box(stdscr, lines, title, h, w)
@@ -1823,30 +1923,7 @@ def _show_sort_picker(
         lines.append(f"  {marker} [{i + 1}] {label}")
     lines.extend(["", f"  Press 1\u2013{len(labels)}, or Esc to cancel", ""])
 
-    box_w = min(max(len(l) for l in lines) + 6, w - 4, 55)
-    box_h = len(lines) + 2
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-
-    top = f"\u256d\u2500 Sort by {'\u2500' * max(0, box_w - 12)}\u256e"
-    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
-
-    for row in range(box_h):
-        try:
-            stdscr.addstr(y0 + row, x0, " " * box_w)
-        except curses.error:
-            pass
-    try:
-        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
-        for i, line in enumerate(lines):
-            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
-            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
-    except curses.error:
-        pass
-
-    stdscr.refresh()
-    stdscr.timeout(-1)
+    _draw_prompt_box(stdscr, lines, "Sort by", h, w, max_width=55)
     while True:
         key = stdscr.getch()
         if key in (27, ord("q")):
@@ -1902,6 +1979,7 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     search_text = ""
     search_active = False
     match_indices: list[int] = []
+    match_set: set[int] = set()
 
     while True:
         ### Full-screen overlay (no background bleed-through)
@@ -1929,6 +2007,7 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
             low = search_text.lower()
             match_indices = [i for i, line in enumerate(display)
                             if low in ANSI_RE.sub("", line).lower()]
+            match_set = set(match_indices)
 
         scroll = ScrollState(total=len(display), visible=content_h)
         if follow:
@@ -1957,10 +2036,10 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                     for i in range(content_h):
                         idx = scroll.offset + i
                         line = display[idx] if idx < len(display) else ""
-                        is_match = search_text and idx in match_indices
+                        is_match = search_text and idx in match_set
                         vis_len = len(ANSI_RE.sub("", line))
                         if vis_len > inner_w:
-                            line = line[: inner_w - 1] + "\u2026"
+                            line = _truncate_ansi(line, inner_w)
                             vis_len = inner_w
                         pad = max(0, inner_w - vis_len)
                         sb_pad = " " if needs_sb else ""
@@ -1991,12 +2070,12 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
 
             ### ------- Search input mode -------
             if search_active:
-                if key == 27:
-                    search_text = ""
+                search_text, action = _handle_text_input(key, search_text)
+                if action == "cancel":
                     match_indices = []
+                    match_set = set()
                     search_active = False
-                    redraw = True
-                elif key in (ord("\n"), curses.KEY_ENTER):
+                elif action == "submit":
                     search_active = False
                     if search_text:
                         low = search_text.lower()
@@ -2004,22 +2083,13 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                             i for i, line in enumerate(display)
                             if low in ANSI_RE.sub("", line).lower()
                         ]
-                        ### Jump to first match at or after current offset
+                        match_set = set(match_indices)
                         for mi in match_indices:
                             if mi >= scroll.offset:
                                 scroll.offset = mi
                                 scroll.clamp()
                                 break
-                    redraw = True
-                elif key in (curses.KEY_BACKSPACE, 127, 8):
-                    if search_text:
-                        search_text = search_text[:-1]
-                    else:
-                        search_active = False
-                    redraw = True
-                elif 32 <= key <= 126:
-                    search_text += chr(key)
-                    redraw = True
+                redraw = True
                 continue
 
             ### ------- Normal key handling -------
@@ -2061,29 +2131,15 @@ def _show_job_log(stdscr: curses.window, job: Job, h: int, w: int) -> None:
                 saved_offset = 0
                 search_text = ""
                 match_indices = []
+                match_set = set()
                 break
             elif key == ord("f"):
                 follow = not follow
                 if follow:
                     scroll.go_bottom()
                 redraw = True
-            elif key in (curses.KEY_DOWN, ord("j")):
-                scroll.scroll_down()
-                redraw = True
-            elif key in (curses.KEY_UP, ord("k")):
-                scroll.scroll_up()
-                redraw = True
-            elif key == 4:  # Ctrl+D: half-page down
-                scroll.scroll_down(max(1, content_h // 2))
-                redraw = True
-            elif key == 21:  # Ctrl+U: half-page up
-                scroll.scroll_up(max(1, content_h // 2))
-                redraw = True
-            elif key == curses.KEY_PPAGE:
-                scroll.page_up()
-                redraw = True
-            elif key == curses.KEY_NPAGE:
-                scroll.page_down()
+            elif _handle_viewport_scroll(key, scroll, content_h):
+                follow = False
                 redraw = True
 
 
@@ -2108,30 +2164,7 @@ def _job_action(
         "  [n] Cancel",
         "",
     ]
-    box_w = min(max(len(l) for l in lines) + 6, w - 4, 60)
-    box_h = len(lines) + 2
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-
-    top = f"\u256d\u2500 {verb.title()} job? {'\u2500' * max(0, box_w - len(verb) - 10)}\u256e"
-    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
-
-    for row in range(box_h):
-        try:
-            stdscr.addstr(y0 + row, x0, " " * box_w)
-        except curses.error:
-            pass
-    try:
-        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
-        for i, line in enumerate(lines):
-            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
-            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
-    except curses.error:
-        pass
-
-    stdscr.refresh()
-    stdscr.timeout(-1)
+    _draw_prompt_box(stdscr, lines, f"{verb.title()} job?", h, w, max_width=60)
     while True:
         key = stdscr.getch()
         if key == ord("y"):
@@ -2144,30 +2177,7 @@ def _job_action(
 def _show_export_picker(stdscr: curses.window, h: int, w: int) -> str | None:
     """Show export format picker. Returns 'csv', 'json', or None."""
     lines = ["", "  [1] CSV", "  [2] JSON", "", "  Esc to cancel", ""]
-    box_w = min(30, w - 4)
-    box_h = len(lines) + 2
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-
-    top = f"\u256d\u2500 Export format {'\u2500' * max(0, box_w - 18)}\u256e"
-    bot = f"\u2570{'\u2500' * (box_w - 2)}\u256f"
-
-    for row in range(box_h):
-        try:
-            stdscr.addstr(y0 + row, x0, " " * box_w)
-        except curses.error:
-            pass
-    try:
-        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
-        for i, line in enumerate(lines):
-            padded = f"\u2502 {line:<{box_w - 3}}\u2502"
-            stdscr.addstr(y0 + 1 + i, x0, padded[:box_w])
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
-    except curses.error:
-        pass
-
-    stdscr.refresh()
-    stdscr.timeout(-1)
+    _draw_prompt_box(stdscr, lines, "Export format", h, w, max_width=30)
     while True:
         key = stdscr.getch()
         if key == ord("1"):
@@ -2178,9 +2188,8 @@ def _show_export_picker(stdscr: curses.window, h: int, w: int) -> str | None:
             return None
 
 
-def _export_jobs(items: list[Job], fmt: str, path: str) -> None:
+def _export_jobs(jobs: list[Job], fmt: str, path: str) -> None:
     """Write job data to a CSV or JSON file."""
-    jobs = items
     headers = ["JobID", "Partition", "Name", "User", "State", "Time", "Nodes", "Reason"]
     if fmt == "csv":
         with open(path, "w", newline="") as f:
@@ -2364,11 +2373,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         ### Refresh data from Slurm if interval elapsed or forced
         if needs_refresh or (now - last_fetch) >= interval:
             partitions, shares, items, etas = fetch_all(scope, running_only, timing)
-            ordered_shares = sorted(
-                [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
-            ) + sorted(
-                [s for s in shares if not s.is_group], key=lambda s: s.raw_usage, reverse=True,
-            )
+            ordered_shares = _sort_shares_by(shares, mode=0, ascending=True)
             user_nodes = _active_nodes_by_user(items)
             last_fetch = time.time()
             now = last_fetch
@@ -2376,7 +2381,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         ### Determine selectable items for current tab, applying sort + filter
         if active_tab == 0:
-            all_selectable: list = list(items)
+            all_selectable: list = list(items)  # Job or ShareEntry, narrowed by active_tab
             if sort_mode[0] != 0:
                 all_selectable = _sort_jobs_by(all_selectable, sort_mode[0], sort_ascending[0])
         else:
@@ -2411,9 +2416,11 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 tab_lines = render_jobs(items, etas, time_offset=time_offset)
         else:
             if ft or sort_mode[1] != 0:
-                tab_lines = render_shares(selectable, items, pre_sorted=True)
+                tab_lines = render_shares(
+                    selectable, items, pre_sorted=True, user_nodes=user_nodes,
+                )
             else:
-                tab_lines = render_shares(shares, items)
+                tab_lines = render_shares(shares, items, user_nodes=user_nodes)
 
         ### Build mapping: tab content line index -> selectable item index
         line_to_sel: list[int] = []
@@ -2527,20 +2534,16 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         ### ------- Filter input mode -------
         if filter_active:
-            if key == 27:
+            new_text, action = _handle_text_input(key, ft)
+            if action == "cancel":
                 filter_text[active_tab] = ""
                 filter_active = False
                 cursor_per_tab[active_tab] = 0
-            elif key in (ord("\n"), curses.KEY_ENTER):
+            elif action == "submit":
+                filter_text[active_tab] = new_text
                 filter_active = False
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
-                if ft:
-                    filter_text[active_tab] = ft[:-1]
-                    cursor_per_tab[active_tab] = 0
-                else:
-                    filter_active = False
-            elif 32 <= key <= 126:
-                filter_text[active_tab] += chr(key)
+            else:
+                filter_text[active_tab] = new_text
                 cursor_per_tab[active_tab] = 0
             continue
 
@@ -2569,7 +2572,9 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             if active_tab == 0 and isinstance(sel_item, Job):
                 _show_job_detail(stdscr, sel_item, h, w)
             elif active_tab == 1 and isinstance(sel_item, ShareEntry):
-                _show_share_detail(stdscr, sel_item, shares, items, h, w)
+                _show_share_detail(
+                    stdscr, sel_item, shares, items, h, w, user_nodes=user_nodes,
+                )
         elif key == ord("l") and selectable and active_tab == 0:
             sel_item = selectable[cursor]
             if isinstance(sel_item, Job) and sel_item.state in ("R", "CG"):
@@ -2634,7 +2639,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("g"):
             if prev_key == ord("g"):
                 cursor_per_tab[active_tab] = 0
-            else:
+            elif scope != "group":
                 scope = "group"
                 needs_refresh = True
         elif key == ord("t"):
@@ -2688,7 +2693,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                             if active_tab == 0 and isinstance(sel_item, Job):
                                 _show_job_detail(stdscr, sel_item, h, w)
                             elif active_tab == 1 and isinstance(sel_item, ShareEntry):
-                                _show_share_detail(stdscr, sel_item, shares, items, h, w)
+                                _show_share_detail(
+                                    stdscr, sel_item, shares, items, h, w,
+                                    user_nodes=user_nodes,
+                                )
 
         elif key == curses.KEY_RESIZE:
             pass
