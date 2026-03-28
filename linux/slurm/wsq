@@ -1833,7 +1833,7 @@ def _draw_prompt_box(
 def _show_cancel_confirm(
     stdscr: curses.window, job: Job, h: int, w: int
 ) -> str | None:
-    """Show cancel confirmation dialog. Returns 'y', 'a', or None (abort)."""
+    """Show cancel confirmation dialog. Returns 'y', 'a', 'p', or None."""
     if job.user != CURRENT_USER:
         lines = ["", f"  Cannot cancel: job belongs to {job.user}", "", "  q/Esc to close"]
         _draw_overlay_box(stdscr, lines, "Cancel", h, w)
@@ -1848,34 +1848,47 @@ def _show_cancel_confirm(
 
     has_chain = job.dep_count > 0
     has_array = job.array_count > 0 or job.task_count > 0
+    has_pending = (has_chain or has_array) and job.state == "R"
 
     if has_chain:
         lines.append("  [y] Cancel this job only")
+        if has_pending:
+            lines.append(f"  [p] Cancel {job.dep_count} pending (keep running)")
         lines.append(f"  [a] Cancel all {job.dep_count + 1} (this + {job.dep_count} chained)")
     elif has_array:
         total = job.array_count + job.task_count + 1
         lines.append("  [y] Cancel this job only")
+        if has_pending:
+            lines.append("  [p] Cancel pending tasks (keep running)")
         lines.append(f"  [a] Cancel entire array ({total} tasks)")
     else:
         lines.append("  [y] Cancel this job")
 
-    lines.extend(["  [n] Abort", ""])
+    lines.extend(["  [n/q] Cancel", ""])
 
     _draw_prompt_box(stdscr, lines, "Cancel job?", h, w)
     while True:
         key = stdscr.getch()
         if key == ord("y"):
             return "y"
+        if key == ord("p") and has_pending:
+            return "p"
         if key == ord("a") and (has_chain or has_array):
             return "a"
-        if key in (ord("n"), 27):
+        if key in (ord("n"), ord("q"), 27):
             return None
 
 
 def _do_cancel(job: Job, mode: str) -> None:
-    """Execute scancel for a job. mode='y' cancels one, 'a' cancels chain/array."""
+    """Execute scancel for a job. mode='y' cancels one, 'a' cancels chain/array, 'p' pending only."""
     if mode == "y":
         _run(["scancel", job.jobid], timeout=10)
+    elif mode == "p":
+        if job.dep_count > 0:
+            _run(["scancel", "-t", "PENDING", "-n", job.name, "-u", CURRENT_USER], timeout=10)
+        else:
+            base = job.jobid.split("_")[0] if "_" in job.jobid else job.jobid
+            _run(["scancel", "-t", "PENDING", base], timeout=10)
     elif mode == "a":
         if job.dep_count > 0:
             _run(["scancel", "-n", job.name, "-u", CURRENT_USER], timeout=10)
@@ -2204,7 +2217,7 @@ def _job_action(
         f"  {job.user}  {job.state}  {job.nodes} nodes",
         "",
         f"  [y] {verb.title()} this job",
-        "  [n] Cancel",
+        "  [n/q] Cancel",
         "",
     ]
     _draw_prompt_box(stdscr, lines, f"{verb.title()} job?", h, w, max_width=60)
@@ -2213,7 +2226,7 @@ def _job_action(
         if key == ord("y"):
             _run(["scontrol", action, job.jobid], timeout=10)
             return True
-        if key in (ord("n"), 27):
+        if key in (ord("n"), ord("q"), 27):
             return False
 
 
