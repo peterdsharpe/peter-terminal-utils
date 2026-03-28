@@ -193,10 +193,15 @@ CMD_TIMEOUT = 30
 
 
 def _run(cmd: list[str], timeout: int | None = None) -> str:
-    """Run a command, return stdout. Returns empty string on failure."""
+    """Run a command, return stdout. Returns empty string on failure.
+
+    Uses errors="replace" so partial multi-byte UTF-8 sequences (common in
+    HPC log files with Unicode progress bars) produce replacement characters
+    instead of crashing with UnicodeDecodeError.
+    """
     try:
         r = subprocess.run(
-            cmd, capture_output=True, text=True,
+            cmd, capture_output=True, text=True, errors="replace",
             timeout=timeout if timeout is not None else CMD_TIMEOUT,
         )
         return r.stdout
