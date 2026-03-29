@@ -701,6 +701,45 @@ def _format_seconds(total: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
+def _relative_time(slurm_ts: str) -> str:
+    """Convert a Slurm absolute timestamp to a parenthesized relative string.
+
+    Uses two-unit granularity where useful (e.g. "1 day, 7 hrs ago") and
+    consistent abbreviations: min, hr/hrs, day/days.
+    Returns "" for placeholders like "Unknown" or unparseable values.
+    """
+    if not slurm_ts or slurm_ts in ("Unknown", "N/A", "?"):
+        return ""
+    try:
+        ts = datetime.datetime.fromisoformat(slurm_ts).timestamp()
+    except ValueError:
+        return ""
+    diff = time.time() - ts
+    if abs(diff) < 60:
+        return "(just now)"
+    future = diff < 0
+    total = int(abs(diff))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+
+    if days > 7:
+        label = f"{days} days"
+    elif days >= 1:
+        label = f"{days} {'day' if days == 1 else 'days'}"
+        if hours > 0:
+            label += f", {hours} {'hr' if hours == 1 else 'hrs'}"
+    elif hours >= 4:
+        label = f"{hours} hrs"
+    elif hours >= 1:
+        label = f"{hours} {'hr' if hours == 1 else 'hrs'}"
+        if minutes > 0:
+            label += f", {minutes} min"
+    else:
+        label = f"{minutes} min"
+    return f"(in {label})" if future else f"({label} ago)"
+
+
 def sort_items(items: list[Job]) -> list[Job]:
     """Sort: PD jobs first, then R jobs. Within each: user, nodes desc, time desc."""
 
@@ -1762,6 +1801,10 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     if not detail:
         detail = {"Error": "Could not fetch job details"}
 
+    submit = detail.get("SubmitTime", "?")
+    start = detail.get("StartTime", "?")
+    end = detail.get("EndTime", "?")
+
     lines = [
         "",
         f"  State:       {detail.get('JobState', '?')}  ({detail.get('Reason', '')})",
@@ -1769,8 +1812,9 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         f"  Partition:   {detail.get('Partition', '?')}    QOS: {detail.get('QOS', '?')}",
         f"  Nodes:       {detail.get('NumNodes', '?')}    GPUs: {detail.get('TresPerNode', '-')}",
         f"  TimeLimit:   {detail.get('TimeLimit', '?')}    RunTime: {detail.get('RunTime', '?')}",
-        f"  Submit:      {detail.get('SubmitTime', '?')}",
-        f"  Start:       {detail.get('StartTime', '?')}    End: {detail.get('EndTime', '?')}",
+        f"  Submit:      {submit}  {_relative_time(submit)}".rstrip(),
+        f"  Start:       {start}  {_relative_time(start)}".rstrip(),
+        f"  End:         {end}  {_relative_time(end)}".rstrip(),
         "",
         f"  WorkDir:     {detail.get('WorkDir', '?')}",
         f"  Command:     {detail.get('Command', '?')}",
