@@ -50,6 +50,13 @@ install_tlp() {
     run sudo systemctl start tlp.service
     step_end
     
+    # On AC, use the performance platform profile so nvidia-powerd allocates
+    # the full GPU power budget (without this, the default "balanced" profile
+    # can cap laptop GPUs to ~40W even when the hardware supports 115W+).
+    step_start "Configuring TLP for max performance on AC"
+    run sudo sed -i 's/^#\?PLATFORM_PROFILE_ON_AC=.*/PLATFORM_PROFILE_ON_AC=performance/' /etc/tlp.conf
+    step_end
+    
     # Show current status
     print_info "TLP is now managing power. Run 'sudo tlp-stat -s' to see status."
     
