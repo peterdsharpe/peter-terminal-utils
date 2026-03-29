@@ -1,6 +1,6 @@
 #!/bin/bash
 # @name: TeX Live
-# @description: TeX Live distribution with common packages (~1.5GB)
+# @description: Full TeX Live distribution (~8GB)
 # @depends: bootstrap.sh
 # @requires: sudo
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -42,9 +42,8 @@ install_texlive() {
         
         cat > "$profile_file" << EOF
 # TeX Live installation profile
-# Installs medium scheme (common packages) without GUI apps, desktop entries, or documentation
-# Use 'tlmgr install <package>' to add missing packages as needed
-selected_scheme scheme-medium
+# Installs full scheme without GUI apps, desktop entries, or documentation
+selected_scheme scheme-full
 TEXDIR /usr/local/texlive/$tl_year
 TEXMFLOCAL /usr/local/texlive/texmf-local
 TEXMFSYSCONFIG /usr/local/texlive/$tl_year/texmf-config
@@ -67,8 +66,7 @@ tlpdbopt_w32_multi_user 1
 EOF
         
         # Install non-interactively using profile
-        print_warning "TeX Live installation may take 10-15 minutes..."
-        print_info "Installing medium scheme. Use 'tlmgr install <pkg>' for additional packages."
+        print_warning "TeX Live full installation may take 30+ minutes..."
         sudo perl ./install-tl --profile="$profile_file"
     )
     local install_rc=$?
