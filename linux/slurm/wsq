@@ -156,6 +156,7 @@ class Partition:
 class ShareEntry:
     account: str
     user: str
+    raw_shares: int
     raw_usage: int
     norm_usage: float
     effectv_usage: float
@@ -181,6 +182,17 @@ class Job:
     task_count: int = 0
     more_count: int = 0
     collapsed_names: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SortSpec:
+    """A sortable column definition: label for the picker, key for sorting.
+
+    key is a sort-key callable, or None for sorts that require special handling
+    (e.g. the compound default sort, or Shares/Nodes which needs external context).
+    """
+    label: str
+    key: object | None
 
 
 ###############################################################################
@@ -228,7 +240,7 @@ def _sinfo_cmd() -> list[str]:
 
 
 def _sshare_cmd(scope: str) -> list[str]:
-    fmt = "Account%50,User%30,RawUsage,NormUsage,EffectvUsage,LevelFS"
+    fmt = "Account%50,User%30,RawShares,RawUsage,NormUsage,EffectvUsage,LevelFS"
     cmd = ["sshare", f"--format={fmt}"]
     if scope == "me":
         cmd.extend(["-A", SLURM_GROUP])
@@ -394,22 +406,27 @@ def parse_sshare(output: str) -> list[ShareEntry]:
             continue
 
         try:
-            raw = int(field(line, 2) or "0")
+            raw_shares = int(field(line, 2) or "0")
+        except ValueError:
+            raw_shares = 0
+
+        try:
+            raw = int(field(line, 3) or "0")
         except ValueError:
             raw = 0
         if raw == 0:
             continue
 
         try:
-            norm = float(field(line, 3) or "0")
+            norm = float(field(line, 4) or "0")
         except ValueError:
             norm = 0.0
         try:
-            eff = float(field(line, 4) or "0")
+            eff = float(field(line, 5) or "0")
         except ValueError:
             eff = 0.0
 
-        lfs_str = field(line, 5)
+        lfs_str = field(line, 6)
         try:
             lfs = float(lfs_str) if lfs_str else None
         except ValueError:
@@ -417,8 +434,9 @@ def parse_sshare(output: str) -> list[ShareEntry]:
 
         entries.append(
             ShareEntry(
-                account=account, user=user, raw_usage=raw,
-                norm_usage=norm, effectv_usage=eff, level_fs=lfs,
+                account=account, user=user, raw_shares=raw_shares,
+                raw_usage=raw, norm_usage=norm, effectv_usage=eff,
+                level_fs=lfs,
             )
         )
 
@@ -773,25 +791,32 @@ def _match_filter(item: Job | ShareEntry, text: str) -> bool:
     if isinstance(item, ShareEntry):
         return any(
             low in f.lower()
-            for f in (item.account, item.user, str(item.raw_usage))
+            for f in (item.account, item.user, str(item.raw_shares), str(item.raw_usage))
         )
     return True
 
 
-JOB_SORT_LABELS = [
-    "Default (state > user > nodes)",
-    "JobID",
-    "Name",
-    "User",
-    "Time",
-    "Nodes",
+JOB_SORT_SPEC: list[SortSpec] = [
+    SortSpec("Default (state > user > nodes)", None),
+    SortSpec("JobID", lambda j: int(j.jobid.split("_")[0]) if j.jobid.split("_")[0].isdigit() else 0),
+    SortSpec("Partition", lambda j: j.partition.lower()),
+    SortSpec("Name", lambda j: j.name.lower()),
+    SortSpec("User", lambda j: j.user.lower()),
+    SortSpec("State", lambda j: j.state),
+    SortSpec("Time", lambda j: _time_seconds(j.time_str)),
+    SortSpec("Nodes", lambda j: j.nodes),
 ]
 
-SHARE_SORT_LABELS = [
-    "Default (by usage)",
-    "Account",
-    "RawUsage",
-    "Nodes",
+SHARE_SORT_SPEC: list[SortSpec] = [
+    SortSpec("Default (by usage)", None),
+    SortSpec("Account", lambda s: s.account.lower()),
+    SortSpec("User", lambda s: s.user.lower()),
+    SortSpec("RawShares", lambda s: s.raw_shares),
+    SortSpec("Nodes", None),  # needs user_nodes context, special-cased in _sort_shares_by
+    SortSpec("RawUsage", lambda s: s.raw_usage),
+    SortSpec("NormUsage", lambda s: s.norm_usage),
+    SortSpec("EffectvUsage", lambda s: s.effectv_usage),
+    SortSpec("LevelFS", lambda s: s.level_fs if s.level_fs is not None else -1.0),
 ]
 
 
@@ -801,16 +826,11 @@ def _sort_jobs_by(
     """Sort jobs by the given mode index. mode=0 falls back to default sort."""
     if mode == 0:
         return sort_items(items)
+    spec = JOB_SORT_SPEC[mode] if mode < len(JOB_SORT_SPEC) else None
+    if spec is None or spec.key is None:
+        return list(items)
     jobs = list(items)
-    key_funcs: dict[int, object] = {
-        1: lambda j: int(j.jobid.split("_")[0]) if j.jobid.split("_")[0].isdigit() else 0,
-        2: lambda j: j.name.lower(),
-        3: lambda j: j.user.lower(),
-        4: lambda j: _time_seconds(j.time_str),
-        5: lambda j: j.nodes,
-    }
-    if mode in key_funcs:
-        jobs.sort(key=key_funcs[mode], reverse=not ascending)
+    jobs.sort(key=spec.key, reverse=not ascending)
     return jobs
 
 
@@ -818,7 +838,11 @@ def _sort_shares_by(
     shares: list[ShareEntry], mode: int, ascending: bool,
     user_nodes: dict[str, int] | None = None,
 ) -> list[ShareEntry]:
-    """Sort shares by the given mode index. mode=0 falls back to default sort."""
+    """Sort shares by the given mode index. mode=0 falls back to default sort.
+
+    The Nodes column (key=None, mode!=0) is special-cased because group-row
+    node counts must be aggregated from member users via user_nodes.
+    """
     if mode == 0:
         groups = sorted(
             [s for s in shares if s.is_group], key=lambda s: s.raw_usage, reverse=True,
@@ -828,7 +852,11 @@ def _sort_shares_by(
         )
         return groups + users
 
-    if mode == 3:
+    spec = SHARE_SORT_SPEC[mode] if mode < len(SHARE_SORT_SPEC) else None
+    if spec is None:
+        return shares
+
+    if spec.key is None:
         ### Nodes sort: for group entries, sum member node counts
         un = user_nodes or {}
         account_nodes: dict[str, int] = {}
@@ -845,13 +873,7 @@ def _sort_shares_by(
 
         return sorted(shares, key=node_key, reverse=not ascending)
 
-    key_funcs: dict[int, object] = {
-        1: lambda s: s.account.lower(),
-        2: lambda s: s.raw_usage,
-    }
-    if mode in key_funcs:
-        return sorted(shares, key=key_funcs[mode], reverse=not ascending)
-    return shares
+    return sorted(shares, key=spec.key, reverse=not ascending)
 
 
 ###############################################################################
@@ -1069,10 +1091,11 @@ def render_shares(
             )
 
     ### Build row data as strings
-    headers = ["Account", "User", "Nodes", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
+    headers = ["Account", "User", "RawShares", "Nodes", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
 
     def fmt_row(s: ShareEntry) -> list[str]:
         lfs = f"{s.level_fs:.6f}" if s.level_fs is not None else ""
+        shares_str = f"{s.raw_shares:,}" if s.is_group else ""
         if s.is_group:
             n = account_nodes.get(s.account, 0)
         else:
@@ -1081,6 +1104,7 @@ def render_shares(
         return [
             s.account,
             s.user,
+            shares_str,
             nodes_str,
             f"{s.raw_usage:,}",
             f"{s.norm_usage:.6f}",
@@ -1091,7 +1115,7 @@ def render_shares(
     rows = [fmt_row(s) for s in ordered]
 
     ### Column widths; right-align numeric columns for easier scanning
-    RIGHT_COLS = {2, 3, 6}  # Nodes, RawUsage, LevelFS
+    RIGHT_COLS = {2, 3, 4, 7}  # RawShares, Nodes, RawUsage, LevelFS
     widths = [len(h) for h in headers]
     for row in rows:
         for i, val in enumerate(row):
@@ -1962,7 +1986,12 @@ def _show_share_detail(
         members = [s for s in shares if not s.is_group and s.account == entry.account]
         members.sort(key=lambda s: s.raw_usage, reverse=True)
 
-        lines = ["", f"  Account:     {entry.account}", f"  Total Usage: {entry.raw_usage:,}"]
+        lines = [
+            "",
+            f"  Account:     {entry.account}",
+            f"  RawShares:   {entry.raw_shares:,}",
+            f"  Total Usage: {entry.raw_usage:,}",
+        ]
         if entry.level_fs is not None:
             lines.append(f"  LevelFS:     {entry.level_fs:.6f}")
         lines.extend(["", f"  Members ({len(members)}):"])
@@ -2017,12 +2046,12 @@ def _show_sort_picker(
     stdscr: curses.window, tab: int, current: int, h: int, w: int,
 ) -> int | None:
     """Show sort column picker overlay. Returns selected mode index or None."""
-    labels = JOB_SORT_LABELS if tab == 0 else SHARE_SORT_LABELS
+    spec = JOB_SORT_SPEC if tab == 0 else SHARE_SORT_SPEC
     lines = [""]
-    for i, label in enumerate(labels):
+    for i, col in enumerate(spec):
         marker = "\u25b8" if i == current else " "
-        lines.append(f"  {marker} [{i + 1}] {label}")
-    lines.extend(["", f"  Press 1\u2013{len(labels)}, or q/Esc to cancel", ""])
+        lines.append(f"  {marker} [{i + 1}] {col.label}")
+    lines.extend(["", f"  Press 1\u2013{len(spec)}, or q/Esc to cancel", ""])
 
     _draw_prompt_box(stdscr, lines, "Sort by", h, w, max_width=55)
     while True:
@@ -2030,7 +2059,7 @@ def _show_sort_picker(
         if key in (27, ord("q")):
             return None
         num = key - ord("1")
-        if 0 <= num < len(labels):
+        if 0 <= num < len(spec):
             return num
 
 
@@ -2312,17 +2341,17 @@ def _export_jobs(jobs: list[Job], fmt: str, path: str) -> None:
 
 def _export_shares(shares: list[ShareEntry], fmt: str, path: str) -> None:
     """Write share data to a CSV or JSON file."""
-    headers = ["Account", "User", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
+    headers = ["Account", "User", "RawShares", "RawUsage", "NormUsage", "EffectvUsage", "LevelFS"]
     if fmt == "csv":
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(headers)
             for s in shares:
-                w.writerow([s.account, s.user, s.raw_usage, s.norm_usage,
+                w.writerow([s.account, s.user, s.raw_shares, s.raw_usage, s.norm_usage,
                             s.effectv_usage, s.level_fs if s.level_fs is not None else ""])
     else:
         data = [
-            dict(zip(headers, [s.account, s.user, s.raw_usage, s.norm_usage,
+            dict(zip(headers, [s.account, s.user, s.raw_shares, s.raw_usage, s.norm_usage,
                                 s.effectv_usage, s.level_fs]))
             for s in shares
         ]
@@ -2609,11 +2638,11 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             age_str = f"{age}s ago" if age > 0 else "just now"
             timing_tag = " \u00b7 etas:on" if timing else ""
             filter_tag = f" \u00b7 filter:\"{ft}\"" if ft else ""
-            sort_labels = JOB_SORT_LABELS if active_tab == 0 else SHARE_SORT_LABELS
+            sort_spec = JOB_SORT_SPEC if active_tab == 0 else SHARE_SORT_SPEC
             sm = sort_mode[active_tab]
             if sm != 0:
                 arrow = "\u2191" if sort_ascending[active_tab] else "\u2193"
-                sort_tag = f" \u00b7 sort:{sort_labels[sm].split()[0].lower()}{arrow}"
+                sort_tag = f" \u00b7 sort:{sort_spec[sm].label.split()[0].lower()}{arrow}"
             else:
                 sort_tag = ""
             pos_tag = f" \u00b7 {cursor + 1}/{len(selectable)}" if selectable else " \u00b7 0/0"
