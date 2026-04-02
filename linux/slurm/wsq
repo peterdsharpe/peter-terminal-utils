@@ -2841,8 +2841,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     sort_mode = [0] * n_tabs
     sort_ascending = [True] * n_tabs
 
-    ### Shares expansion state: set of expanded account names (initially all)
-    expanded_groups: set[str] = set()
+    ### Shares expansion state: tracks deliberately collapsed groups (expanded by default)
+    collapsed_groups: set[str] = set()
 
     ### Transient flash message for the status bar (e.g., "exported to ...")
     flash_msg = ""
@@ -2856,9 +2856,6 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             partitions, shares, items, etas, history = fetch_all(scope, running_only, timing)
             ordered_shares = _sort_shares_by(shares, mode=0, ascending=True)
             user_nodes = _active_nodes_by_user(items)
-            ### Populate expanded_groups with all group accounts on first load
-            if not expanded_groups and shares:
-                expanded_groups.update(s.account for s in shares if s.is_group)
             last_fetch = time.time()
             now = last_fetch
             needs_refresh = False
@@ -2877,7 +2874,7 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             ### Apply group expansion filter
             all_selectable = [
                 s for s in all_selectable
-                if s.is_group or s.account in expanded_groups
+                if s.is_group or s.account not in collapsed_groups
             ]
         else:
             all_selectable = list(history)
@@ -3152,16 +3149,15 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("x") and active_tab == 1 and selectable:
             sel_item = selectable[cursor]
             if isinstance(sel_item, ShareEntry) and sel_item.is_group:
-                if sel_item.account in expanded_groups:
-                    expanded_groups.discard(sel_item.account)
+                if sel_item.account in collapsed_groups:
+                    collapsed_groups.discard(sel_item.account)
                 else:
-                    expanded_groups.add(sel_item.account)
+                    collapsed_groups.add(sel_item.account)
         elif key == ord("X") and active_tab == 1:
-            all_accounts = {s.account for s in shares if s.is_group}
-            if expanded_groups >= all_accounts:
-                expanded_groups.clear()
+            if collapsed_groups:
+                collapsed_groups.clear()
             else:
-                expanded_groups.update(all_accounts)
+                collapsed_groups.update(s.account for s in shares if s.is_group)
         elif key in (curses.KEY_UP, ord("k")):
             cursor_per_tab[active_tab] = max(0, cursor - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
