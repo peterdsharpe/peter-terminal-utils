@@ -184,15 +184,32 @@ class Job:
     collapsed_names: list[str] = field(default_factory=list)
 
 
+@dataclass
+class HistoryJob:
+    """A completed/failed job from sacct."""
+    jobid: str
+    name: str
+    user: str
+    account: str
+    state: str
+    exit_code: str
+    elapsed: str
+    nodes: int
+    end_time: str
+
+
 @dataclass(frozen=True)
 class SortSpec:
     """A sortable column definition: label for the picker, key for sorting.
 
     key is a sort-key callable, or None for sorts that require special handling
     (e.g. the compound default sort, or Shares/Nodes which needs external context).
+    default_descending controls the initial sort direction when this column is
+    first selected (True for numeric "bigger is more interesting" columns).
     """
     label: str
     key: object | None
+    default_descending: bool = False
 
 
 ###############################################################################
@@ -264,6 +281,21 @@ def _squeue_cmd(scope: str, running_only: bool) -> list[str]:
     return cmd
 
 
+def _sacct_cmd(scope: str) -> list[str]:
+    """Build sacct command for recently completed jobs (last 24h)."""
+    fmt = "JobID,JobName%200,User%30,Account%50,State,ExitCode,Elapsed,NNodes,End"
+    cmd = [
+        "sacct", f"--format={fmt}", "--noheader", "--parsable2", "-X",
+        "--starttime=now-24h",
+        "--state=COMPLETED,FAILED,TIMEOUT,CANCELLED,OUT_OF_MEMORY,NODE_FAIL",
+    ]
+    if scope == "me":
+        cmd.append(f"--user={CURRENT_USER}")
+    elif scope == "group":
+        cmd.extend(["-A", SLURM_GROUP])
+    return cmd
+
+
 def _fetch_eta(jobid: str, now: float) -> tuple[str, str]:
     """Fetch ETA for a single job via scontrol."""
     try:
@@ -287,21 +319,23 @@ def _fetch_eta(jobid: str, now: float) -> tuple[str, str]:
 
 def fetch_all(
     scope: str, running_only: bool, timing: bool
-) -> tuple[list[Partition], list[ShareEntry], list[Job], dict[str, str]]:
-    """Fetch sinfo + sshare + squeue in parallel, process, return ready-to-render data.
+) -> tuple[list[Partition], list[ShareEntry], list[Job], dict[str, str], list[HistoryJob]]:
+    """Fetch sinfo + sshare + squeue + sacct in parallel, process, return ready-to-render data.
 
     When running_only is True, we still fetch ALL jobs for chain collapsing
     (so +N dep counts are accurate), then filter to running afterward.
     """
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         f_info = pool.submit(_run, _sinfo_cmd())
         f_share = pool.submit(_run, _sshare_cmd(scope))
         ### Always fetch all states for accurate chain counts
         f_queue = pool.submit(_run, _squeue_cmd(scope, running_only=False))
+        f_sacct = pool.submit(_run, _sacct_cmd(scope))
 
         partitions = parse_sinfo(f_info.result())
         shares = parse_sshare(f_share.result())
         jobs = parse_squeue(f_queue.result())
+        history = parse_sacct(f_sacct.result())
 
     jobs = collapse_chains(jobs)
     jobs = collapse_arrays(jobs)
@@ -324,7 +358,7 @@ def fetch_all(
                 for jid, eta in pool.map(lambda jid: _fetch_eta(jid, now), prio_ids):
                     etas[jid] = eta
 
-    return partitions, shares, items, etas
+    return partitions, shares, items, etas, history
 
 
 ###############################################################################
@@ -440,6 +474,33 @@ def parse_sshare(output: str) -> list[ShareEntry]:
             )
         )
 
+    return entries
+
+
+def parse_sacct(output: str) -> list[HistoryJob]:
+    """Parse sacct --parsable2 output into HistoryJob entries."""
+    entries: list[HistoryJob] = []
+    for line in output.strip().splitlines():
+        fields = line.split("|")
+        if len(fields) < 9:
+            continue
+        fields = [f.strip() for f in fields]
+        try:
+            nodes = int(fields[7])
+        except ValueError:
+            nodes = 0
+        name = fields[1]
+        user = fields[2]
+        prefix = f"{SLURM_GROUP}-{user}."
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+        entries.append(
+            HistoryJob(
+                jobid=fields[0], name=name, user=user, account=fields[3],
+                state=fields[4], exit_code=fields[5], elapsed=fields[6],
+                nodes=nodes, end_time=fields[8],
+            )
+        )
     return entries
 
 
@@ -779,8 +840,62 @@ def sort_items(items: list[Job]) -> list[Job]:
 ###############################################################################
 
 
-def _match_filter(item: Job | ShareEntry, text: str) -> bool:
-    """Return True if any visible field of item contains text (case-insensitive)."""
+### Field name aliases for column-specific filtering (field:value syntax)
+_JOB_FIELDS: dict[str, str] = {
+    "jobid": "jobid", "id": "jobid",
+    "partition": "partition", "part": "partition",
+    "name": "name",
+    "user": "user",
+    "state": "state", "st": "state",
+    "time": "time_str",
+    "nodes": "nodes", "#": "nodes",
+    "reason": "reason", "notes": "reason",
+}
+_SHARE_FIELDS: dict[str, str] = {
+    "account": "account", "acct": "account",
+    "user": "user",
+    "rawshares": "raw_shares", "shares": "raw_shares",
+    "rawusage": "raw_usage", "usage": "raw_usage",
+    "normusage": "norm_usage",
+    "effectvusage": "effectv_usage",
+    "levelfs": "level_fs", "lfs": "level_fs",
+}
+_HISTORY_FIELDS: dict[str, str] = {
+    "jobid": "jobid", "id": "jobid",
+    "name": "name",
+    "user": "user",
+    "account": "account", "acct": "account",
+    "state": "state",
+    "exit": "exit_code", "exitcode": "exit_code",
+    "elapsed": "elapsed", "time": "elapsed",
+    "nodes": "nodes", "#": "nodes",
+    "ended": "end_time", "end": "end_time",
+}
+
+
+def _match_filter(item: Job | ShareEntry | HistoryJob, text: str) -> bool:
+    """Return True if any visible field of item contains text (case-insensitive).
+
+    Supports column-specific syntax: 'field:value' restricts the match to a
+    single field (e.g. 'user:psharpe', 'state:R', 'partition:batch').
+    """
+    ### Column-specific filter: field:value
+    if ":" in text and not text.startswith(":"):
+        field_name, _, value = text.partition(":")
+        low_val = value.lower()
+        field_name = field_name.lower()
+        if isinstance(item, Job):
+            attr = _JOB_FIELDS.get(field_name)
+        elif isinstance(item, ShareEntry):
+            attr = _SHARE_FIELDS.get(field_name)
+        elif isinstance(item, HistoryJob):
+            attr = _HISTORY_FIELDS.get(field_name)
+        else:
+            attr = None
+        if attr is not None:
+            return low_val in str(getattr(item, attr, "")).lower()
+
+    ### Fallback: match against all visible fields
     low = text.lower()
     if isinstance(item, Job):
         return any(
@@ -793,30 +908,36 @@ def _match_filter(item: Job | ShareEntry, text: str) -> bool:
             low in f.lower()
             for f in (item.account, item.user, str(item.raw_shares), str(item.raw_usage))
         )
+    if isinstance(item, HistoryJob):
+        return any(
+            low in f.lower()
+            for f in (item.jobid, item.name, item.user, item.account,
+                      item.state, item.exit_code, item.elapsed, str(item.nodes))
+        )
     return True
 
 
 JOB_SORT_SPEC: list[SortSpec] = [
     SortSpec("Default (state > user > nodes)", None),
-    SortSpec("JobID", lambda j: int(j.jobid.split("_")[0]) if j.jobid.split("_")[0].isdigit() else 0),
+    SortSpec("JobID", lambda j: int(j.jobid.split("_")[0]) if j.jobid.split("_")[0].isdigit() else 0, default_descending=True),
     SortSpec("Partition", lambda j: j.partition.lower()),
     SortSpec("Name", lambda j: j.name.lower()),
     SortSpec("User", lambda j: j.user.lower()),
     SortSpec("State", lambda j: j.state),
-    SortSpec("Time", lambda j: _time_seconds(j.time_str)),
-    SortSpec("Nodes", lambda j: j.nodes),
+    SortSpec("Time", lambda j: _time_seconds(j.time_str), default_descending=True),
+    SortSpec("Nodes", lambda j: j.nodes, default_descending=True),
 ]
 
 SHARE_SORT_SPEC: list[SortSpec] = [
     SortSpec("Default (by usage)", None),
     SortSpec("Account", lambda s: s.account.lower()),
     SortSpec("User", lambda s: s.user.lower()),
-    SortSpec("RawShares", lambda s: s.raw_shares),
-    SortSpec("Nodes", None),  # needs user_nodes context, special-cased in _sort_shares_by
-    SortSpec("RawUsage", lambda s: s.raw_usage),
-    SortSpec("NormUsage", lambda s: s.norm_usage),
-    SortSpec("EffectvUsage", lambda s: s.effectv_usage),
-    SortSpec("LevelFS", lambda s: s.level_fs if s.level_fs is not None else -1.0),
+    SortSpec("RawShares", lambda s: s.raw_shares, default_descending=True),
+    SortSpec("Nodes", None, default_descending=True),
+    SortSpec("RawUsage", lambda s: s.raw_usage, default_descending=True),
+    SortSpec("NormUsage", lambda s: s.norm_usage, default_descending=True),
+    SortSpec("EffectvUsage", lambda s: s.effectv_usage, default_descending=True),
+    SortSpec("LevelFS", lambda s: s.level_fs if s.level_fs is not None else -1.0, default_descending=True),
 ]
 
 
@@ -874,6 +995,33 @@ def _sort_shares_by(
         return sorted(shares, key=node_key, reverse=not ascending)
 
     return sorted(shares, key=spec.key, reverse=not ascending)
+
+
+HISTORY_SORT_SPEC: list[SortSpec] = [
+    SortSpec("Default (most recent)", None, default_descending=True),
+    SortSpec("JobID", lambda j: int(j.jobid) if j.jobid.isdigit() else 0, default_descending=True),
+    SortSpec("Name", lambda j: j.name.lower()),
+    SortSpec("User", lambda j: j.user.lower()),
+    SortSpec("State", lambda j: j.state),
+    SortSpec("Elapsed", lambda j: _time_seconds(j.elapsed), default_descending=True),
+    SortSpec("Nodes", lambda j: j.nodes, default_descending=True),
+    SortSpec("Ended", lambda j: j.end_time),
+]
+
+### All sort spec lists indexed by tab number
+TAB_SORT_SPECS: list[list[SortSpec]] = [JOB_SORT_SPEC, SHARE_SORT_SPEC, HISTORY_SORT_SPEC]
+
+
+def _sort_history_by(
+    items: list[HistoryJob], mode: int, ascending: bool,
+) -> list[HistoryJob]:
+    """Sort history jobs by the given mode index. mode=0 sorts by end_time descending."""
+    if mode == 0:
+        return sorted(items, key=lambda j: j.end_time, reverse=True)
+    spec = HISTORY_SORT_SPEC[mode] if mode < len(HISTORY_SORT_SPEC) else None
+    if spec is None or spec.key is None:
+        return list(items)
+    return sorted(items, key=spec.key, reverse=not ascending)
 
 
 ###############################################################################
@@ -1147,6 +1295,67 @@ def render_shares(
     return lines
 
 
+### State coloring for completed jobs
+_HISTORY_STATE_COLORS = {
+    "COMPLETED": GREEN,
+    "FAILED": RED,
+    "TIMEOUT": ORANGE,
+    "CANCELLED": YELLOW,
+    "OUT_OF_MEMORY": RED,
+    "NODE_FAIL": RED,
+}
+
+
+def render_history(items: list[HistoryJob]) -> list[str]:
+    """Render the history (sacct) table with state-colored rows."""
+    if not items:
+        return [f"{DIM}No completed jobs in the last 24 hours.{RESET}"]
+
+    headers = ["JobID", "Name", "User", "State", "Exit", "Elapsed", "#", "Ended"]
+
+    def hist_row(j: HistoryJob) -> list[str]:
+        ended = j.end_time
+        rel = _relative_time(ended)
+        if rel:
+            ended = f"{ended}  {rel}"
+        return [
+            j.jobid, j.name, j.user, j.state, j.exit_code,
+            j.elapsed, str(j.nodes), ended,
+        ]
+
+    rows = {id(j): hist_row(j) for j in items}
+
+    ### Column widths
+    widths = [len(h) for h in headers]
+    for row in rows.values():
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(val))
+
+    def fmt_line(vals: list[str]) -> str:
+        parts = []
+        for i, v in enumerate(vals):
+            if i in (5, 6):  # Elapsed, # right-aligned
+                parts.append(f"{v:>{widths[i]}}")
+            else:
+                parts.append(f"{v:<{widths[i]}}")
+        return "  ".join(parts)
+
+    header_str = fmt_line(headers)
+    header_width = sum(widths) + 2 * (len(widths) - 1)
+    lines: list[str] = [header_str, f"{DIM}{'─' * header_width}{RESET}"]
+
+    for item in items:
+        row = rows[id(item)]
+        raw = fmt_line(row)
+        color = _HISTORY_STATE_COLORS.get(item.state, DIM)
+        if item.user == CURRENT_USER:
+            lines.append(f"{BOLD}{color}{raw}{RESET}")
+        else:
+            lines.append(f"{color}{raw}{RESET}")
+
+    return lines
+
+
 def render_jobs(
     items: list[Job], etas: dict[str, str], time_offset: int = 0
 ) -> list[str]:
@@ -1270,12 +1479,22 @@ def render_all(
 
 
 def run_static(args: argparse.Namespace) -> None:
-    """One-shot print to stdout."""
-    partitions, shares, items, etas = fetch_all(
+    """One-shot print to stdout. With --json, emits structured JSON."""
+    partitions, shares, items, etas, history = fetch_all(
         args.scope, args.running, args.timing
     )
-    for line in render_all(partitions, shares, items, etas):
-        print(line)
+    if getattr(args, "json", False):
+        from dataclasses import asdict
+        data = {
+            "cluster": [asdict(p) for p in partitions],
+            "shares": [asdict(s) for s in shares],
+            "jobs": [asdict(j) for j in items],
+            "history": [asdict(h) for h in history],
+        }
+        print(json.dumps(data, indent=2))
+    else:
+        for line in render_all(partitions, shares, items, etas):
+            print(line)
 
 
 ###############################################################################
@@ -1651,28 +1870,33 @@ def _draw_scrollbar(
             pass
 
 
-TAB_NAMES = ["Jobs", "Shares"]
+TAB_NAMES = ["Jobs", "Shares", "History"]
 
 HELP_LINES = [
     "",
     "  j/k  ↑↓      move cursor",
+    "  Enter / o     details for selected item",
     "  Home / End    top / bottom",
     "  Ctrl+D / U    half-page scroll",
     "  Ctrl+E / Y    scroll viewport only",
     "  PgUp / Dn     full page",
     "  mouse         click, double-click, scroll",
     "",
-    "  o             details for selected item",
     "  l             view job stdout/stderr log",
     "  c             cancel selected job",
     "  h / u         hold / release job",
+    "  y             copy path (in job detail overlay)",
     "",
     "  /             filter (type to search, Enter/Esc)",
+    "                supports field:value (e.g. user:me)",
     "  S             sort by column",
     "  n             node details (job or cluster)",
     "  e             export current view to file",
     "",
-    "  tab           switch Jobs / Shares",
+    "  1/2/3         jump to Jobs / Shares / History",
+  "  Tab / S-Tab   cycle tabs",
+    "  x             expand/collapse group (Shares tab)",
+    "  X             expand/collapse all groups",
     "  r             force refresh",
     "  m / a / g     scope: me / all / group",
     "  t             toggle ETAs",
@@ -1684,41 +1908,15 @@ HELP_LINES = [
     "  Colors: continuous log-scale gradient",
     f"  {_gradient_ansi(0.0)}blue{RESET}=low  ────  {_gradient_ansi(1.0)}red{RESET}=high",
     "",
-    "  Press any key to close",
+    "  j/k to scroll · q/Esc to close",
     "",
 ]
 HELP_TITLE = " wsq help "
-HELP_WIDTH = max(len(ANSI_RE.sub("", line)) for line in HELP_LINES) + 4
 
 
 def _draw_help_overlay(stdscr: curses.window, h: int, w: int) -> None:
-    """Draw a centered help box overlay and wait for any key to dismiss."""
-    box_w = min(HELP_WIDTH, w - 4)
-    box_h = len(HELP_LINES) + 2
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-
-    ### Draw box with opaque background - blank each row first
-    top = f"╭─{HELP_TITLE}{'─' * (box_w - len(HELP_TITLE) - 3)}╮"
-    bot = f"╰{'─' * (box_w - 2)}╯"
-
-    try:
-        stdscr.addstr(y0, x0, " " * box_w)
-        stdscr.addstr(y0, x0, top[:box_w], curses.A_BOLD)
-        for i, line in enumerate(HELP_LINES):
-            stdscr.addstr(y0 + 1 + i, x0, " " * box_w)
-            visible_len = len(ANSI_RE.sub("", line))
-            pad = box_w - 3 - visible_len
-            padded = f"│ {line}{' ' * max(0, pad)}│"
-            _addstr_ansi(stdscr, y0 + 1 + i, x0, padded, x0 + box_w)
-        stdscr.addstr(y0 + box_h - 1, x0, " " * box_w)
-        stdscr.addstr(y0 + box_h - 1, x0, bot[:box_w], curses.A_BOLD)
-    except curses.error:
-        pass
-
-    stdscr.refresh()
-    stdscr.timeout(-1)
-    stdscr.getch()
+    """Draw scrollable help overlay using the standard overlay box."""
+    _draw_overlay_box(stdscr, HELP_LINES, HELP_TITLE, h, w)
 
 
 ###############################################################################
@@ -1732,8 +1930,13 @@ def _draw_overlay_box(
     title: str,
     h: int,
     w: int,
-) -> None:
-    """Draw a centered, scrollable overlay box and block until dismissed."""
+    passthrough_keys: set[int] | None = None,
+) -> int | None:
+    """Draw a centered, scrollable overlay box and block until dismissed.
+
+    Returns None on normal dismiss (q/Esc/Enter), or the key code if a
+    passthrough_keys key was pressed (caller handles it).
+    """
     box_w = min(max(len(ANSI_RE.sub("", l)) for l in lines) + 6, w - 6)
     box_h = min(len(lines) + 2, h - 4)
     y0 = max(0, (h - box_h) // 2)
@@ -1782,10 +1985,26 @@ def _draw_overlay_box(
         stdscr.timeout(-1)
         key = stdscr.getch()
 
+        if passthrough_keys and key in passthrough_keys:
+            return key
         if key in (ord("q"), 27, ord("\n")):
-            break
-        else:
-            _handle_viewport_scroll(key, scroll)
+            return None
+        _handle_viewport_scroll(key, scroll)
+
+
+def _osc52_copy(text: str) -> None:
+    """Copy text to the system clipboard via the OSC 52 terminal escape.
+
+    Works over SSH without X forwarding. The terminal emulator intercepts
+    the escape and updates the system clipboard.
+    """
+    import base64
+    encoded = base64.b64encode(text.encode()).decode()
+    try:
+        with open("/dev/tty", "w") as tty:
+            tty.write(f"\033]52;c;{encoded}\a")
+    except OSError:
+        pass
 
 
 def _fetch_job_detail(jobid: str) -> dict[str, str]:
@@ -1800,6 +2019,10 @@ def _fetch_job_detail(jobid: str) -> dict[str, str]:
     For array base IDs, scontrol returns multiple job blocks separated by
     blank lines. We parse only the first block.
     """
+    ### scontrol doesn't accept squeue's bracket array-spec notation;
+    ### strip to the base ID so "2135747_[0-3]" queries as "2135747".
+    if "[" in jobid:
+        jobid = jobid.split("_", 1)[0]
     out = _run(["scontrol", "show", "job", jobid], timeout=10)
     detail: dict[str, str] = {}
     key_re = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)=(.*)")
@@ -1819,8 +2042,53 @@ def _fetch_job_detail(jobid: str) -> dict[str, str]:
     return detail
 
 
+def _wrap_path(label: str, value: str, max_width: int) -> list[str]:
+    """Wrap a labeled path across multiple lines, breaking at '/' boundaries.
+
+    First line:         "  {label}{segment}"
+    Continuation lines: "  {padding}{segment}" (aligned under path start)
+    Short paths that fit on one line are not wrapped.
+    """
+    prefix = f"  {label}"
+    full = f"{prefix}{value}"
+    if len(full) <= max_width:
+        return [full]
+
+    ### Split path into /-delimited segments, keeping '/' attached to the front
+    ### of each piece (except the very first if path is absolute).
+    raw_parts = value.split("/")
+    segments: list[str] = []
+    for i, part in enumerate(raw_parts):
+        if i == 0:
+            segments.append(part)
+        else:
+            segments.append(f"/{part}")
+
+    indent = " " * len(prefix)
+    result: list[str] = []
+    current = prefix
+
+    for seg in segments:
+        if current == prefix or current == indent:
+            current += seg
+        elif len(current) + len(seg) <= max_width:
+            current += seg
+        else:
+            result.append(current)
+            current = indent + seg
+
+    if current.strip():
+        result.append(current)
+    return result or [full]
+
+
 def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
-    """Fetch job details via scontrol and display in an overlay."""
+    """Fetch job details via scontrol and display in an overlay.
+
+    Long paths are wrapped across multiple lines, breaking at '/' boundaries.
+    Pressing 'y' opens a copy picker that uses OSC 52 to put the full
+    (untruncated) path on the clipboard.
+    """
     detail = _fetch_job_detail(job.jobid)
     if not detail:
         detail = {"Error": "Could not fetch job details"}
@@ -1829,8 +2097,16 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
     start = detail.get("StartTime", "?")
     end = detail.get("EndTime", "?")
 
-    lines = [
-        "",
+    workdir = detail.get("WorkDir", "?")
+    command = detail.get("Command", "?")
+    stdout = detail.get("StdOut", "?")
+
+    path_width = max(40, w - 12)
+
+    lines = [""]
+    if detail.get("Error"):
+        lines.append(f"  {detail['Error']}")
+    lines += [
         f"  State:       {detail.get('JobState', '?')}  ({detail.get('Reason', '')})",
         f"  Account:     {detail.get('Account', '?')}",
         f"  Partition:   {detail.get('Partition', '?')}    QOS: {detail.get('QOS', '?')}",
@@ -1840,9 +2116,13 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         f"  Start:       {start}  {_relative_time(start)}".rstrip(),
         f"  End:         {end}  {_relative_time(end)}".rstrip(),
         "",
-        f"  WorkDir:     {detail.get('WorkDir', '?')}",
-        f"  Command:     {detail.get('Command', '?')}",
-        f"  StdOut:      {detail.get('StdOut', '?')}",
+    ]
+    lines.extend(_wrap_path("WorkDir:     ", workdir, path_width))
+    lines.append("")
+    lines.extend(_wrap_path("Command:     ", command, path_width))
+    lines.append("")
+    lines.extend(_wrap_path("StdOut:      ", stdout, path_width))
+    lines += [
         "",
         f"  Dependency:  {detail.get('Dependency', 'None')}",
     ]
@@ -1856,9 +2136,34 @@ def _show_job_detail(stdscr: curses.window, job: Job, h: int, w: int) -> None:
         lines.extend(["", f"  +{job.more_count} similar jobs collapsed:"])
         for name in job.collapsed_names:
             lines.append(f"    {name}")
-    lines.extend(["", "  j/k to scroll · q/Esc to close", ""])
+    lines.extend(["", "  j/k scroll · y:copy · q/Esc close", ""])
 
-    _draw_overlay_box(stdscr, lines, f"Job {job.jobid}: {job.name}", h, w)
+    ### Copyable values for the 'y' picker (full untruncated paths)
+    copy_items = [
+        ("JobID", job.jobid),
+        ("WorkDir", workdir),
+        ("Command", command),
+        ("StdOut", stdout),
+    ]
+
+    title = f"Job {job.jobid}: {job.name}"
+    while True:
+        result = _draw_overlay_box(
+            stdscr, lines, title, h, w, passthrough_keys={ord("y")},
+        )
+        if result != ord("y"):
+            break
+        ### Show copy picker
+        pick_lines = [""]
+        for i, (label, val) in enumerate(copy_items):
+            display = val if len(val) <= 50 else f"…{val[-49:]}"
+            pick_lines.append(f"  [{i + 1}] {label}: {display}")
+        pick_lines.extend(["", "  q/Esc to cancel", ""])
+        _draw_prompt_box(stdscr, pick_lines, "Copy to clipboard", h, w, max_width=70)
+        ckey = stdscr.getch()
+        idx = ckey - ord("1")
+        if 0 <= idx < len(copy_items):
+            _osc52_copy(copy_items[idx][1])
 
 
 def _draw_prompt_box(
@@ -2037,6 +2342,27 @@ def _show_share_detail(
     _draw_overlay_box(stdscr, lines, title, h, w)
 
 
+def _show_history_detail(
+    stdscr: curses.window, job: HistoryJob, h: int, w: int,
+) -> None:
+    """Show detail overlay for a completed/failed job from sacct."""
+    ended = job.end_time
+    rel = _relative_time(ended)
+    lines = [
+        "",
+        f"  State:       {job.state}",
+        f"  ExitCode:    {job.exit_code}",
+        f"  Account:     {job.account}",
+        f"  Nodes:       {job.nodes}",
+        f"  Elapsed:     {job.elapsed}",
+        f"  Ended:       {ended}  {rel}".rstrip(),
+        "",
+        "  j/k to scroll · q/Esc to close",
+        "",
+    ]
+    _draw_overlay_box(stdscr, lines, f"Job {job.jobid}: {job.name}", h, w)
+
+
 ###############################################################################
 ### Sort Picker, Job Log, Hold/Release, Export, Node Details
 ###############################################################################
@@ -2046,7 +2372,7 @@ def _show_sort_picker(
     stdscr: curses.window, tab: int, current: int, h: int, w: int,
 ) -> int | None:
     """Show sort column picker overlay. Returns selected mode index or None."""
-    spec = JOB_SORT_SPEC if tab == 0 else SHARE_SORT_SPEC
+    spec = TAB_SORT_SPECS[tab] if tab < len(TAB_SORT_SPECS) else JOB_SORT_SPEC
     lines = [""]
     for i, col in enumerate(spec):
         marker = "\u25b8" if i == current else " "
@@ -2359,6 +2685,26 @@ def _export_shares(shares: list[ShareEntry], fmt: str, path: str) -> None:
             json.dump(data, f, indent=2)
 
 
+def _export_history(history: list[HistoryJob], fmt: str, path: str) -> None:
+    """Write history data to a CSV or JSON file."""
+    headers = ["JobID", "Name", "User", "Account", "State", "ExitCode", "Elapsed", "Nodes", "End"]
+    if fmt == "csv":
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for j in history:
+                w.writerow([j.jobid, j.name, j.user, j.account, j.state,
+                            j.exit_code, j.elapsed, j.nodes, j.end_time])
+    else:
+        data = [
+            dict(zip(headers, [j.jobid, j.name, j.user, j.account, j.state,
+                                j.exit_code, j.elapsed, j.nodes, j.end_time]))
+            for j in history
+        ]
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+
 def _fetch_node_details(nodelist: str = "") -> list[str]:
     """Fetch per-node status from sinfo and format with state colors.
 
@@ -2475,23 +2821,28 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
     shares: list[ShareEntry] = []
     items: list[Job] = []
     etas: dict[str, str] = {}
+    history: list[HistoryJob] = []
     ordered_shares: list[ShareEntry] = []
     user_nodes: dict[str, int] = {}
 
     active_tab = 0
-    cursor_per_tab = [0, 0]
-    scroll_per_tab = [ScrollState(), ScrollState()]
+    n_tabs = len(TAB_NAMES)
+    cursor_per_tab = [0] * n_tabs
+    scroll_per_tab = [ScrollState() for _ in range(n_tabs)]
     last_fetch = 0.0
     needs_refresh = True
     scrollbar_attr = curses.color_pair(C_SCROLLBAR)
 
     ### Filter state (per-tab)
-    filter_text = ["", ""]
+    filter_text = [""] * n_tabs
     filter_active = False
 
     ### Sort state (per-tab): mode index + ascending flag
-    sort_mode = [0, 0]
-    sort_ascending = [True, True]
+    sort_mode = [0] * n_tabs
+    sort_ascending = [True] * n_tabs
+
+    ### Shares expansion state: set of expanded account names (initially all)
+    expanded_groups: set[str] = set()
 
     ### Transient flash message for the status bar (e.g., "exported to ...")
     flash_msg = ""
@@ -2502,24 +2853,38 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
 
         ### Refresh data from Slurm if interval elapsed or forced
         if needs_refresh or (now - last_fetch) >= interval:
-            partitions, shares, items, etas = fetch_all(scope, running_only, timing)
+            partitions, shares, items, etas, history = fetch_all(scope, running_only, timing)
             ordered_shares = _sort_shares_by(shares, mode=0, ascending=True)
             user_nodes = _active_nodes_by_user(items)
+            ### Populate expanded_groups with all group accounts on first load
+            if not expanded_groups and shares:
+                expanded_groups.update(s.account for s in shares if s.is_group)
             last_fetch = time.time()
             now = last_fetch
             needs_refresh = False
 
         ### Determine selectable items for current tab, applying sort + filter
         if active_tab == 0:
-            all_selectable: list = list(items)  # Job or ShareEntry, narrowed by active_tab
+            all_selectable: list = list(items)
             if sort_mode[0] != 0:
                 all_selectable = _sort_jobs_by(all_selectable, sort_mode[0], sort_ascending[0])
-        else:
+        elif active_tab == 1:
             all_selectable = list(ordered_shares)
             if sort_mode[1] != 0:
                 all_selectable = _sort_shares_by(
                     all_selectable, sort_mode[1], sort_ascending[1], user_nodes,
                 )
+            ### Apply group expansion filter
+            all_selectable = [
+                s for s in all_selectable
+                if s.is_group or s.account in expanded_groups
+            ]
+        else:
+            all_selectable = list(history)
+            if sort_mode[2] != 0:
+                all_selectable = _sort_history_by(all_selectable, sort_mode[2], sort_ascending[2])
+            else:
+                all_selectable = _sort_history_by(all_selectable, 0, True)
 
         ft = filter_text[active_tab]
         if ft:
@@ -2544,13 +2909,14 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 tab_lines = render_jobs(selectable, etas, time_offset=time_offset)
             else:
                 tab_lines = render_jobs(items, etas, time_offset=time_offset)
+        elif active_tab == 1:
+            ### Shares tab always uses filtered/expanded selectable since
+            ### expansion changes what's visible even with no sort/filter active
+            tab_lines = render_shares(
+                selectable, items, pre_sorted=True, user_nodes=user_nodes,
+            )
         else:
-            if ft or sort_mode[1] != 0:
-                tab_lines = render_shares(
-                    selectable, items, pre_sorted=True, user_nodes=user_nodes,
-                )
-            else:
-                tab_lines = render_shares(shares, items, user_nodes=user_nodes)
+            tab_lines = render_history(selectable)
 
         ### Build mapping: tab content line index -> selectable item index
         line_to_sel: list[int] = []
@@ -2638,16 +3004,23 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             age_str = f"{age}s ago" if age > 0 else "just now"
             timing_tag = " \u00b7 etas:on" if timing else ""
             filter_tag = f" \u00b7 filter:\"{ft}\"" if ft else ""
-            sort_spec = JOB_SORT_SPEC if active_tab == 0 else SHARE_SORT_SPEC
+            tab_spec = TAB_SORT_SPECS[active_tab] if active_tab < len(TAB_SORT_SPECS) else JOB_SORT_SPEC
             sm = sort_mode[active_tab]
             if sm != 0:
                 arrow = "\u2191" if sort_ascending[active_tab] else "\u2193"
-                sort_tag = f" \u00b7 sort:{sort_spec[sm].label.split()[0].lower()}{arrow}"
+                sort_tag = f" \u00b7 sort:{tab_spec[sm].label.split()[0].lower()}{arrow}"
             else:
                 sort_tag = ""
+            ### R/PD summary for jobs tab
+            if active_tab == 0 and items:
+                n_r = sum(1 for j in items if j.state == "R")
+                n_pd = sum(1 for j in items if j.state == "PD")
+                rpd_tag = f" {n_r}R {n_pd}PD \u00b7"
+            else:
+                rpd_tag = ""
             pos_tag = f" \u00b7 {cursor + 1}/{len(selectable)}" if selectable else " \u00b7 0/0"
             status = (
-                f" {scope}{pos_tag}{timing_tag}{filter_tag}{sort_tag} \u00b7 {age_str}"
+                f" {scope}{rpd_tag}{pos_tag}{timing_tag}{filter_tag}{sort_tag} \u00b7 {age_str}"
                 f" \u00b7 /:filter S:sort o:details ?:help"
             )
         try:
@@ -2691,13 +3064,10 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                     sort_ascending[active_tab] = not sort_ascending[active_tab]
                 else:
                     sort_mode[active_tab] = picked
-                    ### Numeric columns default to descending (biggest first)
-                    if active_tab == 0:
-                        sort_ascending[active_tab] = picked not in (4, 5)  # Time, Nodes
-                    else:
-                        sort_ascending[active_tab] = picked not in (2, 3)  # RawUsage, Nodes
+                    picked_spec = TAB_SORT_SPECS[active_tab] if active_tab < len(TAB_SORT_SPECS) else JOB_SORT_SPEC
+                    sort_ascending[active_tab] = not picked_spec[picked].default_descending
                 cursor_per_tab[active_tab] = 0
-        elif key == ord("o") and selectable:
+        elif key in (ord("o"), ord("\n"), curses.KEY_ENTER) and selectable:
             sel_item = selectable[cursor]
             if active_tab == 0 and isinstance(sel_item, Job):
                 _show_job_detail(stdscr, sel_item, h, w)
@@ -2705,6 +3075,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                 _show_share_detail(
                     stdscr, sel_item, shares, items, h, w, user_nodes=user_nodes,
                 )
+            elif active_tab == 2 and isinstance(sel_item, HistoryJob):
+                _show_history_detail(stdscr, sel_item, h, w)
         elif key == ord("l") and selectable and active_tab == 0:
             sel_item = selectable[cursor]
             if isinstance(sel_item, Job) and sel_item.state in ("R", "CG"):
@@ -2730,13 +3102,15 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
             fmt = _show_export_picker(stdscr, h, w)
             if fmt:
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                tab_name = "jobs" if active_tab == 0 else "shares"
+                tab_name = TAB_NAMES[active_tab].lower()
                 path = os.path.expanduser(f"~/sq_export_{tab_name}_{ts}.{fmt}")
                 try:
                     if active_tab == 0:
                         _export_jobs(selectable, fmt, path)
-                    else:
+                    elif active_tab == 1:
                         _export_shares(selectable, fmt, path)
+                    else:
+                        _export_history(selectable, fmt, path)
                     flash_msg = f"Exported to {path}"
                     flash_until = time.time() + 5.0
                 except OSError as exc:
@@ -2755,7 +3129,11 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                     node_title = f"Nodes: {sel_item.name} ({sel_item.jobid})"
             _show_node_details(stdscr, h, w, nodelist=job_nodelist, title=node_title)
         elif key == ord("\t"):
-            active_tab = 1 - active_tab
+            active_tab = (active_tab + 1) % n_tabs
+        elif key == curses.KEY_BTAB:
+            active_tab = (active_tab - 1) % n_tabs
+        elif ord("1") <= key <= ord("9") and (key - ord("1")) < n_tabs:
+            active_tab = key - ord("1")
         elif key == ord("r"):
             needs_refresh = True
         elif key == ord("m"):
@@ -2771,6 +3149,19 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
         elif key == ord("t"):
             timing = not timing
             needs_refresh = True
+        elif key == ord("x") and active_tab == 1 and selectable:
+            sel_item = selectable[cursor]
+            if isinstance(sel_item, ShareEntry) and sel_item.is_group:
+                if sel_item.account in expanded_groups:
+                    expanded_groups.discard(sel_item.account)
+                else:
+                    expanded_groups.add(sel_item.account)
+        elif key == ord("X") and active_tab == 1:
+            all_accounts = {s.account for s in shares if s.is_group}
+            if expanded_groups >= all_accounts:
+                expanded_groups.clear()
+            else:
+                expanded_groups.update(all_accounts)
         elif key in (curses.KEY_UP, ord("k")):
             cursor_per_tab[active_tab] = max(0, cursor - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
@@ -2823,6 +3214,8 @@ def _run_tui(stdscr: curses.window, args: argparse.Namespace) -> None:
                                     stdscr, sel_item, shares, items, h, w,
                                     user_nodes=user_nodes,
                                 )
+                            elif active_tab == 2 and isinstance(sel_item, HistoryJob):
+                                _show_history_detail(stdscr, sel_item, h, w)
 
         elif key == curses.KEY_RESIZE:
             pass
@@ -2886,6 +3279,10 @@ def main() -> None:
     parser.add_argument(
         "--account", "-A", type=str, default="",
         help="Slurm account/group name (default: $SQ_ACCOUNT or coreai_modulus_cae)",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Output as JSON (static mode only)",
     )
 
     args = parser.parse_args()
