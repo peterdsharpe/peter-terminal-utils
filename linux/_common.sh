@@ -22,6 +22,8 @@ NC='\033[0m' # No Color
 
 [[ -d "$HOME/.local/bin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
 [[ -d "$HOME/.cargo/bin" ]] && [[ ":$PATH:" != *":$HOME/.cargo/bin:"* ]] && export PATH="$HOME/.cargo/bin:$PATH"
+[[ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]] && [[ ":$PATH:" != *":/home/linuxbrew/.linuxbrew/bin:"* ]] && export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+[[ -x "$HOME/.linuxbrew/bin/brew" ]] && [[ ":$PATH:" != *":$HOME/.linuxbrew/bin:"* ]] && export PATH="$HOME/.linuxbrew/bin:$PATH"
 
 ###############################################################################
 ### Logging Helpers
@@ -1010,6 +1012,7 @@ pkg_name() {
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh-server" ;;
                 p7zip-full) echo "p7zip p7zip-plugins" ;;
+                procps) echo "procps-ng" ;;
                 python3-dev) echo "python3-devel" ;;
                 gnome-shell-extension-manager) echo "gnome-extensions-app" ;;
                 *) echo "$apt_name" ;;
@@ -1025,6 +1028,7 @@ pkg_name() {
                 net-tools) echo "net-tools" ;;
                 openssh-server) echo "openssh" ;;
                 p7zip-full) echo "p7zip" ;;
+                procps) echo "procps-ng" ;;
                 python3-dev) echo "python" ;;
                 gnome-shell-extension-manager) echo "extension-manager" ;;
                 gnome-tweaks) echo "gnome-tweaks" ;;

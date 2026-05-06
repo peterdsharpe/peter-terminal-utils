@@ -20,6 +20,15 @@ if [ -f "$HOME/.cargo/env" ]; then
     . "$HOME/.cargo/env"
 fi
 
+# Add Homebrew (Linuxbrew) to PATH and set HOMEBREW_*/MANPATH/INFOPATH/fpath
+# Handles both the legacy alt-prefix (~/.linuxbrew) and the default supported
+# prefix (/home/linuxbrew/.linuxbrew). See https://docs.brew.sh/Homebrew-on-Linux
+if [ -d "$HOME/.linuxbrew" ]; then
+    eval "$("$HOME/.linuxbrew/bin/brew" shellenv)"
+elif [ -d /home/linuxbrew/.linuxbrew ]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+fi
+
 # Add Snaps to PATH
 if [ -d "/snap/bin" ]; then
     export PATH="/snap/bin:$PATH"
