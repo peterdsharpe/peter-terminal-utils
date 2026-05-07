@@ -109,7 +109,7 @@ find_ail_deb_url() {
     # Query the latest release from GitHub API
     api_url="https://api.github.com/repos/${APPIMAGELAUNCHER_REPO}/releases/latest"
     
-    release_info=$(curl -sfL --connect-timeout 10 "$api_url") || {
+    release_info=$(fetch -sfL "$api_url") || {
         echo "Failed to query GitHub API for AppImageLauncher releases" >&2
         return 1
     }
@@ -134,7 +134,7 @@ get_ail_latest_version() {
     
     api_url="https://api.github.com/repos/${APPIMAGELAUNCHER_REPO}/releases/latest"
     
-    release_info=$(curl -sfL --connect-timeout 10 "$api_url") || {
+    release_info=$(fetch -sfL "$api_url") || {
         echo "Failed to query GitHub API" >&2
         return 1
     }
@@ -151,75 +151,77 @@ get_ail_latest_version() {
 }
 
 install_appimagelauncher() {
-    local deb_url pkg_name tmpdir version
-    
-    # Get the actual download URL from GitHub API
-    deb_url=$(find_ail_deb_url) || {
-        print_error "Failed to find AppImageLauncher download URL"
-        return 1
-    }
-    
-    # Extract filename from URL
-    pkg_name=$(basename "$deb_url")
-    
-    # Extract version for display
-    version=$(get_ail_latest_version) || version="latest"
-    
-    # Create temp directory and ensure cleanup
-    tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' EXIT
-    
-    step_start "Installing AppImageLauncher ${version}"
-    
-    # Download package
-    run curl -fL --progress-bar -o "${tmpdir}/${pkg_name}" "$deb_url"
-    
-    if [[ ! -f "${tmpdir}/${pkg_name}" ]]; then
-        print_error "Download failed: ${deb_url}"
+    # Run the body in a subshell so the EXIT trap is scoped here only.
+    # `trap - EXIT` at the script level would clobber any cleanup the parent
+    # (or another sourced helper) registered.
+    (
+        local deb_url pkg_name tmpdir version
+
+        deb_url=$(find_ail_deb_url) || {
+            print_error "Failed to find AppImageLauncher download URL"
+            exit 1
+        }
+
+        pkg_name=$(basename "$deb_url")
+        version=$(get_ail_latest_version) || version="latest"
+
+        tmpdir=$(mktemp -d) || exit 1
+        trap 'rm -rf "$tmpdir"' EXIT
+
+        step_start "Installing AppImageLauncher ${version}"
+
+        run fetch -fL --progress-bar -o "${tmpdir}/${pkg_name}" "$deb_url"
+
+        if [[ ! -f "${tmpdir}/${pkg_name}" ]]; then
+            print_error "Download failed: ${deb_url}"
+            step_end
+            exit 1
+        fi
+
+        run pkg_install_local "${tmpdir}/${pkg_name}"
+
         step_end
-        return 1
-    fi
-    
-    # Install the package
-    run pkg_install_local "${tmpdir}/${pkg_name}"
-    
-    step_end
-    
-    # Clean up
-    rm -rf "$tmpdir"
-    trap - EXIT
-    
-    return "$(step_result)"
+        exit "$(step_result)"
+    )
 }
 
 # Only supported on apt-based distros (AppImageLauncher provides .deb packages)
 if [[ "$PKG_MANAGER" != "apt" ]]; then
     print_skip "AppImageLauncher (only available for apt-based distros; libfuse2 installed for manual AppImage use)"
 else
-    # Check versions and install/update if needed
+    # Check versions and install/update if needed.
+    # When the version check itself fails (no network, GitHub API down) we
+    # warn and leave the existing install in place rather than claim a state
+    # we can't verify. We only claim "already installed" / "up to date" when
+    # we successfully obtained both versions.
     check_and_install_appimagelauncher() {
         local installed_version latest_version
         installed_version=$(get_ail_installed_version) || installed_version=""
-        latest_version=$(get_ail_latest_version) || {
-            print_warning "Cannot check AppImageLauncher version (network?)"
-            latest_version=""
-        }
-        
-        if [[ -n "$installed_version" && -n "$latest_version" ]]; then
-            semver_compare "$installed_version" "$latest_version"
-            case $? in
-                0) print_skip "AppImageLauncher at latest ($installed_version)" ;;
-                2) print_skip "AppImageLauncher newer than release ($installed_version > $latest_version)" ;;
-                1)
-                    print_info "AppImageLauncher: $installed_version -> $latest_version"
-                    require_sudo "AppImageLauncher update" install_appimagelauncher
-                    ;;
-            esac
-        else
-            print_skip "AppImageLauncher already installed"
+
+        if ! latest_version=$(get_ail_latest_version); then
+            print_warning "Cannot check AppImageLauncher version (network?); leaving existing install untouched"
+            return 0
         fi
+
+        if [[ -z "$installed_version" ]]; then
+            # We know there's no install but Cursor was found earlier - means the
+            # binary is present but dpkg metadata is missing. Reinstall to fix.
+            print_info "AppImageLauncher present but version unknown; reinstalling $latest_version"
+            require_sudo "AppImageLauncher reinstall" install_appimagelauncher
+            return
+        fi
+
+        semver_compare "$installed_version" "$latest_version"
+        case $? in
+            0) print_skip "AppImageLauncher at latest ($installed_version)" ;;
+            2) print_skip "AppImageLauncher newer than release ($installed_version > $latest_version)" ;;
+            1)
+                print_info "AppImageLauncher: $installed_version -> $latest_version"
+                require_sudo "AppImageLauncher update" install_appimagelauncher
+                ;;
+        esac
     }
-    
+
     if command -v ail-cli &>/dev/null || command -v AppImageLauncher &>/dev/null; then
         check_and_install_appimagelauncher
     else

@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: ModemManager
 # @description: Disable ModemManager for systems without cellular modems
+# @depends: bootstrap.sh
 # @requires: sudo
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
@@ -32,11 +33,11 @@ disable_modemmanager() {
     step_start "Disabling ModemManager service"
     
     if [[ "$is_enabled" != "disabled" ]]; then
-        run sudo systemctl disable ModemManager.service
+        run sudo -n systemctl disable ModemManager.service
     fi
     
     if [[ "$is_active" == "active" ]]; then
-        run sudo systemctl stop ModemManager.service
+        run sudo -n systemctl stop ModemManager.service
     fi
     
     step_end

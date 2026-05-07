@@ -3,6 +3,7 @@
 # @description: Productivity, creative, and media apps via Flatpak
 # @depends: bootstrap.sh
 # @headless: skip
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 

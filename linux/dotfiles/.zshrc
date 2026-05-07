@@ -21,8 +21,11 @@ export ZSH="$HOME/.oh-my-zsh"
 # Theme - Powerlevel10k
 ZSH_THEME="powerlevel10k/powerlevel10k"
 
-# Plugins
-plugins=(git zsh-syntax-highlighting zsh-autosuggestions zsh-history-substring-search)
+# Plugins. Plugin order matters:
+#  - zsh-history-substring-search must come BEFORE zsh-syntax-highlighting so
+#    its keybindings work; zsh-syntax-highlighting hijacks ZLE widgets and
+#    must be the last plugin loaded (per its README).
+plugins=(git zsh-autosuggestions zsh-history-substring-search zsh-syntax-highlighting)
 
 ###############################################################################
 ### zsh-autocomplete (must be sourced BEFORE oh-my-zsh)

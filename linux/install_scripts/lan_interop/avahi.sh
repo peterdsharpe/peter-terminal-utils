@@ -12,15 +12,16 @@ standalone_init
 ###############################################################################
 
 install_avahi_packages() {
+    # libnss-mdns is the NSS plugin for mDNS hostname resolution. The package
+    # name varies by distro - pkg_name handles the mapping.
     local packages=(
         avahi-daemon      # mDNS/DNS-SD daemon
         avahi-utils       # avahi-browse, avahi-resolve, etc.
-        libnss-mdns       # NSS plugin for mDNS hostname resolution
     )
 
     step_start "Installing Avahi mDNS packages"
     # shellcheck disable=SC2086
-    run pkg_install ${packages[*]}
+    run pkg_install "${packages[@]}" "$(pkg_name libnss-mdns)"
     step_end
 }
 
@@ -37,17 +38,17 @@ configure_resolved() {
 
     # Use drop-in to avoid modifying the main config file
     step_start "Configuring systemd-resolved for Avahi compatibility"
-    run sudo mkdir -p "$resolved_conf_d"
+    run sudo -n mkdir -p "$resolved_conf_d"
     
     # Create drop-in config
-    if sudo tee "$drop_in" > /dev/null << 'EOF'
+    if sudo -n tee "$drop_in" > /dev/null << 'EOF'
 # Allow Avahi to handle mDNS on port 5353
 # systemd-resolved will still resolve .local names via Avahi
 [Resolve]
 MulticastDNS=resolve
 EOF
     then
-        run sudo systemctl restart systemd-resolved
+        run sudo -n systemctl restart systemd-resolved
     fi
     step_end
 }
@@ -68,12 +69,12 @@ configure_nsswitch() {
         print_info "mDNS already configured in nsswitch.conf"
     else
         # Backup original
-        run sudo cp "$nsswitch" "${nsswitch}.bak"
+        run sudo -n cp "$nsswitch" "${nsswitch}.bak"
         
         # Insert mdns4_minimal before dns in the hosts line
         # Original: hosts: files dns
         # Result:   hosts: files mdns4_minimal [NOTFOUND=return] dns
-        run sudo sed -i 's/^\(hosts:.*\)dns/\1mdns4_minimal [NOTFOUND=return] dns/' "$nsswitch"
+        run sudo -n sed -i 's/^\(hosts:.*\)dns/\1mdns4_minimal [NOTFOUND=return] dns/' "$nsswitch"
     fi
     step_end
 }
@@ -95,10 +96,10 @@ setup_ssh_service() {
         print_info "SSH service already advertised"
     elif [[ -f "$example_file" ]]; then
         # Use the example file from avahi-daemon package
-        run sudo cp "$example_file" "$service_file"
+        run sudo -n cp "$example_file" "$service_file"
     else
         # Create the service file manually
-        sudo tee "$service_file" > /dev/null << 'EOF'
+        sudo -n tee "$service_file" > /dev/null << 'EOF'
 <?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
@@ -118,7 +119,7 @@ EOF
 ###############################################################################
 
 enable_avahi() {
-    step "Enabling Avahi daemon" sudo systemctl enable --now avahi-daemon
+    step "Enabling Avahi daemon" sudo -n systemctl enable --now avahi-daemon
 }
 
 ###############################################################################

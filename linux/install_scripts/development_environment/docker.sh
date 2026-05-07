@@ -13,10 +13,10 @@ install_docker() {
     local current_user
     current_user="$(whoami)"
     if getent group docker &>/dev/null; then
-        sudo usermod -aG docker "$current_user"
+        sudo -n usermod -aG docker "$current_user"
     else
-        sudo groupadd -f docker
-        sudo usermod -aG docker "$current_user"
+        sudo -n groupadd -f docker
+        sudo -n usermod -aG docker "$current_user"
     fi
 }
 
@@ -33,8 +33,11 @@ setup_docker() {
         print_warning "Log out and back in to use docker without sudo"
     fi
 
-    # Clean up unused images, containers, and build cache
-    step "Pruning unused Docker resources" sudo docker system prune -af
+    # NOTE: We deliberately do NOT prune images/containers/build cache here.
+    # `docker system prune -af` destroys cached layers and stopped containers
+    # that the user may want; running it on every orchestrator pass would
+    # silently wipe user state. Run `docker system prune -af` manually if you
+    # want to reclaim disk space.
 }
 
 require_sudo "Docker" setup_docker

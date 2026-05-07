@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Tiling Assistant
 # @description: Configure Ubuntu's built-in tiling assistant extension
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

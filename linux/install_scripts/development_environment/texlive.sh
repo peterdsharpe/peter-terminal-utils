@@ -8,38 +8,38 @@ standalone_init
 # See: https://www.tug.org/texlive/quickinstall.html
 
 install_texlive() {
-    local tmpdir year arch_dir texlive_bin install_dir profile_file
+    # Map repo ARCH ($ARCH is normalized to x86_64 or arm64 in _common.sh) to
+    # TeX Live's installer profile syntax. Fail fast on unknown architectures
+    # rather than silently installing the wrong binaries.
+    local binary_arch
+    case "$ARCH" in
+        x86_64) binary_arch="binary_x86_64-linux" ;;
+        arm64)  binary_arch="binary_aarch64-linux" ;;
+        *)
+            print_error "TeX Live: unsupported architecture '$ARCH' (expected x86_64 or arm64)"
+            return 1
+            ;;
+    esac
+
+    local tmpdir
     tmpdir=$(mktemp -d) || return 1
-    
-    # Use subshell to isolate directory changes
+
     (
         cd "$tmpdir" || exit 1
-        
-        # Download installer
-        curl -fL -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || exit 1
+
+        fetch -fL -o install-tl-unx.tar.gz https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz || exit 1
         zcat < install-tl-unx.tar.gz | tar xf - || exit 1
-        
-        # Find the extracted directory (handles varying naming conventions)
+
+        local install_dir
         install_dir=$(find . -maxdepth 1 -type d -name 'install-tl-*' | head -1)
         [ -n "$install_dir" ] && [ -d "$install_dir" ] || { echo "TexLive installer directory not found" >&2; exit 1; }
         cd "$install_dir" || exit 1
-        
-        # Detect the TeX Live release year from the installer
+
         local tl_year
         tl_year=$(perl ./install-tl --version 2>&1 | sed -n 's/.*version \([0-9]\{4\}\).*/\1/p')
         [ -n "$tl_year" ] || { echo "Could not determine TeX Live release year from installer; check that install-tl is valid" >&2; exit 1; }
-        
-        # Create installation profile to disable GUI apps and documentation
-        profile_file="$tmpdir/texlive.profile"
-        
-        # Determine binary architecture for profile
-        local binary_arch
-        case "$ARCH" in
-            x86_64) binary_arch="binary_x86_64-linux" ;;
-            arm64|aarch64) binary_arch="binary_aarch64-linux" ;;
-            *) binary_arch="binary_x86_64-linux" ;;  # default fallback
-        esac
-        
+
+        local profile_file="$tmpdir/texlive.profile"
         cat > "$profile_file" << EOF
 # TeX Live installation profile
 # Installs full scheme without GUI apps, desktop entries, or documentation
@@ -64,48 +64,24 @@ tlpdbopt_sys_info 0
 tlpdbopt_sys_man 0
 tlpdbopt_w32_multi_user 1
 EOF
-        
-        # Install non-interactively using profile
+
         print_warning "TeX Live full installation may take 30+ minutes..."
-        sudo perl ./install-tl --profile="$profile_file"
+        sudo -n perl ./install-tl --profile="$profile_file"
     )
     local install_rc=$?
     rm -rf "$tmpdir"
     [ $install_rc -ne 0 ] && return 1
-    
-    # Determine install path and add to shell profiles
+
+    # Transfer ownership so tlmgr works without sudo (sudo may not have tlmgr
+    # in PATH). PATH lookup for the new install is handled by .shell_common,
+    # which auto-detects /usr/local/texlive/$year/bin/$arch on shell startup;
+    # we deliberately do NOT append to .bashrc/.profile/.zprofile here because
+    # those would either be no-ops (if dotfiles.sh has already symlinked the
+    # files) or get clobbered when dotfiles.sh runs later in the orchestrator.
+    local year
     year=$(ls /usr/local/texlive/ 2>/dev/null | grep -E '^[0-9]{4}$' | sort -n | tail -1)
     if [ -n "$year" ]; then
-        # Transfer ownership so tlmgr works without sudo (sudo may not have tlmgr in PATH)
-        sudo chown -R "$(id -un):$(id -gn)" "/usr/local/texlive/${year}/"
-        
-        case "$ARCH" in
-            x86_64) arch_dir="x86_64-linux" ;;
-            arm64) arch_dir="aarch64-linux" ;;
-        esac
-        texlive_bin="/usr/local/texlive/${year}/bin/${arch_dir}"
-        if [ -d "$texlive_bin" ]; then
-            # Add to .bashrc for bash non-login shells
-            # Skip if .bashrc is a symlink (managed by dotfiles with auto-detection)
-            if [ ! -L "$HOME/.bashrc" ] && ! grep -q "texlive" "$HOME/.bashrc" 2>/dev/null; then
-                echo "" >> "$HOME/.bashrc"
-                echo "# TeX Live" >> "$HOME/.bashrc"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.bashrc"
-            fi
-            # Add to .profile for bash login shells
-            if [ ! -L "$HOME/.profile" ] && ! grep -q "texlive" "$HOME/.profile" 2>/dev/null; then
-                echo "" >> "$HOME/.profile"
-                echo "# TeX Live" >> "$HOME/.profile"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.profile"
-            fi
-            # Add to .zprofile for zsh login shells (zsh doesn't source .profile)
-            if [ ! -L "$HOME/.zprofile" ] && ! grep -q "texlive" "$HOME/.zprofile" 2>/dev/null; then
-                echo "" >> "$HOME/.zprofile"
-                echo "# TeX Live" >> "$HOME/.zprofile"
-                echo "export PATH=\"$texlive_bin:\$PATH\"" >> "$HOME/.zprofile"
-            fi
-            # Note: .zshrc/.bashrc are managed via dotfiles symlinks with auto-detection
-        fi
+        sudo -n chown -R "$(id -un):$(id -gn)" "/usr/local/texlive/${year}/"
     fi
 }
 

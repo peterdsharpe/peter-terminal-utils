@@ -3,6 +3,7 @@
 # @description: GitHub's official CLI for managing repos, PRs, and issues
 # @repo: cli/cli
 # @depends: bootstrap.sh
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
@@ -13,9 +14,9 @@ install_github_cli_pkg() {
     case "$PKG_MANAGER" in
         apt)
             # Add GitHub CLI apt repository for latest updates
-            fetch -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
+            fetch -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo -n dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
+            sudo -n chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg || return 1
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo -n tee /etc/apt/sources.list.d/github-cli.list > /dev/null || return 1
             pkg_update || return 1
             # shellcheck disable=SC2046
             pkg_install $(pkg_name gh)

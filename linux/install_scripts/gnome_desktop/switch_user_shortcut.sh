@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Switch User Shortcut
 # @description: Super+U keyboard shortcut for fast user switching
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

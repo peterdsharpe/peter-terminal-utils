@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Input Settings
 # @description: Touchpad and keyboard repeat configuration
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

@@ -69,24 +69,28 @@ Cross-distro application installation:
 
 ```
 linux/
-├── setup              # Main TUI entry point (Python)
-├── _common.sh         # Shared utilities for all scripts
-├── config.toml        # User configuration (git name/email)
-├── install_scripts/   # Individual install scripts
-│   ├── system_packages/
-│   ├── cli_tools/
-│   ├── dev_tools/
-│   ├── shell_setup/
-│   ├── gnome_settings/
-│   ├── gnome_extensions/
-│   ├── desktop_apps/
-│   └── manifest.conf  # Script ordering and grouping
-└── dotfiles/          # Configuration files
-    ├── .shell_common  # Shared config (aliases, PATH, tool inits)
-    ├── .zshrc         # Zsh-specific (Oh My Zsh, Powerlevel10k)
-    ├── .bashrc        # Bash-specific (prompt, options, completions)
-    ├── .p10k.zsh      # Powerlevel10k theme config
-    └── init.vim       # Neovim config
+├── setup                          # Main TUI entry point (Python)
+├── _common.sh                     # Shared utilities for all scripts
+├── config.toml                    # User configuration (git name/email, presets)
+├── pins.conf                      # Pinned versions for git-cloned repos
+├── install_scripts/
+│   ├── manifest.conf              # Script ordering and grouping
+│   ├── system_setup/              # System packages, ssh, drivers, upgrades
+│   ├── git_setup/                 # git config, gh, glab, lazygit, delta
+│   ├── cli_tools/                 # bat, fd, fzf, ripgrep, eza, etc.
+│   ├── fonts/                     # Nerd Fonts, fontconfig
+│   ├── gnome_desktop/             # GNOME settings and customization
+│   ├── lan_interop/               # Avahi, GVFS, croc
+│   ├── development_environment/   # uv, rust, docker, cursor, etc.
+│   ├── shell_setup/               # zsh, oh-my-zsh, dotfiles, p10k
+│   ├── desktop_applications/      # Flatpak, Signal, RustDesk, etc.
+│   └── gnome_extensions/          # Dash to Panel, Just Perfection, etc.
+└── dotfiles/
+    ├── .shell_common              # Shared config (aliases, PATH, tool inits)
+    ├── .zshrc                     # Zsh-specific (Oh My Zsh, Powerlevel10k)
+    ├── .bashrc                    # Bash-specific (prompt, options, completions)
+    ├── .p10k.zsh                  # Powerlevel10k theme config
+    └── init.vim                   # Neovim config
 ```
 
 ### Adding New Distro Support

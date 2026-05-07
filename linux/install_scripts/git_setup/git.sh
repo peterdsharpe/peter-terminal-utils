@@ -9,9 +9,12 @@ standalone_init
 step_start "Configuring git"
 run git config --global init.defaultBranch main
 run git config --global pull.rebase false
-if command -v nvim &>/dev/null; then
-    run git config --global core.editor "nvim"
-fi
+# Set core.editor unconditionally. Git only invokes the editor when needed
+# (commits, rebases, etc.); it doesn't validate existence at config time.
+# `cli_tools/neovim.sh` runs in a later manifest section, so by the time the
+# user actually triggers an editor invocation, nvim is on PATH. Doing this
+# unconditionally avoids a hard cross-section dependency.
+run git config --global core.editor "nvim"
 run git config --global push.autoSetupRemote true
 run git config --global fetch.prune true
 # Aliases

@@ -29,17 +29,6 @@ NC='\033[0m' # No Color
 ### Logging Helpers
 ###############################################################################
 
-print_header() {
-    echo ""
-    echo -e "${BOLD}${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${BLUE}  $1${NC}"
-    echo -e "${BOLD}${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-}
-
-print_step() {
-    echo -e "${CYAN}▶${NC} $1"
-}
-
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
 }
@@ -124,8 +113,6 @@ _exec() {
     _EXEC_ERR=$(cat "$tmp_err")
     rm -f "$tmp_out" "$tmp_err"
     _EXEC_STDIN=""  # Reset after use
-    # Log command execution if logging is enabled
-    log_cmd "$@"
     return $_EXEC_EXIT
 }
 
@@ -134,20 +121,17 @@ _print_error() {
     local cmd_desc="$1"
     echo -e "  ${RED}Failed:${NC} $cmd_desc (exit code: $_EXEC_EXIT)"
 
-    # Log the error
-    log "ERROR: $cmd_desc (exit $_EXEC_EXIT)"
-
     # Contextual suggestions based on common error patterns
     local combined_output="$_EXEC_OUT $_EXEC_ERR"
     case "$combined_output" in
         *"Permission denied"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Try running with sudo, or check file/directory permissions" ;;
-        *"not found"*|*"No such file"*|*"command not found"*)
+        *"not found"*|*"No such file"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Ensure the file/command exists and PATH includes ~/.local/bin" ;;
         *"Connection refused"*|*"Could not resolve"*|*"Network is unreachable"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Check your network connection and try again" ;;
         *"apt"*"lock"*|*"dpkg"*"lock"*)
-            echo -e "  ${YELLOW}Suggestion:${NC} Another package manager may be running. Try: sudo rm /var/lib/dpkg/lock* /var/lib/apt/lists/lock" ;;
+            echo -e "  ${YELLOW}Suggestion:${NC} Another package manager (PackageKit, unattended-upgrades) is holding the lock. Wait, then re-run. Manually removing /var/lib/dpkg/lock* can corrupt dpkg state — only do that if you're certain no other apt process is running." ;;
         *"dpkg was interrupted"*|*"dpkg --configure -a"*)
             echo -e "  ${YELLOW}Suggestion:${NC} Previous package operation was interrupted. Fix with: sudo dpkg --configure -a" ;;
         *"ENOSPC"*|*"No space left"*)
@@ -370,12 +354,27 @@ _read_pin() {
         | sed 's/[[:space:]]*$//'
 }
 
-### Check if a git repo's HEAD matches a given ref (SHA or tag)
+### Check if a git repo's HEAD matches a given ref (SHA or tag).
+###
+### For SHAs we use `git rev-parse "$ref"` to expand any prefix to a full
+### object id, then compare full SHAs. This avoids the false-positive that
+### bidirectional prefix matching used to allow (e.g. ref="abc" matching a
+### completely unrelated current commit "abcdef0..." or vice versa).
 _is_at_ref() {
     local dest="$1" ref="$2"
     local current
     current=$(git -C "$dest" rev-parse HEAD 2>/dev/null) || return 1
-    [[ "$current" == "$ref"* || "$ref" == "$current"* ]] && return 0
+
+    # If ref looks like a SHA (any length of hex), let git resolve it to a
+    # full object id and compare full SHAs.
+    if [[ "$ref" =~ ^[0-9a-fA-F]+$ ]]; then
+        local resolved
+        if resolved=$(git -C "$dest" rev-parse --verify "${ref}^{commit}" 2>/dev/null); then
+            [[ "$current" == "$resolved" ]] && return 0
+        fi
+    fi
+
+    # Otherwise treat ref as a tag/branch and compare via describe.
     local tag
     tag=$(git -C "$dest" describe --tags --exact-match HEAD 2>/dev/null) || return 1
     [[ "$tag" == "$ref" ]]
@@ -522,15 +521,6 @@ prompt_yn() {
     [[ "$response" =~ ^[Yy] ]]
 }
 
-### Helper function for text input prompts
-prompt_input() {
-    local prompt="$1"
-    local default="$2"
-    local response
-    read -r -p "$prompt [$default]: " response
-    echo "${response:-$default}"
-}
-
 ###############################################################################
 ### Semver Utilities - Version extraction and comparison per semver.org spec
 ###############################################################################
@@ -652,69 +642,19 @@ _semver_compare_prerelease() {
     return 0
 }
 
-### Run semver comparison tests against spec examples
-### Call with: _test_semver (for development/CI validation)
-_test_semver() {
-    local -a tests=(
-        # From semver.org spec section 11.2 - basic version ordering
-        "1.0.0:2.0.0:1"      # 1.0.0 < 2.0.0
-        "2.0.0:2.1.0:1"      # 2.0.0 < 2.1.0
-        "2.1.0:2.1.1:1"      # 2.1.0 < 2.1.1
-        # Spec section 11.3 - pre-release has lower precedence than release
-        "1.0.0-alpha:1.0.0:1"
-        # Spec section 11.4 - pre-release version ordering (from spec example)
-        "1.0.0-alpha:1.0.0-alpha.1:1"
-        "1.0.0-alpha.1:1.0.0-alpha.beta:1"
-        "1.0.0-alpha.beta:1.0.0-beta:1"
-        "1.0.0-beta:1.0.0-beta.2:1"
-        "1.0.0-beta.2:1.0.0-beta.11:1"
-        "1.0.0-beta.11:1.0.0-rc.1:1"
-        "1.0.0-rc.1:1.0.0:1"
-        # Spec section 10 - build metadata ignored for precedence
-        "1.0.0+build1:1.0.0+build2:0"
-        "1.0.0+abc:1.0.0:0"
-        "1.0.0-alpha+001:1.0.0-alpha+002:0"
-        # Equality tests
-        "1.0.0:1.0.0:0"
-        "1.0.0-alpha:1.0.0-alpha:0"
-        # Reverse direction tests (v1 > v2 should return 2)
-        "2.0.0:1.0.0:2"
-        "1.0.0:1.0.0-alpha:2"
-        # v prefix handling
-        "v1.0.0:1.0.0:0"
-        "v1.0.0:v1.0.0:0"
-    )
-    local passed=0 failed=0
-    for test in "${tests[@]}"; do
-        IFS=':' read -r v1 v2 expected <<< "$test"
-        semver_compare "$v1" "$v2"
-        local result=$?
-        if [[ "$result" == "$expected" ]]; then
-            echo -e "${GREEN}✓${NC} $v1 vs $v2 = $result"
-            ((passed++))
-        else
-            echo -e "${RED}✗${NC} $v1 vs $v2 = $result (expected $expected)"
-            ((failed++))
-        fi
-    done
-    echo ""
-    echo "Passed: $passed, Failed: $failed"
-    [[ $failed -eq 0 ]]
-}
-
-### Get latest version from GitHub releases (uses redirect, not API - avoids rate limits)
+### Get latest version from GitHub releases (uses redirect, not API - avoids
+### rate limits). Goes through `fetch` for retry/timeout consistency with the
+### rest of the codebase.
 ### Usage: version=$(github_latest_version "owner/repo") || return 1
 github_latest_version() {
     local repo="$1"
-    local redirect_url version curl_output
+    local redirect_url version fetch_output
     
-    # Use HEAD request to get redirect URL - this doesn't hit API rate limits
-    # Capture both stdout and stderr for better diagnostics
-    curl_output=$(curl -sI --connect-timeout 10 "https://github.com/${repo}/releases/latest" 2>&1) || {
-        echo "Failed to connect to GitHub for $repo: $curl_output" >&2
+    fetch_output=$(fetch -sI "https://github.com/${repo}/releases/latest" 2>&1) || {
+        echo "Failed to connect to GitHub for $repo: $fetch_output" >&2
         return 1
     }
-    redirect_url=$(echo "$curl_output" | grep -i '^location:' | tr -d '\r')
+    redirect_url=$(echo "$fetch_output" | grep -i '^location:' | tr -d '\r')
     if [ -z "$redirect_url" ]; then
         echo "No redirect found for $repo releases (check network or repo existence)" >&2
         return 1
@@ -774,20 +714,7 @@ DISTRO=$(detect_distro)
 DISTRO_VERSION=$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}" || echo "")
 
 is_ubuntu() { [[ "$DISTRO" == "ubuntu" ]]; }
-is_debian() { [[ "$DISTRO" == "debian" ]]; }
-is_fedora() { [[ "$DISTRO" == "fedora" ]]; }
-is_arch() { [[ "$DISTRO" == "arch" ]]; }
 is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
-# WSL2 detection: check for WSL_INTEROP (set by WSL2), or fall back to version string
-is_wsl2() {
-    is_wsl || return 1
-    # WSL_INTEROP is only set in WSL2
-    [[ -n "${WSL_INTEROP:-}" ]] && return 0
-    # Fallback: check /proc/version for wsl2 marker
-    grep -qi "wsl2" /proc/version 2>/dev/null && return 0
-    # Another fallback: WSL2 uses kernel >= 5.x with microsoft in version
-    grep -qP "Linux version [5-9]\.\d+.*[Mm]icrosoft" /proc/version 2>/dev/null
-}
 
 ###############################################################################
 ### Desktop Environment Detection
@@ -807,8 +734,6 @@ detect_desktop() {
 DESKTOP_ENV=$(detect_desktop)
 
 is_gnome() { [[ "$DESKTOP_ENV" == "gnome" ]]; }
-is_kde() { [[ "$DESKTOP_ENV" == "kde" ]]; }
-is_cinnamon() { [[ "$DESKTOP_ENV" == "cinnamon" ]]; }
 is_gnome_shell() { command -v gnome-shell &>/dev/null; }
 
 ### Skip script if not running GNOME desktop
@@ -864,6 +789,13 @@ with_pkg_lock() {
     ) 200>"$PKG_LOCK"
 }
 
+### Run sudo non-interactively. The orchestrator caches credentials up-front
+### and refreshes them via SudoKeepalive; if a credential ever goes stale we
+### want a clean fast failure rather than letting sudo open /dev/tty (which
+### the curses TUI controls) and prompt invisibly. Standalone scripts also
+### benefit: a clear error beats a silent hang.
+_sudo() { sudo -n "$@"; }
+
 ### Check if dpkg is in a consistent state (apt-based distros only)
 ### Returns 0 if OK, 1 if needs repair
 ### Usage: pkg_check_health || { echo "Fix with: sudo dpkg --configure -a"; exit 1; }
@@ -871,8 +803,7 @@ pkg_check_health() {
     if [[ "$PKG_MANAGER" != "apt" ]]; then
         return 0  # Only applies to apt-based distros
     fi
-    # Check if dpkg has pending configurations
-    if sudo dpkg --audit 2>&1 | grep -q .; then
+    if _sudo dpkg --audit 2>&1 | grep -q .; then
         echo -e "${RED}✗${NC} Package database is inconsistent" >&2
         echo -e "  ${YELLOW}Fix with:${NC} sudo dpkg --configure -a" >&2
         return 1
@@ -889,10 +820,10 @@ pkg_install() {
 
 _pkg_install_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -yq "$@" ;;
-        dnf) sudo dnf install -y "$@" ;;
-        pacman) sudo pacman -S --noconfirm "$@" ;;
-        zypper) sudo zypper install -y "$@" ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -yq "$@" ;;
+        dnf) _sudo dnf install -y "$@" ;;
+        pacman) _sudo pacman -S --noconfirm "$@" ;;
+        zypper) _sudo zypper install -y "$@" ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -906,10 +837,10 @@ pkg_update() {
 
 _pkg_update_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update -qq ;;
-        dnf) sudo dnf check-update || true ;;  # Returns 100 if updates available
-        pacman) sudo pacman -Sy ;;
-        zypper) sudo zypper refresh ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update -qq ;;
+        dnf) _sudo dnf check-update || true ;;  # Returns 100 if updates available
+        pacman) _sudo pacman -Sy ;;
+        zypper) _sudo zypper refresh ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -923,10 +854,10 @@ pkg_upgrade() {
 
 _pkg_upgrade_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" upgrade -yq ;;
-        dnf) sudo dnf upgrade -y ;;
-        pacman) sudo pacman -Su --noconfirm ;;
-        zypper) sudo zypper update -y ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" upgrade -yq ;;
+        dnf) _sudo dnf upgrade -y ;;
+        pacman) _sudo pacman -Su --noconfirm ;;
+        zypper) _sudo zypper update -y ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -939,22 +870,24 @@ pkg_autoremove() {
 
 _pkg_autoremove_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
-        dnf) sudo dnf autoremove -y ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" autoremove -yq ;;
+        dnf) _sudo dnf autoremove -y ;;
         pacman)
             # Remove orphaned packages if any exist
             local orphans
             orphans=$(pacman -Qdtq 2>/dev/null) || true
             if [[ -n "$orphans" ]]; then
-                echo "$orphans" | sudo pacman -Rs --noconfirm -
+                echo "$orphans" | _sudo pacman -Rs --noconfirm -
             fi
             ;;
         zypper)
-            # zypper doesn't have autoremove; remove unneeded packages if any
+            # zypper doesn't have autoremove; remove unneeded packages individually.
+            # Quote expansion to handle package names containing spaces or odd chars.
             local unneeded
             unneeded=$(zypper packages --unneeded 2>/dev/null | awk -F'|' 'NR>4 && NF>2 {gsub(/^ +| +$/, "", $3); if ($3 != "") print $3}') || true
             if [[ -n "$unneeded" ]]; then
-                sudo zypper remove -y $unneeded
+                # shellcheck disable=SC2086
+                _sudo zypper remove -y $unneeded
             fi
             ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
@@ -969,10 +902,10 @@ pkg_clean() {
 
 _pkg_clean_impl() {
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" clean ;;
-        dnf) sudo dnf clean all ;;
-        pacman) sudo pacman -Sc --noconfirm ;;
-        zypper) sudo zypper clean --all ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" clean ;;
+        dnf) _sudo dnf clean all ;;
+        pacman) _sudo pacman -Sc --noconfirm ;;
+        zypper) _sudo zypper clean --all ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -987,10 +920,10 @@ pkg_install_local() {
 _pkg_install_local_impl() {
     local pkg_path="$1"
     case "$PKG_MANAGER" in
-        apt) sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y "$pkg_path" ;;
-        dnf) sudo dnf install -y "$pkg_path" ;;
-        pacman) sudo pacman -U --noconfirm "$pkg_path" ;;
-        zypper) sudo zypper install -y --allow-unsigned-rpm "$pkg_path" ;;
+        apt) _sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y "$pkg_path" ;;
+        dnf) _sudo dnf install -y "$pkg_path" ;;
+        pacman) _sudo pacman -U --noconfirm "$pkg_path" ;;
+        zypper) _sudo zypper install -y --allow-unsigned-rpm "$pkg_path" ;;
         *) echo "Unsupported package manager: $PKG_MANAGER" >&2; return 1 ;;
     esac
 }
@@ -1006,6 +939,7 @@ pkg_name() {
             case "$apt_name" in
                 build-essential) echo "gcc gcc-c++ make" ;;
                 libinput-dev) echo "libinput-devel" ;;
+                libnss-mdns) echo "nss-mdns" ;;
                 ncdu) echo "ncdu" ;;
                 ninja-build) echo "ninja-build" ;;
                 nvtop) echo "nvtop" ;;
@@ -1022,6 +956,7 @@ pkg_name() {
                 build-essential) echo "base-devel" ;;
                 gh) echo "github-cli" ;;
                 libinput-dev) echo "libinput" ;;
+                libnss-mdns) echo "nss-mdns" ;;
                 ncdu) echo "ncdu" ;;
                 ninja-build) echo "ninja" ;;
                 nvtop) echo "nvtop" ;;
@@ -1038,6 +973,7 @@ pkg_name() {
         zypper)
             case "$apt_name" in
                 build-essential) echo "gcc gcc-c++ make" ;;
+                libnss-mdns) echo "nss-mdns" ;;
                 p7zip-full) echo "p7zip" ;;
                 python3-dev) echo "python3-devel" ;;
                 *) echo "$apt_name" ;;
@@ -1144,7 +1080,7 @@ _get_known_release_url() {
         # btop: {tool}-{arch}.tbz
         btop)
             echo "${base}/v${ver}/${tool}-${arch}.tbz" ;;
-        # shellcheck: {tool}-v{ver}.{arch}.tar.xz
+        # ShellCheck releases: {tool}-v{ver}.{arch}.tar.xz
         shellcheck)
             echo "${base}/v${ver}/${tool}-v${ver}.${arch}.tar.xz" ;;
         # gh: {tool}_{ver}_{arch}.tar.gz
@@ -1210,7 +1146,11 @@ install_github_binary() {
             )
 
             for pattern in "${raw_patterns[@]}"; do
-                if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
+                # Short --max-time to fail fast on non-existent URLs; we
+                # iterate patterns until one returns 200, so per-probe latency
+                # multiplies. Override fetch's default 3 retries via -s and
+                # rely on --max-time as the upper bound.
+                if fetch -fsSL --head --max-time 10 "$pattern" &>/dev/null; then
                     raw_url="$pattern"
                     break
                 fi
@@ -1265,8 +1205,9 @@ install_github_binary() {
         )
 
         for pattern in "${patterns[@]}"; do
-            # Use short timeout for HEAD requests to fail fast on non-existent URLs
-            if curl -fsSL --head --connect-timeout 5 --max-time 10 "$pattern" &>/dev/null; then
+            # Use short --max-time for HEAD requests to fail fast on
+            # non-existent URLs; we iterate many patterns sequentially.
+            if fetch -fsSL --head --max-time 10 "$pattern" &>/dev/null; then
                 archive_url="$pattern"
                 break
             fi
@@ -1331,41 +1272,6 @@ install_github_binary() {
 }
 
 ###############################################################################
-### Persistent Logging
-###############################################################################
-
-LOG_DIR="$HOME/.config/peter-terminal-utils/logs"
-LOG_FILE=""
-
-# Initialize logging - call once at script start
-init_logging() {
-    mkdir -p "$LOG_DIR"
-    LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
-    {
-        echo "=== Installation started at $(date -Iseconds) ==="
-        echo "Distro: $DISTRO $DISTRO_VERSION | Arch: $ARCH | WSL: $(is_wsl && echo yes || echo no)"
-        echo "User: $USER | Home: $HOME"
-        echo "==="
-    } >> "$LOG_FILE"
-}
-
-# Log a message to the log file
-log() {
-    [ -n "$LOG_FILE" ] && echo "[$(date +%H:%M:%S)] $*" >> "$LOG_FILE"
-}
-
-# Log command execution details (called after _exec)
-log_cmd() {
-    if [ -n "$LOG_FILE" ]; then
-        {
-            echo "[$(date +%H:%M:%S)] CMD: $*"
-            echo "  EXIT: $_EXEC_EXIT"
-            [ -n "$_EXEC_ERR" ] && echo "  STDERR: $_EXEC_ERR" | head -5
-        } >> "$LOG_FILE"
-    fi
-}
-
-###############################################################################
 ### Path Helpers
 ###############################################################################
 
@@ -1396,12 +1302,6 @@ script_requires_sudo() {
     local requires
     requires=$(get_script_meta "$script" "requires")
     [[ "$requires" == *"sudo"* ]]
-}
-
-# Check if script can run in parallel
-script_is_parallel() {
-    local script="$1"
-    [[ "$(get_script_meta "$script" "parallel")" == "true" ]]
 }
 
 ###############################################################################

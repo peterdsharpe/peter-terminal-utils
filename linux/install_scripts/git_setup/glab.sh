@@ -3,18 +3,20 @@
 # @description: GitLab's official CLI for managing repos, MRs, and issues
 # @repo: gitlab-org/cli (on GitLab)
 # @depends: bootstrap.sh
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
-# Get latest version from GitLab API (public, no auth required)
+# Get latest version from GitLab API (public, no auth required).
+# `head -c 10000` truncates the response to keep parsing cheap; tag_name is
+# always near the top of the JSON array.
 gitlab_latest_version() {
     local api_resp version
-    api_resp=$(curl -sf --connect-timeout 10 \
-        "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" | head -c 10000) || {
+    api_resp=$(fetch -sf "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" \
+               | head -c 10000) || {
         echo "Failed to fetch GitLab CLI releases from API" >&2
         return 1
     }
-    # Extract first tag_name from JSON array (latest release)
     version=$(echo "$api_resp" | grep -oP '"tag_name"\s*:\s*"v?\K[^"]+' | head -1) || {
         echo "Failed to parse version from GitLab API response" >&2
         return 1
@@ -34,7 +36,7 @@ install_glab_binary() {
     tmpdir=$(mktemp -d) || return 1
     download_url="https://gitlab.com/gitlab-org/cli/-/releases/v${version}/downloads/glab_${version}_linux_${glab_arch}.tar.gz"
 
-    curl -fSL -o "$tmpdir/glab.tar.gz" "$download_url" || {
+    fetch -fSL -o "$tmpdir/glab.tar.gz" "$download_url" || {
         echo "Failed to download glab from $download_url" >&2
         rm -rf "$tmpdir"
         return 1
@@ -66,7 +68,7 @@ install_glab_binary() {
 }
 
 install_glab_snap() {
-    sudo snap install glab
+    sudo -n snap install glab
 }
 
 install_glab() {

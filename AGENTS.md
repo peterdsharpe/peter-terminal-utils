@@ -34,7 +34,7 @@ Every install script must start with metadata comments in the first 10 lines:
 # @depends: bootstrap.sh, other.sh # Optional: comma-separated dependencies
 # @requires: sudo                  # Optional: "sudo" if elevated access needed
 # @locks: pkg                      # Optional: exclusive locks (pkg, gitconfig, fonts)
-# @parallel: true                  # Optional: can run concurrently (default: false)
+# @parallel: false                 # Optional: serialize this script (default: true; opt out for state-mutating scripts)
 # @headless: skip                  # Optional: "skip" to skip in headless/WSL mode
 ```
 

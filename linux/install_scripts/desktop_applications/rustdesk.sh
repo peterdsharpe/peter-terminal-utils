@@ -81,7 +81,7 @@ install_rustdesk() {
     # spawning many subprocesses. Start manually with `rustdesk` when needed.
     if systemctl list-unit-files rustdesk.service &>/dev/null; then
         step "Disabling RustDesk service (start manually when needed)" \
-            sudo systemctl disable --now rustdesk.service
+            sudo -n systemctl disable --now rustdesk.service
     fi
     
     return "$(step_result)"

@@ -7,7 +7,7 @@ standalone_init
 
 install_hf_cli() {
     # Official standalone installer from https://huggingface.co/docs/huggingface_hub/en/guides/cli
-    curl -LsSf https://hf.co/cli/install.sh | bash
+    fetch -LsSf https://hf.co/cli/install.sh | bash
 }
 
 ensure_command "Hugging Face CLI" hf install_hf_cli

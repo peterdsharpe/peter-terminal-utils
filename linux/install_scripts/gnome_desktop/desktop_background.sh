@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Desktop Background
 # @description: Set desktop wallpaper to Thank You image
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

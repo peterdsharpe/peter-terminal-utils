@@ -35,8 +35,8 @@ install_tlp() {
         ppd_status=$(systemctl is-enabled power-profiles-daemon.service 2>/dev/null || echo "not-found")
         if [[ "$ppd_status" != "masked" && "$ppd_status" != "not-found" ]]; then
             step_start "Disabling power-profiles-daemon (conflicts with TLP)"
-            run sudo systemctl stop power-profiles-daemon.service 2>/dev/null || true
-            run sudo systemctl mask power-profiles-daemon.service
+            run sudo -n systemctl stop power-profiles-daemon.service 2>/dev/null || true
+            run sudo -n systemctl mask power-profiles-daemon.service
             step_end
         fi
     fi
@@ -46,15 +46,15 @@ install_tlp() {
     step_end
     
     step_start "Enabling TLP service"
-    run sudo systemctl enable tlp.service
-    run sudo systemctl start tlp.service
+    run sudo -n systemctl enable tlp.service
+    run sudo -n systemctl start tlp.service
     step_end
     
     # On AC, use the performance platform profile so nvidia-powerd allocates
     # the full GPU power budget (without this, the default "balanced" profile
     # can cap laptop GPUs to ~40W even when the hardware supports 115W+).
     step_start "Configuring TLP for max performance on AC"
-    run sudo sed -i 's/^#\?PLATFORM_PROFILE_ON_AC=.*/PLATFORM_PROFILE_ON_AC=performance/' /etc/tlp.conf
+    run sudo -n sed -i 's/^#\?PLATFORM_PROFILE_ON_AC=.*/PLATFORM_PROFILE_ON_AC=performance/' /etc/tlp.conf
     step_end
     
     # Show current status

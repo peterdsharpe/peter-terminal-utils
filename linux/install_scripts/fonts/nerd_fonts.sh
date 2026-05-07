@@ -32,7 +32,7 @@ install_nerd_font() {
     tmpdir=$(mktemp -d) || return 1
     
     step_start "Installing $name"
-    run curl -fL -o "$tmpdir/$archive" "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/$archive"
+    run fetch -fL -o "$tmpdir/$archive" "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/$archive"
     mkdir -p "$FONT_DIR"
     
     case "$archive" in

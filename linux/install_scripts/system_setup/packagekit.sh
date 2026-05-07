@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: PackageKit
 # @description: Disable PackageKit to reduce memory usage (GUI software centers still work on-demand)
+# @depends: bootstrap.sh
 # @requires: sudo
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
@@ -35,11 +36,11 @@ disable_packagekit() {
     step_start "Disabling PackageKit service"
     
     if [[ "$is_enabled" != "disabled" ]]; then
-        run sudo systemctl disable packagekit.service
+        run sudo -n systemctl disable packagekit.service
     fi
     
     if [[ "$is_active" == "active" ]]; then
-        run sudo systemctl stop packagekit.service
+        run sudo -n systemctl stop packagekit.service
     fi
     
     step_end

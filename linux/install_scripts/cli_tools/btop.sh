@@ -3,6 +3,7 @@
 # @description: Resource monitor with NVIDIA GPU support (compiled from source)
 # @repo: aristocratos/btop
 # @depends: bootstrap.sh, build_tools.sh
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
@@ -50,7 +51,7 @@ cd "$tmpdir/btop" || { rm -rf "$tmpdir"; exit 1; }
 run make $MAKE_CC $MAKE_CXX GPU_SUPPORT=true -j"$(nproc)"
 run make PREFIX="$INSTALL_PREFIX" install
 if [[ "${HAS_SUDO:-false}" == true ]]; then
-    run sudo make PREFIX="$INSTALL_PREFIX" setcap
+    run sudo -n make PREFIX="$INSTALL_PREFIX" setcap
 else
     print_warning "Skipping setcap (no sudo) - CPU wattage monitoring will be unavailable"
 fi

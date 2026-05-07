@@ -3,6 +3,7 @@
 # @description: Full Cursor IDE with PeterProfile configuration
 # @depends: bootstrap.sh
 # @headless: skip
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
@@ -29,7 +30,7 @@ get_cursor_info() {
     local platform="linux-x64"
     [[ "$ARCH" == "arm64" ]] && platform="linux-arm64"
     
-    _CURSOR_API_CACHE=$(curl -sL --connect-timeout 30 --max-time 60 \
+    _CURSOR_API_CACHE=$(fetch -sL --max-time 60 \
         "https://cursor.com/api/download?platform=${platform}&releaseTrack=latest" 2>/dev/null)
     echo "$_CURSOR_API_CACHE"
 }
@@ -41,9 +42,10 @@ get_latest_version() {
     echo "$info" | jq -r '.version // empty'
 }
 
-# Get installed version (works for both deb and AppImage)
-get_installed_version() {
-    # Best source: cursor --version returns clean semver (e.g., "2.2.44")
+# Get installed Cursor version (works for both deb and AppImage installs).
+# Named with a _cursor_ prefix to avoid shadowing the generic
+# get_installed_version helper exposed by _common.sh.
+_cursor_installed_version() {
     if command -v cursor &>/dev/null; then
         local cli_version
         cli_version=$(cursor --version 2>/dev/null | head -1)
@@ -52,14 +54,13 @@ get_installed_version() {
             return 0
         fi
     fi
-    
-    # Fallback: AppImage version file
+
     local appimage_version_file="$HOME/.local/share/cursor/.version"
     if [[ -f "$appimage_version_file" ]]; then
         cat "$appimage_version_file"
         return 0
     fi
-    
+
     return 1
 }
 
@@ -85,7 +86,7 @@ install_cursor_appimage() {
     mkdir -p "$install_dir" || return 1
     
     echo "Downloading Cursor $version..."
-    curl -fL --connect-timeout 30 --max-time 3600 --progress-bar \
+    fetch -fL --max-time 3600 --progress-bar \
         "$download_url" -o "$appimage_path" || return 1
     chmod +x "$appimage_path" || return 1
     
@@ -133,7 +134,7 @@ install_cursor_deb() {
     tmp_deb=$(mktemp --suffix=.deb) || return 1
     
     echo "Downloading Cursor $version..."
-    curl -fL --connect-timeout 30 --max-time 3600 --progress-bar \
+    fetch -fL --max-time 3600 --progress-bar \
         "$deb_url" -o "$tmp_deb" || { rm -f "$tmp_deb"; return 1; }
     
     pkg_install_local "$tmp_deb"
@@ -154,7 +155,7 @@ install_cursor_smart() {
 # Check versions and install/update if needed
 check_and_install_cursor() {
     local installed_version latest_version
-    installed_version=$(get_installed_version)
+    installed_version=$(_cursor_installed_version)
     latest_version=$(get_latest_version)
     
     if [[ -z "$latest_version" ]]; then
@@ -582,56 +583,72 @@ fi
 ### Export Extensions (bidirectional sync)
 ###############################################################################
 
-# Export all installed extensions back to extensions.txt
-# This ensures the file stays in sync with what's actually installed
+# Export all installed extensions back to extensions.txt for bidirectional sync.
+# Uses case-insensitive comparison because Cursor's list output mixes cases
+# (publisher casing varies) while extensions.txt may be normalized lowercase.
+# Without case-folding the file would be rewritten on every run.
+#
+# We skip the export when running under the orchestrator (ORCHESTRATED=true)
+# because rewriting a file inside the dotfiles directory dirties the git tree
+# on every install, which is surprising and noisy. Run cursor_ide.sh standalone
+# (or set CURSOR_SYNC_EXTENSIONS=1) to opt in to the writeback.
 export_extensions() {
     if ! command -v cursor &>/dev/null; then
         echo "Cursor CLI not available, skipping extension export"
         return 0
     fi
-    
+
     local installed
-    installed=$(cursor --profile "$PROFILE_NAME" --list-extensions 2>/dev/null | sort -f)
-    
+    installed=$(cursor --profile "$PROFILE_NAME" --list-extensions 2>/dev/null \
+                | tr '[:upper:]' '[:lower:]' \
+                | sort -u)
+
     if [[ -z "$installed" ]]; then
         echo "No extensions installed or failed to query"
         return 0
     fi
-    
+
     local count
     count=$(echo "$installed" | wc -l)
-    
-    # Check if file would change
+
     if [[ -f "$EXTENSIONS_FILE" ]]; then
         local current
-        current=$(sort -f "$EXTENSIONS_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#')
+        current=$(grep -v '^[[:space:]]*$' "$EXTENSIONS_FILE" \
+                  | grep -v '^[[:space:]]*#' \
+                  | tr '[:upper:]' '[:lower:]' \
+                  | sort -u)
         if [[ "$installed" == "$current" ]]; then
             echo "extensions.txt already up to date ($count extensions)"
             return 0
         fi
     fi
-    
-    # Write the new file
+
+    if [[ "${ORCHESTRATED:-}" == "true" && "${CURSOR_SYNC_EXTENSIONS:-}" != "1" ]]; then
+        echo "extensions.txt would change ($count extensions); skipping writeback in orchestrated mode."
+        echo "Run cursor_ide.sh standalone or set CURSOR_SYNC_EXTENSIONS=1 to update the file."
+        return 0
+    fi
+
     echo "$installed" > "$EXTENSIONS_FILE"
     echo "Exported $count extensions to extensions.txt"
 }
 
-# Always export after install to keep extensions.txt in sync
 step "Syncing extensions.txt" export_extensions
 
 ###############################################################################
 ### Generate Portable Profile Export
 ###############################################################################
 
-# Generate PeterProfile.code-profile from source files
-# This creates a portable export that can be imported via Cursor's UI
+# Generate PeterProfile.code-profile from source files. The output lives in
+# the dotfiles directory, so we only rebuild it when the result would actually
+# differ from what's already on disk - and we skip entirely under the
+# orchestrator unless explicitly requested. This keeps `git status` clean.
 generate_code_profile() {
     local src_dir="$CURSOR_CONFIG_SRC/$PROFILE_NAME"
     local output_file="$CURSOR_CONFIG_SRC/PeterProfile.code-profile"
     local settings_file="$src_dir/settings.json"
     local keybindings_file="$src_dir/keybindings.json"
-    
-    # Verify source files exist
+
     if [[ ! -f "$settings_file" ]]; then
         echo "Settings file not found: $settings_file"
         return 1
@@ -640,20 +657,17 @@ generate_code_profile() {
         echo "Keybindings file not found: $keybindings_file"
         return 1
     fi
-    
+
     # Build extensions array from installed extensions
     local extensions_array="[]"
     local extensions_dir="$HOME/.cursor/extensions"
-    
+
     if [[ -d "$extensions_dir" ]]; then
-        # Build array from extension package.json files
         extensions_array=$(
             for ext_dir in "$extensions_dir"/*/; do
                 [[ -d "$ext_dir" ]] || continue
                 local pkg="$ext_dir/package.json"
                 [[ -f "$pkg" ]] || continue
-                
-                # Extract extension ID and display name
                 jq -c '{
                     identifier: {id: "\(.publisher).\(.name)"},
                     displayName: .displayName,
@@ -662,16 +676,15 @@ generate_code_profile() {
             done | jq -s 'unique_by(.identifier.id) | sort_by(.identifier.id)'
         ) || extensions_array="[]"
     fi
-    
+
     # Build settings/keybindings in the .code-profile format:
     # Outer JSON has .settings as a string, that string contains {"settings":"<content>"}
-    # Process: read raw -> wrap in object -> stringify (gives correct escaping levels)
     local settings_inner keybindings_inner
     settings_inner=$(jq -Rsc '{settings: .} | tojson' "$settings_file") || return 1
     keybindings_inner=$(jq -Rsc '{keybindings: .} | tojson' "$keybindings_file") || return 1
-    
-    # Build the complete profile JSON
-    jq -cn \
+
+    local new_profile
+    new_profile=$(jq -cn \
         --arg name "$PROFILE_NAME" \
         --arg icon "rocket" \
         --argjson settings "$settings_inner" \
@@ -684,8 +697,20 @@ generate_code_profile() {
             keybindings: $keybindings,
             extensions: ($extensions | tojson),
             globalState: "{}"
-        }' > "$output_file" || return 1
-    
+        }') || return 1
+
+    if [[ -f "$output_file" ]] && [[ "$new_profile" == "$(cat "$output_file")" ]]; then
+        echo "PeterProfile.code-profile already up to date"
+        return 0
+    fi
+
+    if [[ "${ORCHESTRATED:-}" == "true" && "${CURSOR_SYNC_EXTENSIONS:-}" != "1" ]]; then
+        echo "PeterProfile.code-profile would change; skipping writeback in orchestrated mode."
+        echo "Run cursor_ide.sh standalone or set CURSOR_SYNC_EXTENSIONS=1 to update the file."
+        return 0
+    fi
+
+    printf '%s\n' "$new_profile" > "$output_file"
     local ext_count
     ext_count=$(echo "$extensions_array" | jq 'length')
     echo "Generated PeterProfile.code-profile with $ext_count extensions"

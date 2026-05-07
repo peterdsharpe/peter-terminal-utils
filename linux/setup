@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import concurrent.futures
+import contextlib
 import curses
 import json
 import math
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from itertools import batched, chain
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple, Self, cast
+from typing import Any, Callable, Literal, NamedTuple, Self, cast
 
 # Type aliases for literal values
 SectionState = Literal["all", "none", "partial"]
@@ -93,6 +94,12 @@ CONTROL_CHARS = str.maketrans(
 ###############################################################################
 
 
+### Config loading is wrapped in a try/except so that a missing or malformed
+### config.toml does not crash `--help`, `--list`, or other read-only modes
+### before main() runs. If loading fails we fall back to inert defaults and
+### print a warning the first time a consumer needs the config.
+
+
 def load_config(config_path: Path) -> dict:
     """Load configuration from TOML file.
 
@@ -108,12 +115,24 @@ def get_config_path() -> Path:
     return Path(__file__).parent / "config.toml"
 
 
-# Load configuration at module level
-_CONFIG = load_config(get_config_path())
+_FALLBACK_CONFIG: dict = {
+    "user": {"git_name": "", "git_email": ""},
+    "presets": {},
+}
 
-# User defaults from config
-DEFAULT_GIT_NAME = _CONFIG["user"]["git_name"]
-DEFAULT_GIT_EMAIL = _CONFIG["user"]["git_email"]
+try:
+    _CONFIG = load_config(get_config_path())
+except (FileNotFoundError, tomllib.TOMLDecodeError, OSError) as _config_err:
+    print(
+        f"warning: could not load {get_config_path()}: "
+        f"{type(_config_err).__name__}: {_config_err}",
+        file=sys.stderr,
+    )
+    _CONFIG = _FALLBACK_CONFIG
+
+# User defaults from config (may be empty if config failed to load)
+DEFAULT_GIT_NAME = _CONFIG.get("user", {}).get("git_name", "")
+DEFAULT_GIT_EMAIL = _CONFIG.get("user", {}).get("git_email", "")
 
 
 def strip_ansi(text: str) -> str:
@@ -659,8 +678,18 @@ class Manifest:
                         Script(name=script_name, path=script_path, metadata=metadata)
                     )
 
-        # Build dependency graph after all scripts are loaded
-        manifest.dep_graph = DependencyGraph.from_manifest(manifest)
+        # Build dependency graph after all scripts are loaded. A circular
+        # @depends declaration is a configuration bug we can't reasonably
+        # work around at runtime; surface it loudly and exit.
+        try:
+            manifest.dep_graph = DependencyGraph.from_manifest(manifest)
+        except CircularDependencyError as exc:
+            print(
+                f"error: invalid manifest dependency graph: {exc}\n"
+                "Fix the @depends header(s) listed above and re-run.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
 
         return manifest
 
@@ -813,6 +842,10 @@ class Manifest:
         return errors
 
 
+class CircularDependencyError(Exception):
+    """A cycle was detected in @depends declarations."""
+
+
 @dataclass
 class DependencyGraph:
     """DAG for computing transitive script dependencies with order validation.
@@ -836,25 +869,41 @@ class DependencyGraph:
                 graph.script_order[script.name] = idx
                 idx += 1
 
-        # Pre-compute all transitive dependencies
+        # Pre-compute all transitive dependencies. _compute_transitive raises
+        # CircularDependencyError if it detects a cycle reachable from `name`,
+        # which we surface up so callers can show a clear error rather than
+        # quietly producing an incomplete dependency set.
         for name in graph.adj:
             graph.transitive[name] = graph._compute_transitive(name)
 
         return graph
 
     def _compute_transitive(self, name: str) -> set[str]:
-        """Compute all transitive dependencies for a script via DFS."""
+        """Compute all transitive dependencies for a script via DFS.
+
+        Raises:
+            CircularDependencyError: If a cycle is reachable from ``name``.
+                The exception message lists the participating scripts so the
+                user can fix their @depends headers.
+        """
         result: set[str] = set()
         visiting: set[str] = set()
+        stack: list[str] = []
 
         def dfs(current: str) -> None:
             if current in visiting:
-                return  # Cycle - skip
+                cycle_start = stack.index(current)
+                cycle = stack[cycle_start:] + [current]
+                raise CircularDependencyError(
+                    f"circular @depends chain: {' -> '.join(cycle)}",
+                )
             visiting.add(current)
+            stack.append(current)
             for dep in self.adj.get(current, []):
                 result.add(dep)
                 dfs(dep)
             visiting.remove(current)
+            stack.pop()
 
         dfs(name)
         return result
@@ -1242,6 +1291,51 @@ class InstallLogger:
 ###############################################################################
 
 
+class ActiveProcessRegistry:
+    """Thread-safe registry of running script subprocesses.
+
+    The orchestrator can spawn many bash children (one per parallel script).
+    On KeyboardInterrupt or [q] Quit during execution we need to actually
+    stop them, not just mark their TUI rows as SKIPPED. This registry lets
+    the scheduler signal every active child with a single call.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._procs: dict[int, subprocess.Popen[Any]] = {}
+
+    def register(self, proc: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._procs[id(proc)] = proc
+
+    def unregister(self, proc: subprocess.Popen[Any]) -> None:
+        with self._lock:
+            self._procs.pop(id(proc), None)
+
+    def terminate_all(self, *, grace_seconds: float = 2.0) -> None:
+        """Send SIGTERM to every active process; SIGKILL any survivors.
+
+        Best-effort: we don't raise if a process has already exited or if
+        we lack permission. Returns when all processes have either exited
+        or been killed.
+        """
+        with self._lock:
+            procs = list(self._procs.values())
+        for proc in procs:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.terminate()
+        deadline = time.monotonic() + grace_seconds
+        for proc in procs:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.wait(timeout=1.0)
+
+
 def run_scripts_parallel(
     statuses: list["ScriptStatus"],
     manifest: Manifest,
@@ -1253,6 +1347,7 @@ def run_scripts_parallel(
     run_silent: Callable[["ScriptStatus"], bool],
     on_update: Callable[[], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    process_registry: ActiveProcessRegistry | None = None,
 ) -> tuple[int, int]:
     """Run scripts with dependency-aware parallelism.
 
@@ -1283,7 +1378,13 @@ def run_scripts_parallel(
     max_workers = min((os.cpu_count() or 4) * 2, 16)
     scheduler = ParallelScheduler(statuses, max_workers)
 
-    # Pre-populate completed sets with disabled scripts (assumed already run)
+    # Pre-populate completed sets with disabled scripts. Design choice: a
+    # disabled dependency is treated as already satisfied. The user has
+    # explicitly opted out of that script (presumably because it's already
+    # installed or they don't want it), so we trust them rather than refusing
+    # to run dependents. The trade-off: a user who disables `bootstrap.sh`
+    # without ever having run it will see dependent scripts try and fail at
+    # runtime instead of being warned upfront.
     for section in manifest.sections:
         for script in section.scripts:
             if not script.enabled:
@@ -1295,12 +1396,17 @@ def run_scripts_parallel(
             futures: dict[concurrent.futures.Future[bool], ScriptStatus] = {}
 
             while True:
-                # Check cancellation
+                # Check cancellation. When cancelled mid-run we mark pending
+                # scripts as skipped and ask the registry to stop running
+                # children; the futures collected below will then complete
+                # quickly (with non-zero exit codes) and we exit the loop.
                 if is_cancelled is not None and is_cancelled():
                     for status in statuses:
                         if status.state == ScriptState.PENDING:
                             status.state = ScriptState.SKIPPED
                             logger.append_result(status)
+                    if process_registry is not None:
+                        process_registry.terminate_all()
                     break
 
                 # Find scripts ready to start
@@ -1386,7 +1492,11 @@ def run_scripts_parallel(
                     on_update()
 
     except KeyboardInterrupt:
-        # Mark remaining as skipped
+        # Stop running children before marking SKIPPED so the bash
+        # subprocesses don't keep running in the background after the TUI
+        # tells the user "skipped".
+        if process_registry is not None:
+            process_registry.terminate_all()
         for status in statuses:
             if status.state in (ScriptState.PENDING, ScriptState.RUNNING):
                 status.state = ScriptState.SKIPPED
@@ -1423,21 +1533,44 @@ class SudoKeepalive:
         self._thread: threading.Thread | None = None
 
     def _keepalive_loop(self) -> None:
-        """Background thread: refresh sudo credentials periodically."""
+        """Background thread: refresh sudo credentials periodically.
+
+        Uses ``sudo -n -v`` so a stale credential never causes sudo to grab
+        ``/dev/tty`` and prompt the user behind the curses TUI. A single
+        transient failure (e.g., timeout under load, brief flock contention)
+        does not terminate the loop - we keep trying every ``interval``
+        seconds. If refresh has been failing for multiple consecutive cycles
+        we surface a warning so the user knows their credentials may expire.
+        """
+        consecutive_failures = 0
         while not self._stop_event.wait(self.interval):
             try:
-                # Refresh sudo timestamp without running a command
-                # Use short timeout to avoid blocking if sudo is broken
-                subprocess.run(
-                    ["sudo", "-v"],
+                result = subprocess.run(
+                    ["sudo", "-n", "-v"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=5,
+                    timeout=10,
                 )
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                # sudo not available or timed out - stop trying
-                break
+                if result.returncode == 0:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+            except (subprocess.TimeoutExpired, OSError):
+                consecutive_failures += 1
+            except FileNotFoundError:
+                # sudo binary missing; nothing further we can do
+                return
+            # After ~3 consecutive misses, the timestamp is at risk of expiring.
+            # We can't print to the curses TUI, but we can hint via stderr that
+            # subsequent sudo calls in install scripts may block. Worker
+            # subprocesses redirect their own stderr so this only surfaces if
+            # something is actively reading the orchestrator's stderr.
+            if consecutive_failures == 3:
+                sys.stderr.write(
+                    "warning: sudo credential refresh failing; "
+                    "scripts using sudo may need re-authentication\n",
+                )
 
     def start(self) -> None:
         """Start the keepalive background thread."""
@@ -1634,15 +1767,6 @@ def build_help_content(
             lines.append(note)
 
     return lines
-
-
-def make_title_bar(title: str, width: int) -> str:
-    """Create a centered title bar with ═ borders.
-
-    Example: "══════ My Title ══════" (padded to width).
-    """
-    padding = (width - len(title) - 2) // 2
-    return BOX_DH * padding + title + BOX_DH * (width - padding - len(title) - 2)
 
 
 def make_panel_header(label: str, width: int, right_label: str = "") -> str:
@@ -3794,6 +3918,11 @@ class ExecutionTUI(BaseTUI):
     start_time: float = field(default_factory=time.monotonic, init=False)
     end_time: float | None = field(default=None, init=False)
     _logger: InstallLogger | None = field(default=None, init=False)
+    # Tracks live subprocess.Popen instances so we can SIGTERM them when the
+    # user cancels mid-run instead of leaving zombie bash children.
+    _proc_registry: ActiveProcessRegistry = field(
+        default_factory=ActiveProcessRegistry, init=False,
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -3922,8 +4051,10 @@ class ExecutionTUI(BaseTUI):
             elif quit_start != -1 and quit_start <= line_x < quit_start + len(
                 "[q] Quit"
             ):
-                # Signal to quit (handled in run loop via self.quit_requested)
+                # Quit also cancels active execution. The keyboard 'q' handler
+                # below sets the same flags.
                 self.quit_requested = True
+                self.cancelled = True
                 return
             return
 
@@ -4057,7 +4188,12 @@ class ExecutionTUI(BaseTUI):
             self.following = not self.following
             if self.following:
                 self.viewing_idx = self.running_idx
-        # Note: 'q' is handled in the run() loop, not here
+        elif key == ord("q"):
+            # Cancel active execution. The scheduler polls is_cancelled() each
+            # iteration and will terminate running children. The post-run
+            # browse loop at the bottom of run() also honors quit_requested.
+            self.quit_requested = True
+            self.cancelled = True
 
     def _poll_input(self) -> None:
         """Poll for and handle any pending keyboard input (non-blocking).
@@ -4729,12 +4865,14 @@ class ExecutionTUI(BaseTUI):
                     text=True,
                     bufsize=1,  # Line buffered
                 )
-
-                # Read output incrementally (thread-safe append to list)
-                if process.stdout is not None:
-                    for line in process.stdout:
-                        status.output.append(line.rstrip())
-                process.wait()
+                self._proc_registry.register(process)
+                try:
+                    if process.stdout is not None:
+                        for line in process.stdout:
+                            status.output.append(line.rstrip())
+                    process.wait()
+                finally:
+                    self._proc_registry.unregister(process)
 
                 status.exit_code = process.returncode
             else:
@@ -4749,6 +4887,7 @@ class ExecutionTUI(BaseTUI):
                     cwd=self.scripts_dir.parent,
                 )
                 os.close(slave_fd)
+                self._proc_registry.register(process)
 
                 # Enable non-blocking keyboard input with short timeout for escape sequences
                 self.stdscr.timeout(15)  # 15ms allows arrow key sequences to be read
@@ -4798,6 +4937,7 @@ class ExecutionTUI(BaseTUI):
 
                 os.close(master_fd)
                 self.stdscr.timeout(-1)  # Restore blocking input
+                self._proc_registry.unregister(process)
                 status.exit_code = process.returncode
 
             # Update state based on exit code
@@ -4865,8 +5005,14 @@ class ExecutionTUI(BaseTUI):
             self.draw()
 
         def is_cancelled() -> bool:
-            """Check if user cancelled execution."""
-            return self.cancelled
+            """Check if user cancelled execution.
+
+            Either the explicit `cancelled` flag (set by [q] handlers below)
+            or `quit_requested` (set by mouse on the [q] Quit footer button)
+            counts as cancellation. The scheduler will SIGTERM running children
+            and skip remaining ones.
+            """
+            return self.cancelled or self.quit_requested
 
         # Run the parallel scheduler with sudo keepalive
         with SudoKeepalive():
@@ -4880,6 +5026,7 @@ class ExecutionTUI(BaseTUI):
                 run_silent=run_silent,
                 on_update=on_update,
                 is_cancelled=is_cancelled,
+                process_registry=self._proc_registry,
             )
 
         # Freeze elapsed time at completion and write log summary

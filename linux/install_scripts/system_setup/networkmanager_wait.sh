@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: NetworkManager Wait Online
 # @description: Disable wait-online service to speed up desktop boot
+# @depends: bootstrap.sh
 # @requires: sudo
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -33,7 +34,7 @@ disable_networkmanager_wait() {
         return 0
     fi
     
-    step "Disabling NetworkManager-wait-online" sudo systemctl disable "$service"
+    step "Disabling NetworkManager-wait-online" sudo -n systemctl disable "$service"
 }
 
 require_sudo "NetworkManager-wait-online" disable_networkmanager_wait

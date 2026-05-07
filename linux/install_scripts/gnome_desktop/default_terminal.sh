@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Default Terminal
 # @description: Set Ptyxis as default terminal system-wide
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

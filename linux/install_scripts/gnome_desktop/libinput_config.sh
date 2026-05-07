@@ -56,12 +56,12 @@ tmpdir=$(mktemp -d)
 run git clone --depth 1 https://gitlab.com/warningnonpotablewater/libinput-config.git "$tmpdir/libinput-config"
 run meson setup "$tmpdir/libinput-config/build" "$tmpdir/libinput-config"
 run ninja -C "$tmpdir/libinput-config/build"
-run sudo ninja -C "$tmpdir/libinput-config/build" install
+run sudo -n ninja -C "$tmpdir/libinput-config/build" install
 run rm -rf "$tmpdir"
 step_end
 
 # Configure scroll factor
-step "Setting scroll-factor=$SCROLL_FACTOR" bash -c "echo 'scroll-factor=$SCROLL_FACTOR' | sudo tee /etc/libinput.conf"
+step "Setting scroll-factor=$SCROLL_FACTOR" bash -c "echo 'scroll-factor=$SCROLL_FACTOR' | sudo -n tee /etc/libinput.conf"
 
 # Find installed library (meson installs to architecture-specific paths)
 LIBINPUT_CONFIG_SO=$(find_libinput_config_so)
@@ -73,7 +73,7 @@ fi
 
 # Ensure ld.so.preload entry exists (idempotent)
 if ! grep -q "$LIBINPUT_CONFIG_SO" /etc/ld.so.preload 2>/dev/null; then
-    step "Adding to /etc/ld.so.preload" bash -c "echo '$LIBINPUT_CONFIG_SO' | sudo tee -a /etc/ld.so.preload"
+    step "Adding to /etc/ld.so.preload" bash -c "echo '$LIBINPUT_CONFIG_SO' | sudo -n tee -a /etc/ld.so.preload"
 else
     print_skip "/etc/ld.so.preload already configured"
 fi

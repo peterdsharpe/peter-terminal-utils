@@ -19,7 +19,7 @@ install_neovim() {
     esac
     mkdir -p "$HOME/local" || return 1
     tmpdir=$(mktemp -d) || return 1
-    curl -fSL -o "$tmpdir/nvim.tar.gz" "https://github.com/$REPO/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
+    fetch -fSL -o "$tmpdir/nvim.tar.gz" "https://github.com/$REPO/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
     tar xf "$tmpdir/nvim.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
     rm -rf "$HOME/local/nvim"
     mv "$tmpdir/$nvim_dir" "$HOME/local/nvim" || { rm -rf "$tmpdir"; return 1; }

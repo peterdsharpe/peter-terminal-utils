@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Signal Desktop
 # @description: Encrypted messaging app via Snap
+# @depends: bootstrap.sh
 # @requires: sudo
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
@@ -22,7 +23,7 @@ fi
 
 # Install via Snap (requires sudo)
 install_signal() {
-    step "Installing Signal Desktop via Snap" sudo snap install signal-desktop
+    step "Installing Signal Desktop via Snap" sudo -n snap install signal-desktop
 }
 
 require_sudo "Signal Desktop" install_signal

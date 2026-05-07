@@ -8,11 +8,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
 install_utilities() {
+    # NOTE: cloc is installed from GitHub releases in cli_tools/cloc.sh (newer
+    # version, single canonical install location). Don't add it here too.
     local packages=(
         # CLI utilities
         tree         # Directory tree view
         ncdu         # Disk usage analyzer
-        cloc         # Count lines of code
         pv           # Pipe viewer (progress bars)
         # System monitoring (btop installed from GitHub in cli_tools/)
         nvtop        # GPU monitor

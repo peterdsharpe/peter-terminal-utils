@@ -10,7 +10,7 @@ install_nodejs() {
     case "$PKG_MANAGER" in
         apt)
             # NodeSource LTS repo for Debian/Ubuntu
-            fetch -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+            fetch -fsSL https://deb.nodesource.com/setup_lts.x | sudo -n -E bash -
             pkg_install nodejs
             ;;
         dnf)
@@ -36,7 +36,25 @@ else
     print_skip "Node.js already installed ($(node -v))"
 fi
 
-# Ensure npm is up to date
+### Keep npm current, but only when there's actually a newer version available.
+### `sudo npm install -g npm@latest` makes a network round-trip and rebuilds
+### symlinks every run; skipping it when versions match saves seconds and
+### avoids needless sudo invocations on repeat orchestrator passes.
+update_npm_if_needed() {
+    local installed latest
+    installed=$(npm -v 2>/dev/null) || return 1
+    latest=$(npm view npm version 2>/dev/null) || {
+        print_warning "Cannot reach npm registry; skipping npm self-update"
+        return 0
+    }
+    semver_compare "$installed" "$latest"
+    case $? in
+        0) print_skip "npm at latest ($installed)" ;;
+        2) print_skip "npm newer than registry ($installed > $latest)" ;;
+        1) step "Updating npm $installed -> $latest" sudo -n npm install -g npm@latest ;;
+    esac
+}
+
 if command -v npm &>/dev/null; then
-    step "Updating npm to latest version" sudo npm install -g npm@latest
+    update_npm_if_needed
 fi

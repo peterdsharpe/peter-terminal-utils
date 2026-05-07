@@ -17,7 +17,7 @@ install_zsh_from_source() {
     
     # Fetch latest version from zsh.org
     local version tmpdir oldpwd
-    version=$(curl -sL https://www.zsh.org/pub/ \
+    version=$(fetch -sL https://www.zsh.org/pub/ \
         | grep -oP 'zsh-\K[0-9]+\.[0-9]+(\.[0-9]+)?(?=\.tar\.xz")' \
         | sort -V | tail -1) || return 1
     [ -n "$version" ] || { echo "Could not determine latest zsh version" >&2; return 1; }
@@ -25,7 +25,7 @@ install_zsh_from_source() {
     # Download and extract to tmpdir
     tmpdir=$(mktemp -d) || return 1
     echo "Building zsh $version in $tmpdir ..."
-    curl -Lo "$tmpdir/zsh.tar.xz" "https://www.zsh.org/pub/zsh-${version}.tar.xz" || { rm -rf "$tmpdir"; return 1; }
+    fetch -fLo "$tmpdir/zsh.tar.xz" "https://www.zsh.org/pub/zsh-${version}.tar.xz" || { rm -rf "$tmpdir"; return 1; }
     tar xf "$tmpdir/zsh.tar.xz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
     
     # Configure, build, install to ~/local

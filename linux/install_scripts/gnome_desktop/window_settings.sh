@@ -1,6 +1,7 @@
 #!/bin/bash
 # @name: Window Settings
 # @description: Mutter window management preferences
+# @depends: bootstrap.sh
 # @headless: skip
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init

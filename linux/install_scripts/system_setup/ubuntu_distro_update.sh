@@ -1,7 +1,9 @@
 #!/bin/bash
 # @name: Ubuntu Distro Update
 # @description: Check for pending Ubuntu distribution upgrades (e.g., 22.04 to 24.04)
+# @depends: bootstrap.sh
 # @requires: sudo
+# @locks: pkg
 source "$(dirname "${BASH_SOURCE[0]}")/../../_common.sh"
 standalone_init
 
@@ -41,10 +43,11 @@ check_distro_upgrade() {
 
     step_start "Checking for Ubuntu distribution upgrades"
 
-    # Run do-release-upgrade in check mode
-    # Capture both stdout and the exit behavior
+    # do-release-upgrade -c needs root to read the upgrader configuration
+    # reliably; without sudo it sometimes returns "no new release" even when
+    # one exists.
     local check_output
-    check_output=$(do-release-upgrade -c 2>&1) || true
+    check_output=$(sudo -n do-release-upgrade -c 2>&1) || true
 
     step_end
 

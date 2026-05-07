@@ -2,7 +2,8 @@
 [
     {
         "key": "ctrl+r",
-        "command": "language-julia.executeActiveFile"
+        "command": "language-julia.executeActiveFile",
+        "when": "editorLangId == 'julia'"
     },
     {
         "key": "shift+alt+e",
@@ -24,7 +25,8 @@
     },
     {
         "key": "ctrl+r",
-        "command": "jupyter.runFileInteractive"
+        "command": "jupyter.runFileInteractive",
+        "when": "editorLangId == 'python'"
     },
     {
         "key": "ctrl+shift+r",
