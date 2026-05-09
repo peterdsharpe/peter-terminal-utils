@@ -53,3 +53,45 @@ setup_p10k() {
 }
 step "Symlinking Powerlevel10k config" setup_p10k
 
+### Symlink Cursor skills from dotfiles into ~/.cursor/skills/
+CURSOR_SKILLS_SRC="$LINUX_DIR/dotfiles/cursor-skills"
+CURSOR_SKILLS_DEST="$HOME/.cursor/skills"
+
+cursor_skills_correct() {
+    [[ ! -d "$CURSOR_SKILLS_SRC" ]] && return 0
+    for skill_dir in "$CURSOR_SKILLS_SRC"/*/; do
+        [[ -d "$skill_dir" ]] || continue
+        local name dest
+        name=$(basename "$skill_dir")
+        dest="$CURSOR_SKILLS_DEST/$name"
+        [[ -L "$dest" ]] || return 1
+        local current_target expected_target
+        current_target=$(readlink -f "$dest")
+        expected_target=$(readlink -f "$skill_dir")
+        [[ "$current_target" == "$expected_target" ]] || return 1
+    done
+    return 0
+}
+
+setup_cursor_skills() {
+    mkdir -p "$CURSOR_SKILLS_DEST"
+    for skill_dir in "$CURSOR_SKILLS_SRC"/*/; do
+        [[ -d "$skill_dir" ]] || continue
+        local name dest
+        name=$(basename "$skill_dir")
+        dest="$CURSOR_SKILLS_DEST/$name"
+        if [[ -d "$dest" ]] && [[ ! -L "$dest" ]]; then
+            mv "$dest" "$dest.backup.$(/usr/bin/date +%Y%m%d_%H%M%S)"
+        fi
+        ln -sfn "$skill_dir" "$dest"
+    done
+}
+
+if [[ -d "$CURSOR_SKILLS_SRC" ]]; then
+    if cursor_skills_correct; then
+        print_skip "Cursor skills already symlinked"
+    else
+        step "Symlinking Cursor skills" setup_cursor_skills
+    fi
+fi
+
