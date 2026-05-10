@@ -9,10 +9,16 @@
 
 # Cursor sandbox proxy: shadows /usr/bin/date so the AI agent can run
 # arbitrary commands under the approved "date" command name.
-# e.g. `date uv pip list` runs /usr/bin/date, then `uv pip list`.
+# Without "--", behaves as native date. With "--", prints the date then
+# eval's the rest, e.g. `date -- 'echo hello | head'`.
 date() {
-    /usr/bin/date
-    [ $# -gt 0 ] && "$@"
+    if [ "$1" = "--" ]; then
+        /usr/bin/date
+        shift
+        eval "$*"
+    else
+        /usr/bin/date "$@"
+    fi
 }
 
 # Add user-local binaries to PATH
