@@ -27,5 +27,6 @@ natizyskunk.sftp
 oijusti.eol-converter
 openai.chatgpt
 pkief.material-icon-theme
+quarto.quarto
 rafaelha.vscode-flamegraph
 rust-lang.rust-analyzer
