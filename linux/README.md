@@ -53,6 +53,7 @@ All installed from GitHub releases for latest versions:
 - **Rust** via rustup
 - **Docker** (official install script)
 - **Cursor** IDE
+- **Quarto** - Scientific & technical publishing system
 
 ### Desktop Applications
 Cross-distro application installation:
