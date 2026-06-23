@@ -8,27 +8,10 @@ standalone_init
 
 REPO="neovim/neovim"
 
-# Neovim installs to ~/local/nvim with symlink to ~/.local/bin/nvim
-# (custom install path, can't use ensure_github_tool)
-install_neovim() {
-    local version nvim_arch nvim_dir tmpdir
-    version=$(github_latest_version "$REPO") || return 1
-    case "$ARCH" in
-        x86_64) nvim_arch="x86_64"; nvim_dir="nvim-linux-x86_64" ;;
-        arm64) nvim_arch="arm64"; nvim_dir="nvim-linux-arm64" ;;
-    esac
-    mkdir -p "$HOME/local" || return 1
-    tmpdir=$(mktemp -d) || return 1
-    fetch -fSL -o "$tmpdir/nvim.tar.gz" "https://github.com/$REPO/releases/download/v${version}/nvim-linux-${nvim_arch}.tar.gz" || { rm -rf "$tmpdir"; return 1; }
-    tar xf "$tmpdir/nvim.tar.gz" -C "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$HOME/local/nvim"
-    mv "$tmpdir/$nvim_dir" "$HOME/local/nvim" || { rm -rf "$tmpdir"; return 1; }
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HOME/local/nvim/bin/nvim" "$HOME/.local/bin/nvim" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
-}
-
-# Check version and install/update if needed
+# Neovim ships as a directory tree (bin/nvim + share/nvim/runtime) that must
+# stay together, so it uses install_github_tree rather than ensure_github_tool.
+# Neovim's release naming uses $ARCH (x86_64|arm64) verbatim.
 needs_github_update "$REPO" "neovim" "nvim" || exit 0
-step "Installing neovim" install_neovim
-
+version=$(github_latest_version "$REPO") || exit 1
+step "Installing neovim" install_github_tree "nvim" \
+    "https://github.com/$REPO/releases/download/v${version}/nvim-linux-${ARCH}.tar.gz" "bin/nvim"

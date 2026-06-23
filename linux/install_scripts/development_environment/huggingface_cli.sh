@@ -13,6 +13,4 @@ install_hf_cli() {
 ensure_command "Hugging Face CLI" hf install_hf_cli
 
 # Remind user to authenticate if not already logged in
-if command -v hf &>/dev/null && ! hf auth whoami &>/dev/null 2>&1; then
-    print_info "Run 'hf auth login' to authenticate with Hugging Face Hub"
-fi
+auth_reminder hf "auth whoami" "Run 'hf auth login' to authenticate with Hugging Face Hub"

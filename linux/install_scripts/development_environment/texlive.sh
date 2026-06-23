@@ -8,18 +8,10 @@ standalone_init
 # See: https://www.tug.org/texlive/quickinstall.html
 
 install_texlive() {
-    # Map repo ARCH ($ARCH is normalized to x86_64 or arm64 in _common.sh) to
-    # TeX Live's installer profile syntax. Fail fast on unknown architectures
-    # rather than silently installing the wrong binaries.
+    # TeX Live's installer profile uses GNU-triple arch naming (x86_64 / aarch64).
+    # $ARCH is pre-validated to x86_64|arm64 in _common.sh.
     local binary_arch
-    case "$ARCH" in
-        x86_64) binary_arch="binary_x86_64-linux" ;;
-        arm64)  binary_arch="binary_aarch64-linux" ;;
-        *)
-            print_error "TeX Live: unsupported architecture '$ARCH' (expected x86_64 or arm64)"
-            return 1
-            ;;
-    esac
+    binary_arch="binary_$(arch_gnu)-linux"
 
     local tmpdir
     tmpdir=$(mktemp -d) || return 1

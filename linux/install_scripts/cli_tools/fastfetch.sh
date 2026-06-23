@@ -8,7 +8,10 @@ standalone_init
 
 REPO="fastfetch-cli/fastfetch"
 
-# fastfetch has non-standard archive structure: fastfetch-{arch}/usr/bin/fastfetch
+# fastfetch nests the binary at fastfetch-{arch}/usr/bin/fastfetch behind a
+# non-probable URL, so it keeps a custom installer (can't use ensure_github_tool).
+# Its arch dialect (amd64 / aarch64) matches neither arch_deb nor arch_gnu, so
+# the mapping stays inline here.
 install_fastfetch() {
     local version arch_suffix tarball_url tmpdir
 
@@ -17,7 +20,6 @@ install_fastfetch() {
     case "$ARCH" in
         x86_64) arch_suffix="linux-amd64" ;;
         arm64)  arch_suffix="linux-aarch64" ;;
-        *)      echo "Unsupported architecture: $ARCH" >&2; return 1 ;;
     esac
 
     tarball_url="https://github.com/$REPO/releases/download/${version}/fastfetch-${arch_suffix}.tar.gz"
@@ -32,22 +34,6 @@ install_fastfetch() {
     install -m 755 "$tmpdir/fastfetch-${arch_suffix}/usr/bin/fastfetch" "$HOME/.local/bin/fastfetch"
 }
 
-# Version-aware install: check if update needed
-if command -v fastfetch &>/dev/null; then
-    installed=$(get_installed_version fastfetch) || installed=""
-    latest=$(github_latest_version "$REPO") || {
-        print_warning "Cannot check fastfetch version (network?)"
-        exit 0
-    }
-
-    if [[ -n "$installed" ]]; then
-        semver_compare "$installed" "$latest"
-        case $? in
-            0) print_skip "fastfetch at latest ($installed)"; exit 0 ;;
-            2) print_skip "fastfetch newer than release ($installed > $latest)"; exit 0 ;;
-            1) print_info "fastfetch: $installed -> $latest" ;;
-        esac
-    fi
-fi
-
+# Version gate via the shared helper (replaces a hand-rolled copy of it).
+needs_github_update "$REPO" "fastfetch" || exit 0
 step "Installing fastfetch" install_fastfetch

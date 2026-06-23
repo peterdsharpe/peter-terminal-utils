@@ -71,18 +71,6 @@ fi
 
 APPIMAGELAUNCHER_REPO="TheAssassin/AppImageLauncher"
 
-# Map architecture for AppImageLauncher releases
-get_ail_arch() {
-    case "$ARCH" in
-        x86_64) echo "amd64" ;;
-        arm64)  echo "arm64" ;;
-        *)
-            print_error "Unsupported architecture for AppImageLauncher: $ARCH"
-            return 1
-            ;;
-    esac
-}
-
 # Get installed AppImageLauncher version (extracts semver from dpkg version string)
 get_ail_installed_version() {
     if ! command -v dpkg &>/dev/null; then
@@ -104,7 +92,7 @@ get_ail_installed_version() {
 find_ail_deb_url() {
     local ail_arch api_url release_info deb_url
     
-    ail_arch=$(get_ail_arch) || return 1
+    ail_arch=$(arch_deb)
     
     # Query the latest release from GitHub API
     api_url="https://api.github.com/repos/${APPIMAGELAUNCHER_REPO}/releases/latest"

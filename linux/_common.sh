@@ -511,6 +511,22 @@ require_sudo() {
     fi
 }
 
+### Print a one-line nudge to authenticate a CLI that's installed but not yet
+### logged in. Unifies the identical post-install reminder used by gh/glab/hf.
+### No-op if the command is missing or already authenticated.
+### Usage: auth_reminder CMD CHECK_ARGS MESSAGE
+###   - CMD: command to check (e.g. "gh")
+###   - CHECK_ARGS: args that succeed only when authenticated (e.g. "auth status")
+###   - MESSAGE: reminder text printed when not authenticated
+### Example: auth_reminder gh "auth status" "Run 'gh auth login' to authenticate with GitHub"
+auth_reminder() {
+    local cmd="$1" check_args="$2" message="$3"
+    command -v "$cmd" &>/dev/null || return 0
+    # shellcheck disable=SC2086  # CHECK_ARGS is intentionally split into args
+    "$cmd" $check_args &>/dev/null 2>&1 && return 0
+    print_info "$message"
+}
+
 ### Helper function for Y/N prompts
 prompt_yn() {
     local prompt="$1"
@@ -694,6 +710,16 @@ case "$ARCH" in
         exit 1
         ;;
 esac
+
+### Common GitHub-release architecture "dialects" for custom installers that
+### don't route through get_release_arch()/install_github_binary(). $ARCH is
+### already validated to x86_64|arm64 above, so these are total (no error arm).
+###   arch_deb -> Debian-style: amd64 | arm64
+###       (quarto, glab, appimagelauncher; fastfetch via "linux-$(arch_deb)")
+###   arch_gnu -> GNU-triple-style: x86_64 | aarch64
+###       (rustdesk; texlive via "$(arch_gnu)-linux")
+arch_deb() { [[ "$ARCH" == "arm64" ]] && echo "arm64" || echo "amd64"; }
+arch_gnu() { [[ "$ARCH" == "arm64" ]] && echo "aarch64" || echo "x86_64"; }
 
 ###############################################################################
 ### Distro Detection
@@ -1015,23 +1041,11 @@ get_release_arch() {
                 x86_64) echo "linux.x86_64" ;;
                 arm64)  echo "linux.aarch64" ;;
             esac ;;
-        # fastfetch uses non-standard naming (linux-amd64 instead of x86_64)
-        fastfetch)
-            case "$ARCH" in
-                x86_64) echo "linux-amd64" ;;
-                arm64)  echo "linux-aarch64" ;;
-            esac ;;
         # tealdeer releases raw binaries with musl suffix
         tealdeer)
             case "$ARCH" in
                 x86_64) echo "linux-x86_64-musl" ;;
                 arm64)  echo "linux-aarch64-musl" ;;
-            esac ;;
-        # neovim uses simple arch naming
-        neovim)
-            case "$ARCH" in
-                x86_64) echo "linux-x86_64" ;;
-                arm64)  echo "linux-arm64" ;;
             esac ;;
         # gdu uses linux_arch format
         gdu)
@@ -1269,6 +1283,65 @@ install_github_binary() {
     # Cleanup and clear trap on success
     _cleanup_tmpdir
     trap - EXIT TERM INT
+}
+
+### Install a GitHub-released tarball that is a *directory tree* - a launcher
+### plus bundled runtime/support files that must stay together - rather than a
+### single relocatable binary that install_github_binary() could pluck out
+### (e.g. neovim's share/nvim/runtime, quarto's bundled deno/pandoc + share/).
+###
+### Extracts the tarball into ~/local/<tool> and symlinks the launcher into
+### ~/.local/bin/<tool>. Extraction uses --strip-components=1, so the archive's
+### single top-level directory (whose name may embed a version or arch, e.g.
+### quarto-1.9.38/ or nvim-linux-x86_64/) need not be known in advance. The
+### launcher must resolve its own symlink to locate its support files (neovim
+### and quarto both do); plain ~/.local/bin copies would break such tools.
+###
+### Usage: install_github_tree TOOL ARCHIVE_URL LAUNCHER_RELPATH
+###   - TOOL: install dir name (~/local/TOOL) and symlink name (~/.local/bin/TOOL)
+###   - ARCHIVE_URL: fully-resolved .tar.gz URL (caller maps arch -> filename)
+###   - LAUNCHER_RELPATH: executable path inside the tree, e.g. "bin/nvim"
+### Pair with needs_github_update() for version-gated (re)installs.
+install_github_tree() {
+    local tool="$1" url="$2" launcher_rel="$3"
+    local dest="$HOME/local/$tool"
+    # Stage on the same filesystem as $dest so the final swap is an atomic
+    # rename rather than a slow cross-device copy.
+    local staging="$HOME/local/.${tool}.tmp.$$"
+
+    mkdir -p "$HOME/local" "$HOME/.local/bin" || return 1
+
+    # Subshell scopes the EXIT trap to this install only (mirrors the pattern in
+    # appimage_support.sh) so cleanup can't leak into a caller's traps.
+    (
+        local archive
+        archive=$(mktemp) || exit 1
+        trap 'rm -rf "$archive" "$staging"' EXIT
+
+        if ! fetch -fL --max-time 600 --progress-bar -o "$archive" "$url"; then
+            echo "Failed to download $tool from $url (network down, or no release asset for this arch?)" >&2
+            exit 1
+        fi
+
+        rm -rf "$staging"
+        mkdir -p "$staging" || exit 1
+        if ! tar xf "$archive" -C "$staging" --strip-components=1; then
+            echo "Failed to extract $tool archive (corrupt or partial download?)" >&2
+            exit 1
+        fi
+
+        if [[ ! -f "$staging/$launcher_rel" ]]; then
+            echo "Launcher '$launcher_rel' not found in $tool archive (upstream layout changed?)" >&2
+            exit 1
+        fi
+
+        rm -rf "$dest"
+        if ! mv "$staging" "$dest"; then
+            echo "Failed to install $tool into $dest" >&2
+            exit 1
+        fi
+        ln -sf "$dest/$launcher_rel" "$HOME/.local/bin/$tool" || exit 1
+    )
 }
 
 ###############################################################################

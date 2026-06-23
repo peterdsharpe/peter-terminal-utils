@@ -9,9 +9,7 @@ _run_rustup_installer() {
     fetch --proto "=https" --tlsv1.2 -sSfL https://sh.rustup.rs | sh -s -- -y
 }
 
-if ! command -v rustup &>/dev/null; then
-    step "Installing Rust via rustup" _run_rustup_installer
-fi
+ensure_command "Rust (rustup)" rustup _run_rustup_installer
 
 # Source cargo env to ensure rustup is in PATH (needed after fresh install)
 # shellcheck source=/dev/null

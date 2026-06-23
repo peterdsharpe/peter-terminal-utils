@@ -7,9 +7,7 @@ standalone_init
 
 _run_uv_installer() { fetch -fsSL https://astral.sh/uv/install.sh | sh; }
 
-if ! command -v uv &>/dev/null; then
-    step "Installing uv" _run_uv_installer
-fi
+ensure_command "uv" uv _run_uv_installer
 
 # Ensure ~/.local/bin is in PATH (needed after fresh install - directory didn't exist when _common.sh ran)
 [[ -d "$HOME/.local/bin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"

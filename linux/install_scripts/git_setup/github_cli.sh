@@ -47,6 +47,4 @@ else
 fi
 
 # Remind user to authenticate if not already logged in
-if command -v gh &>/dev/null && ! gh auth status &>/dev/null 2>&1; then
-    print_info "Run 'gh auth login' to authenticate with GitHub"
-fi
+auth_reminder gh "auth status" "Run 'gh auth login' to authenticate with GitHub"

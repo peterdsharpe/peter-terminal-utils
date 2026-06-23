@@ -25,46 +25,36 @@ gitlab_latest_version() {
 }
 
 install_glab_binary() {
-    local version glab_arch tmpdir download_url
+    local version download_url
     version=$(gitlab_latest_version) || return 1
+    download_url="https://gitlab.com/gitlab-org/cli/-/releases/v${version}/downloads/glab_${version}_linux_$(arch_deb).tar.gz"
 
-    case "$ARCH" in
-        x86_64) glab_arch="amd64" ;;
-        arm64)  glab_arch="arm64" ;;
-    esac
+    # Subshell scopes the temp-dir EXIT trap to this install only.
+    (
+        local tmpdir glab_bin
+        tmpdir=$(mktemp -d) || exit 1
+        trap 'rm -rf "$tmpdir"' EXIT
 
-    tmpdir=$(mktemp -d) || return 1
-    download_url="https://gitlab.com/gitlab-org/cli/-/releases/v${version}/downloads/glab_${version}_linux_${glab_arch}.tar.gz"
+        fetch -fSL -o "$tmpdir/glab.tar.gz" "$download_url" || {
+            echo "Failed to download glab from $download_url" >&2
+            exit 1
+        }
+        tar xzf "$tmpdir/glab.tar.gz" -C "$tmpdir" || {
+            echo "Failed to extract glab archive" >&2
+            exit 1
+        }
+        mkdir -p "$HOME/.local/bin" || exit 1
 
-    fetch -fSL -o "$tmpdir/glab.tar.gz" "$download_url" || {
-        echo "Failed to download glab from $download_url" >&2
-        rm -rf "$tmpdir"
-        return 1
-    }
+        # Find the glab binary (may be in bin/ subdirectory or at root)
+        glab_bin=$(find "$tmpdir" -name "glab" -type f -executable 2>/dev/null | head -1)
+        [[ -n "$glab_bin" ]] || glab_bin=$(find "$tmpdir" -name "glab" -type f 2>/dev/null | head -1)
+        if [[ -z "$glab_bin" ]]; then
+            echo "glab binary not found in archive" >&2
+            exit 1
+        fi
 
-    tar xzf "$tmpdir/glab.tar.gz" -C "$tmpdir" || {
-        echo "Failed to extract glab archive" >&2
-        rm -rf "$tmpdir"
-        return 1
-    }
-
-    mkdir -p "$HOME/.local/bin" || { rm -rf "$tmpdir"; return 1; }
-
-    # Find the glab binary (may be in bin/ subdirectory or at root)
-    local glab_bin
-    glab_bin=$(find "$tmpdir" -name "glab" -type f -executable 2>/dev/null | head -1)
-    if [[ -z "$glab_bin" ]]; then
-        glab_bin=$(find "$tmpdir" -name "glab" -type f 2>/dev/null | head -1)
-    fi
-
-    if [[ -z "$glab_bin" ]]; then
-        echo "glab binary not found in archive" >&2
-        rm -rf "$tmpdir"
-        return 1
-    fi
-
-    install -m 755 "$glab_bin" "$HOME/.local/bin/glab" || { rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
+        install -m 755 "$glab_bin" "$HOME/.local/bin/glab"
+    )
 }
 
 install_glab_snap() {
@@ -82,6 +72,4 @@ install_glab() {
 ensure_command "GitLab CLI" glab install_glab
 
 # Remind user to authenticate if not already logged in
-if command -v glab &>/dev/null && ! glab auth status &>/dev/null 2>&1; then
-    print_info "Run 'glab auth login' to authenticate with GitLab"
-fi
+auth_reminder glab "auth status" "Run 'glab auth login' to authenticate with GitLab"

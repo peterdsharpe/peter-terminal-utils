@@ -21,15 +21,8 @@ if [[ "$PKG_MANAGER" == "unknown" ]]; then
     exit 0
 fi
 
-# Map architecture (RustDesk uses aarch64, not arm64)
-case "$ARCH" in
-    x86_64) rd_arch="x86_64" ;;
-    arm64)  rd_arch="aarch64" ;;
-    *)
-        print_error "Unsupported architecture: $ARCH"
-        exit 1
-        ;;
-esac
+# RustDesk uses GNU-triple arch naming (x86_64 / aarch64)
+rd_arch=$(arch_gnu)
 
 install_rustdesk() {
     local version pkg_name pkg_url tmpdir
